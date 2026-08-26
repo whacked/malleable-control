@@ -34,6 +34,27 @@ require_bus() {
   bus_is_up || die "bus is not running on $MC_NATS_URL -- run: bin/bus-start"
 }
 
+# Every participant check goes through the nats CLI. Without it on PATH each
+# check fails, and a naive caller reports the participant DOWN -- which reads
+# as "GT is broken" when the truth is "this shell is not inside nix-shell".
+# The bus line does not need the CLI, so the output looks half-plausible and
+# is that much more misleading.
+# Demos should say which participant is missing, not just fail mid-request.
+require_participant() {
+  local who="$1"
+  mc_responds "$who.query.capabilities" 2s || die \
+    "the '$who' participant is not on the bus.
+       emacs: run bin/emacs-participant start, or (mc-emacs-start) in your own Emacs
+       gt   : launch GlamorousToolkit.app (bin/gt-install-startup must have been run)
+       check with: bin/bus-status"
+}
+
+require_nats_cli() {
+  command -v nats >/dev/null 2>&1 \
+    || die "the 'nats' CLI is not on PATH -- run this inside 'nix-shell'.
+       Without it, participant status cannot be determined at all."
+}
+
 # Issue a request and print the reply payload.
 #
 # `nats request` exits 0 even when nobody answered -- it prints "No responders

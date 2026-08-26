@@ -21,6 +21,15 @@ else
   exit 1
 fi
 
+# Checked AFTER the bus line and before any participant line: reporting
+# "DOWN" for a participant we have no way of asking is worse than saying so.
+if ! command -v nats >/dev/null 2>&1; then
+  printf 'emacs     : UNKNOWN\ngt        : UNKNOWN\n'
+  printf '\ncannot determine participant status: the %s CLI is not on PATH.\n' "'nats'"
+  printf "run this inside 'nix-shell'.\n"
+  exit 2
+fi
+
 # A participant is "up" exactly when it answers its capabilities query. That is
 # a stronger and more honest check than looking for a process: a running Emacs
 # with a wedged client is not a participant.

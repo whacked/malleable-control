@@ -10,7 +10,10 @@
 #
 # Every edge of the mesh is exercised, and nobody is the router.
 source "$(dirname "$0")/../bin/_common.sh"
+require_nats_cli
 require_bus
+require_participant emacs
+require_participant gt
 
 FILE=/tmp/mc-demo-04.txt
 printf 'the quick brown fox\njumps over\nthe lazy dog\n' > "$FILE"

@@ -2,6 +2,7 @@
 # Fan-out: one publish, every interested participant sees it, nobody replies.
 # Proves the third message category (events) alongside commands and queries.
 source "$(dirname "$0")/../bin/_common.sh"
+require_nats_cli
 require_bus
 
 echo "== watching system.event.> in the terminal =="

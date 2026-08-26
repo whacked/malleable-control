@@ -6,7 +6,9 @@
 # anywhere for "unsupported operation" -- the subscription set IS the
 # capability list, and the bus does the filtering.
 source "$(dirname "$0")/../bin/_common.sh"
+require_nats_cli
 require_bus
+require_participant emacs
 
 echo "== a subject Emacs does implement =="
 mc_request emacs.query.buffer.current '{"v":1,"args":{}}' 2s && echo || echo "(unexpected: no answer)"

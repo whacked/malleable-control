@@ -2,7 +2,10 @@
 # Emacs -> GT, request/reply, driven from inside Emacs.
 # Proves: Emacs is a CLIENT of the bus, not only a service on it.
 source "$(dirname "$0")/../bin/_common.sh"
+require_nats_cli
 require_bus
+require_participant emacs
+require_participant gt
 
 command -v emacsclient >/dev/null || die "emacsclient not found"
 

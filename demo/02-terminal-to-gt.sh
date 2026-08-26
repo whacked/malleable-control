@@ -2,7 +2,9 @@
 # Terminal -> Glamorous Toolkit, request/reply.
 # Proves: GT is a peer, not a special case -- same envelope, same mechanics.
 source "$(dirname "$0")/../bin/_common.sh"
+require_nats_cli
 require_bus
+require_participant gt
 
 echo "== ask GT what it can do =="
 mc_request gt.query.capabilities || die "gt did not answer"

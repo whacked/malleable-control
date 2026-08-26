@@ -15,7 +15,12 @@ what this phase actually builds is in
 nix-shell          # provides nats-server + the nats CLI; sets MC_HOME, PATH
 ```
 
-Everything below assumes you are inside that shell. Emacs 30+ and the GT app
+**Everything below assumes you are inside that shell**, including
+`bin/bus-status`. Participant checks are made by asking over the bus with the
+`nats` CLI, so outside `nix-shell` they cannot be made at all -- `bus-status`
+says `UNKNOWN` and tells you why. The bus line itself reads a pid file and
+works either way, which is exactly what makes running it from the wrong shell
+confusing. Emacs 30+ and the GT app
 are expected to be installed already; set `GT_HOME` if yours is not at
 `/Applications/GlamorousToolkit-MacOS-aarch64-v1.1.564`.
 
@@ -166,7 +171,10 @@ skipped. No file at all means the hook is not installed -- run
 `bin/gt-install-startup`. On a GUI launch the Transcript is invisible, so this
 log is the only place failures show up.
 
-Three things that look like breakage but are not:
+Four things that look like breakage but are not:
+
+- **Running `bin/bus-status` outside `nix-shell`.** Participant status is
+  `UNKNOWN`, not DOWN, and the script says so.
 
 - **GT takes roughly fifteen seconds to appear.** The startup hook runs late in
   image boot, so checking straight after opening the app reports DOWN for

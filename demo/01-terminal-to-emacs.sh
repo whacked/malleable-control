@@ -2,7 +2,9 @@
 # Terminal -> Emacs, request/reply.
 # Proves: the terminal can ask Emacs a question and get an answer back.
 source "$(dirname "$0")/../bin/_common.sh"
+require_nats_cli
 require_bus
+require_participant emacs
 
 echo "== ask Emacs what it can do =="
 mc_request emacs.query.capabilities || die "emacs did not answer"
