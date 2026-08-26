@@ -57,8 +57,13 @@
   :type 'boolean
   :group 'nats)
 
-(defconst nats-max-reconnect-delay 30.0
-  "Ceiling on reconnect backoff, in seconds.")
+(defconst nats-max-reconnect-delay 5.0
+  "Ceiling on reconnect backoff, in seconds.
+
+Deliberately low. This bus is on loopback, so retrying costs nothing, and a
+30-second ceiling means a participant can sit silent for half a minute after
+you restart the bus -- long enough that `bus-status' reports it DOWN and you
+reasonably conclude it is broken.")
 
 (cl-defstruct (nats-connection (:constructor nats--make-connection)
                                (:copier nil))

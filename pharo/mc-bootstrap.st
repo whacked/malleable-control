@@ -16,19 +16,34 @@ MC_HOME comes from the global McHome (set by the generated startup script) or
 from the MC_HOME environment variable (set by bin/gt-participant).
 "!
 
-[ | home env |
-  home := Smalltalk at: #McHome ifAbsent: [ nil ].
+"Temps are declared here, at the top of the doit, NOT inside the protected
+ block below. The on:do: handler references `note', and a handler block is
+ outside the scope of the block it guards -- declaring them inside makes the
+ whole file fail to compile with 'Undeclared variable'."
+| home env note |
+note := [ :text |
+    | logName |
+    logName := Smalltalk at: #McStartupLog ifAbsent: [ nil ].
+    Transcript show: '[mc-gt] ' , text; cr.
+    logName ifNotNil: [
+      [ logName asFileReference writeStreamDo: [ :s |
+          s setToEnd; nextPutAll: DateAndTime now printString , ' ' , text; lf ] ]
+        on: Error do: [ :ignored | ] ] ].
+
+[ home := Smalltalk at: #McHome ifAbsent: [ nil ].
   home ifNil: [
     env := [ Smalltalk os environment ] on: Error do: [ :e | nil ].
     env ifNotNil: [ home := env at: 'MC_HOME' ifAbsent: [ nil ] ] ].
   home
-    ifNil: [ Transcript show: '[mc-gt] MC_HOME unknown, not connecting'; cr ]
+    ifNil: [ note value: 'MC_HOME unknown, not connecting' ]
     ifNotNil: [
       (home , '/pharo/NatsClient.st') asFileReference fileIn.
       (home , '/pharo/McGtService.st') asFileReference fileIn.
+      note value: 'classes loaded from ' , home.
       "Forked: a down bus must not stall the image coming up."
-      [ [ (Smalltalk at: #McGtService) start ]
+      [ [ (Smalltalk at: #McGtService) start.
+          note value: 'connected' ]
           on: Error
-          do: [ :e | Transcript show: '[mc-gt] could not connect: ' , e messageText printString; cr ] ] fork ] ]
+          do: [ :e | note value: 'could not connect: ' , e messageText printString ] ] fork ] ]
   on: Error
-  do: [ :e | Transcript show: '[mc-gt] bootstrap failed: ' , e messageText printString; cr ]!
+  do: [ :e | note value: 'bootstrap failed: ' , e messageText printString ]!

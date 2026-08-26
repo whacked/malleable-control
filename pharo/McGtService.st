@@ -184,17 +184,27 @@ handleImageInfo: args
 handleInspect: args
 	"The display-agnostic case. With a UI this opens a GT inspector; headless it
 	 returns the same result shape with headless:true and opens nothing."
-	| expr value headless data |
+	| expr value headless opened problem data |
 	expr := args at: 'expression' ifAbsent: [ nil ].
 	expr ifNil: [ self error: 'Missing required argument: expression' ].
 	value := Smalltalk compiler evaluate: expr.
 	headless := self isHeadless.
-	headless ifFalse: [ [ value inspect ] on: Error do: [ :e | ] ].
+	opened := false.
+	problem := nil.
+	"Report whether the inspector actually opened. Swallowing the error here
+	 would let this answer ok:true with headless:false while nothing appeared
+	 on screen -- a success message for something that did not happen."
+	headless ifFalse: [
+		[ value inspect. opened := true ]
+			on: Error
+			do: [ :e | problem := e messageText printString ] ].
 	data := self dictFrom: {
 		'expression' -> expr.
 		'class' -> value class name asString.
 		'printString' -> value printString.
-		'headless' -> headless }.
+		'headless' -> headless.
+		'inspectorOpened' -> opened.
+		'inspectorError' -> (problem ifNil: [ '' ]) }.
 	self publishEvent: 'gt.event.inspector.opened' data: data.
 	^ data!
 
@@ -236,5 +246,21 @@ onEmacsBufferOpened: payload
 			'headless' -> self isHeadless })! !
 
 !McGtService methodsFor: 'private-support'!
+hasDisplay
+	"Whether this image can actually show something to a person.
+
+	 Smalltalk isHeadless is NOT the right question for GT. GT always runs the
+	 VM headless and draws through Bloc, so isHeadless answers true even in a
+	 fully windowed image -- using it means gt.cmd.inspect never opens an
+	 inspector on the desktop, which is precisely backwards. The real question
+	 is whether any Bloc universe has an open space."
+	| universeClass |
+	universeClass := Smalltalk at: #BlParallelUniverse ifAbsent: [ nil ].
+	universeClass ifNil: [ ^ false ].
+	^ [ universeClass allInstances anySatisfy: [ :each |
+			[ each spaces isNotEmpty ] on: Error do: [ :e | false ] ] ]
+		on: Error
+		do: [ :e | false ]!
+
 isHeadless
-	^ [ Smalltalk isHeadless ] on: Error do: [ :e | true ]! !
+	^ self hasDisplay not! !

@@ -113,6 +113,13 @@ inspector and emits `gt.event.inspector.opened`. Headless it returns the same
 result payload with `"headless":true` and skips the UI. Same subject, same
 contract, one conditional.
 
+**Detecting a display in GT is not `Smalltalk isHeadless`.** GT always runs the
+VM headless and renders through Bloc, so that flag answers true in a fully
+windowed image. The check is whether any `BlParallelUniverse` has an open
+space. The reply also carries `inspectorOpened`, because reporting `ok:true`
+while nothing appeared on screen is a success message for something that did
+not happen.
+
 ## 7. Known gap: presence
 
 Core NATS has no last-will. `system.event.client.disconnected` fires only on

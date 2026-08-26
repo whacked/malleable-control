@@ -103,7 +103,10 @@ attemptReconnect
 		on: Error
 		do: [ :e |
 			socket := nil.
-			reconnectDelay := (reconnectDelay * 2) min: 30 ]!
+			"Ceiling deliberately low: the bus is on loopback, so retrying is
+			 free, and a long ceiling leaves the participant silent for so long
+			 after a bus restart that it looks broken."
+			reconnectDelay := (reconnectDelay * 2) min: 5 ]!
 
 waitForConnectionFor: seconds
 	"Block until the handshake completes. Answer whether it did."

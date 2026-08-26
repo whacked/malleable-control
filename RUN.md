@@ -144,8 +144,36 @@ McGtService current client
 	data: '{"v":1,"args":{"path":"/tmp/hello.txt"}}'.
 ```
 
-In a windowed GT, `gt.cmd.inspect` opens a real inspector; headless it reports
-`"headless":true` and opens nothing.
+In a windowed GT, `gt.cmd.inspect` opens a real inspector and the reply carries
+`"inspectorOpened":true`; headless it reports `"headless":true` and opens
+nothing. Note that "headless" here means *no Bloc space open* -- GT always runs
+the VM headless and draws through Bloc, so `Smalltalk isHeadless` is true even
+in a windowed image and is not a usable display check.
+
+## When GT does not connect
+
+The startup hook logs every launch to `run/gt-startup.log`:
+
+```
+... startup script ran; imagePath='/Applications/...' matches=true
+... classes loaded from /Users/.../malleable-control
+... connected
+```
+
+`matches=false` means the hook fired in a different Pharo image and correctly
+skipped. No file at all means the hook is not installed -- run
+`bin/gt-install-startup`. On a GUI launch the Transcript is invisible, so this
+log is the only place failures show up.
+
+Two things that look like breakage but are not:
+
+- **A participant can lag a bus restart by a few seconds.** Clients reconnect
+  on a backoff capped at 5s, so `bus-status` may report DOWN briefly after
+  `bin/bus-start`. Ask again.
+- **Two participants of the same kind both answer.** A leftover
+  `bin/gt-participant` and a windowed GT both serve `gt.*`, so requests get two
+  replies. `bin/gt-participant stop` before using the app, and
+  `bin/emacs-participant stop` sweeps stray daemons by name.
 
 ## Layout
 
