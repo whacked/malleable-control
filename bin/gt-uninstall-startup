@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Remove the startup hook installed by bin/gt-install-startup.
+source "$(dirname "$0")/_common.sh"
+
+SCRIPT="$HOME/Library/Preferences/pharo/12.0/mc-bus-startup.st"
+if [ -f "$SCRIPT" ]; then
+  rm -f "$SCRIPT"
+  info "removed: $SCRIPT"
+else
+  info "nothing to remove at $SCRIPT"
+fi

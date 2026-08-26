@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Stop the local NATS bus.
+source "$(dirname "$0")/_common.sh"
+
+if ! bus_is_up; then
+  info "bus is not running"
+  rm -f "$MC_PID_FILE"
+  exit 0
+fi
+
+pid="$(cat "$MC_PID_FILE")"
+kill "$pid" 2>/dev/null || true
+
+for _ in $(seq 1 50); do
+  kill -0 "$pid" 2>/dev/null || break
+  sleep 0.1
+done
+
+if kill -0 "$pid" 2>/dev/null; then
+  info "pid $pid ignored SIGTERM, sending SIGKILL"
+  kill -9 "$pid" 2>/dev/null || true
+fi
+
+rm -f "$MC_PID_FILE"
+info "bus stopped"

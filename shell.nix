@@ -8,13 +8,22 @@ let
 in pkgs.mkShell {
   buildInputs = [
     pkgs.nats-server
+    pkgs.natscli    # the "nats" CLI: the terminal participant
   ];  # join lists with ++
 
   nativeBuildInputs = [
   ];
 
   shellHook = nix_shortcuts.shellHook + ''
+    export MC_HOME="$(pwd)"
+    export MC_NATS_URL="nats://127.0.0.1:4223"
+    export PATH="$MC_HOME/bin:$PATH"
+
+    alias bus-start='bus-start'
+    alias bus-stop='bus-stop'
+    alias bus-status='bus-status'
   '' + ''
     echo-shortcuts ${__curPos.file}
+    echo "MC_HOME=$MC_HOME  MC_NATS_URL=$MC_NATS_URL"
   '';  # join strings with +
 }

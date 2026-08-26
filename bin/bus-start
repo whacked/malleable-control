@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Start the local NATS bus. Idempotent: re-running while up is a no-op.
+source "$(dirname "$0")/_common.sh"
+
+command -v nats-server >/dev/null 2>&1 \
+  || die "nats-server not on PATH -- run this inside 'nix-shell'"
+
+if bus_is_up; then
+  info "bus already up on $MC_NATS_URL (pid $(cat "$MC_PID_FILE"))"
+  exit 0
+fi
+
+mkdir -p "$MC_RUN_DIR"
+rm -f "$MC_PID_FILE"
+
+nats-server \
+  --config "$MC_HOME/nats/nats-server.conf" \
+  --port "$MC_NATS_PORT" \
+  >>"$MC_LOG_FILE" 2>&1 &
+echo $! > "$MC_PID_FILE"
+
+# Wait for OUR server to accept connections.
+#
+# Checking the port alone is not enough: if another nats-server is already
+# bound to it, ours exits immediately with "address already in use" while the
+# port test happily succeeds -- reporting a healthy bus that is really someone
+# else's, with a pid file pointing at a corpse. So test our own pid first.
+pid="$(cat "$MC_PID_FILE")"
+for _ in $(seq 1 50); do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$MC_PID_FILE"
+    info "--- last lines of $MC_LOG_FILE ---"
+    tail -5 "$MC_LOG_FILE" >&2 || true
+    die "nats-server exited immediately (is something else on port $MC_NATS_PORT?)"
+  fi
+  if nc -z "$MC_NATS_HOST" "$MC_NATS_PORT" 2>/dev/null; then
+    info "bus up on $MC_NATS_URL (pid $pid)"
+    info "log: $MC_LOG_FILE"
+    exit 0
+  fi
+  sleep 0.1
+done
+
+kill "$pid" 2>/dev/null || true
+rm -f "$MC_PID_FILE"
+die "nats-server did not start within 5s -- see $MC_LOG_FILE"

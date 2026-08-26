@@ -44,8 +44,9 @@ Established by probe before writing this spec, not assumed:
 | GT install | `/Applications/GlamorousToolkit-MacOS-aarch64-v1.1.564` |
 | Headless runner | `GlamorousToolkit.app/Contents/MacOS/GlamorousToolkit-cli <image> eval <expr>` |
 | Headless keep-alive | `--no-quit` flag exists |
-| Startup hook | image-local `startup.st`; enabled by default |
-| Prefs hook (not used) | `~/Library/Preferences/pharo/12.0/startupPharo12.0.st` |
+| Startup hook (used) | any `*.st` in `~/Library/Preferences/pharo/12.0/`; enabled by default |
+| Startup hook (rejected) | image-local `startup.st` — resolved against `FileSystem workingDirectory`, which is `/` on a Finder launch, so it silently never runs |
+| Emacs daemon socket | `$TMPDIR/emacs<uid>/<name>`; `--daemon=<abs path>` hits a name-length cap, and macOS `/tmp` is rejected as a symlink |
 | Image classes present | `Socket`, `NeoJSONObject`, `ZnServer`, `StartupPreferencesLoader` |
 | Code loading | Pharo **chunk format** via `fileIn` — verified working |
 | Emacs | 30.2, with built-in `json-parse-string` / `json-serialize` |
@@ -161,7 +162,8 @@ Three further round trips exercise the remaining mesh edges:
 |---|---|
 | Unknown subject | No subscriber, so no reply; requester times out. This is parent §4 capability filtering working correctly, and a demo script shows it deliberately. |
 | Handler raises | Caught, replied as `ok:false` with an error code. Never kills the read loop. |
-| Server down or restarted | Client retries with backoff, logs, and re-subscribes on reconnect. Must never wedge Emacs or GT. |
+| Server down or restarted | Client retries with backoff, logs, and re-subscribes on reconnect. Must never wedge Emacs or GT. Handlers are registered **once**, not in the on-connect hook -- the client restores its own subscriptions, and re-registering there would double every subscription and every reply. |
+| Handler needs user input | Fatal, by design. A participant has no user; a handler that reaches `y-or-n-p` blocks the process filter forever and silently deafens the whole client. Prompts are turned into error replies instead. |
 | Request timeout | Default 5s, configurable. |
 
 ## 11. Testing

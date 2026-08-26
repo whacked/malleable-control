@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Run Emacs as a bus participant, as a named daemon so it survives the shell.
+#
+# The daemon starts with -Q, i.e. WITHOUT your ~/.emacs.d. That is deliberate:
+# loading a large personal config makes the participant slow, non-deterministic,
+# and -- as found the hard way -- capable of blocking on an interactive prompt
+# during daemon startup, which hangs the daemon forever. A bus participant
+# should be hermetic.
+#
+# Set MC_EMACS_FULL_INIT=1 to load your init anyway.
+#
+# To use your *existing* Emacs instead, don't run this -- just evaluate:
+#   (add-to-list 'load-path "<MC_HOME>/elisp")
+#   (require 'mc-emacs-service)
+#   (mc-emacs-start)
+source "$(dirname "$0")/_common.sh"
+
+if [ "${MC_EMACS_FULL_INIT:-0}" = "1" ]; then EMACS_INIT_FLAGS=(); else EMACS_INIT_FLAGS=(-Q); fi
+
+# load-file, not require: re-running this script should pick up edits to the
+# service. mc-emacs-stop first so a reconnect is idempotent rather than an
+# "already connected" error.
+boot_form="(progn
+  (add-to-list 'load-path \"$MC_HOME/elisp\")
+  (load-file \"$MC_HOME/elisp/nats-client.el\")
+  (load-file \"$MC_HOME/elisp/mc-emacs-service.el\")
+  (setq mc-emacs-url \"$MC_NATS_URL\")
+  (ignore-errors (mc-emacs-stop))
+  (mc-emacs-start))"
+
+daemon_alive() {
+  mc_emacsclient --eval t >/dev/null 2>&1
+}
+
+cmd="${1:-start}"
+case "$cmd" in
+  start)
+    require_bus
+    if daemon_alive; then
+      info "emacs daemon '$MC_EMACS_DAEMON' already running; (re)connecting"
+      mc_emacsclient --eval "$boot_form" >/dev/null
+    else
+      mkdir -p "$MC_RUN_DIR"
+      # Keep the output: under set -e a failed daemon start would otherwise
+      # abort this script with no explanation at all.
+      if ! mc_emacs "${EMACS_INIT_FLAGS[@]}" --daemon="$MC_EMACS_DAEMON" \
+             --eval "$boot_form" >"$MC_RUN_DIR/emacs-daemon.log" 2>&1; then
+        tail -5 "$MC_RUN_DIR/emacs-daemon.log" >&2 || true
+        die "emacs --daemon failed -- see $MC_RUN_DIR/emacs-daemon.log"
+      fi
+    fi
+    # Confirm by asking it something over the bus, not by assuming.
+    for _ in $(seq 1 50); do
+      if mc_responds emacs.query.capabilities 1s; then
+        info "emacs participant up (daemon '$MC_EMACS_DAEMON')"
+        exit 0
+      fi
+      sleep 0.2
+    done
+    die "emacs daemon started but never answered emacs.query.capabilities"
+    ;;
+  stop)
+    if daemon_alive; then
+      mc_emacsclient --eval '(progn (ignore-errors (mc-emacs-stop)) (kill-emacs))' \
+        >/dev/null 2>&1 || true
+      info "emacs participant stopped"
+    else
+      info "emacs daemon is not running"
+    fi
+    ;;
+  status)
+    if mc_responds emacs.query.capabilities 1s; then
+      echo "emacs: UP"
+    else
+      echo "emacs: DOWN"; exit 1
+    fi
+    ;;
+  *) die "usage: $(basename "$0") [start|stop|status]" ;;
+esac

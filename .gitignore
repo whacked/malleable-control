@@ -1,0 +1,5 @@
+# Runtime state: pids, logs, sockets. Recreated by bin/bus-start et al.
+/run/
+
+# Pharo drops this wherever it is run from when an evaluation raises.
+PharoDebug.log

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Run Glamorous Toolkit headless as a bus participant.
+#
+# You do NOT need this to use GT interactively -- run bin/gt-install-startup
+# once and launch GlamorousToolkit.app normally instead. This exists so the
+# integration test can bring up a GT participant with no display, and so the
+# headless path stays exercised rather than rotting.
+source "$(dirname "$0")/_common.sh"
+
+MC_GT_PID_FILE="$MC_RUN_DIR/gt-participant.pid"
+MC_GT_LOG="$MC_RUN_DIR/gt-participant.log"
+
+gt_alive() {
+  [ -f "$MC_GT_PID_FILE" ] || return 1
+  local pid; pid="$(cat "$MC_GT_PID_FILE" 2>/dev/null || true)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+case "${1:-start}" in
+  start)
+    require_bus
+    [ -x "$GT_CLI" ] || die "GT cli not found at $GT_CLI (set GT_HOME)"
+    if gt_alive; then info "gt participant already running (pid $(cat "$MC_GT_PID_FILE"))"; exit 0; fi
+    mkdir -p "$MC_RUN_DIR"
+
+    # Two things this expression has to get right.
+    #
+    # The eval handler quits once its expression returns, so it must not
+    # return: park on a delay loop and let the NATS read loop and handlers run
+    # in their own forked processes.
+    #
+    # And it calls startOn:port: EXPLICITLY rather than going through
+    # mc-bootstrap. If bin/gt-install-startup has been run, the image already
+    # connected at boot using the address baked into that script -- so relying
+    # on MC_NATS_PORT here would silently land on the wrong bus. Naming the
+    # address outright makes this independent of whatever the hook did.
+    MC_HOME="$MC_HOME" \
+    "$GT_CLI" "$GT_IMAGE" eval "
+      '$MC_HOME/pharo/NatsClient.st' asFileReference fileIn.
+      '$MC_HOME/pharo/McGtService.st' asFileReference fileIn.
+      (Delay forMilliseconds: 700) wait.
+      (Smalltalk at: #McGtService) startOn: '$MC_NATS_HOST' port: $MC_NATS_PORT.
+      [ true ] whileTrue: [ (Delay forSeconds: 3600) wait ]
+    " >>"$MC_GT_LOG" 2>&1 &
+    echo $! > "$MC_GT_PID_FILE"
+
+    for _ in $(seq 1 100); do
+      if mc_responds gt.query.capabilities 1s; then
+        info "gt participant up (pid $(cat "$MC_GT_PID_FILE"), headless)"
+        exit 0
+      fi
+      sleep 0.3
+    done
+    die "gt started but never answered gt.query.capabilities -- see $MC_GT_LOG"
+    ;;
+  stop)
+    if gt_alive; then
+      kill "$(cat "$MC_GT_PID_FILE")" 2>/dev/null || true
+      sleep 0.5
+      kill -9 "$(cat "$MC_GT_PID_FILE")" 2>/dev/null || true
+      rm -f "$MC_GT_PID_FILE"
+      info "gt participant stopped"
+    else
+      info "gt participant is not running"
+      rm -f "$MC_GT_PID_FILE"
+    fi
+    ;;
+  status)
+    if mc_responds gt.query.capabilities 1s; then echo "gt: UP"; else echo "gt: DOWN"; exit 1; fi
+    ;;
+  *) die "usage: $(basename "$0") [start|stop|status]" ;;
+esac
