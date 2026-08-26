@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 # Report bus state and which participants are answering.
+#
+#   bus-status              one-shot snapshot
+#   bus-status --wait       wait (default 60s) for both participants
+#   bus-status --wait 30    wait up to 30s
+#
+# --wait exists because a snapshot lies about a participant that is still
+# starting. GT takes roughly fifteen seconds from launch to connected, so an
+# immediate check after opening the app reports DOWN for something that is
+# simply not ready yet.
 source "$(dirname "$0")/_common.sh"
+
+WAIT_FOR=0
+if [ "${1:-}" = "--wait" ]; then WAIT_FOR="${2:-60}"; fi
 
 if bus_is_up; then
   printf 'bus       : UP   %s (pid %s)\n' "$MC_NATS_URL" "$(cat "$MC_PID_FILE")"
@@ -12,10 +24,27 @@ fi
 # A participant is "up" exactly when it answers its capabilities query. That is
 # a stronger and more honest check than looking for a process: a running Emacs
 # with a wedged client is not a participant.
-for who in emacs gt; do
-  if mc_responds "$who.query.capabilities" 1s; then
-    printf '%-10s: UP   (answers %s.query.capabilities)\n' "$who" "$who"
-  else
-    printf '%-10s: DOWN (no reply on %s.query.capabilities)\n' "$who" "$who"
-  fi
-done
+report() {
+  local any_down=0
+  for who in emacs gt; do
+    if mc_responds "$who.query.capabilities" 1s; then
+      printf '%-10s: UP   (answers %s.query.capabilities)\n' "$who" "$who"
+    else
+      printf '%-10s: DOWN (no reply on %s.query.capabilities)\n' "$who" "$who"
+      any_down=1
+    fi
+  done
+  return $any_down
+}
+
+if [ "$WAIT_FOR" -gt 0 ] 2>/dev/null; then
+  deadline=$((SECONDS + WAIT_FOR))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if mc_responds emacs.query.capabilities 1s && mc_responds gt.query.capabilities 1s; then
+      break
+    fi
+    sleep 1
+  done
+fi
+
+report

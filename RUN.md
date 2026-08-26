@@ -22,8 +22,9 @@ are expected to be installed already; set `GT_HOME` if yours is not at
 ## Start the bus
 
 ```bash
-bin/bus-start      # nats-server on 127.0.0.1:4223  (not 4222 -- no collisions)
-bin/bus-status     # bus + which participants are actually answering
+bin/bus-start        # nats-server on 127.0.0.1:4223  (not 4222 -- no collisions)
+bin/bus-status       # bus + which participants are actually answering
+bin/bus-status --wait  # ...but wait for them (GT takes ~15s from launch)
 bin/bus-stop
 ```
 
@@ -165,8 +166,12 @@ skipped. No file at all means the hook is not installed -- run
 `bin/gt-install-startup`. On a GUI launch the Transcript is invisible, so this
 log is the only place failures show up.
 
-Two things that look like breakage but are not:
+Three things that look like breakage but are not:
 
+- **GT takes roughly fifteen seconds to appear.** The startup hook runs late in
+  image boot, so checking straight after opening the app reports DOWN for
+  something that is merely still starting. `bin/bus-status --wait` blocks until
+  it shows up; `tail -f run/gt-startup.log` shows it happening.
 - **A participant can lag a bus restart by a few seconds.** Clients reconnect
   on a backoff capped at 5s, so `bus-status` may report DOWN briefly after
   `bin/bus-start`. Ask again.
