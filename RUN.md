@@ -104,13 +104,48 @@ reply err {"v":1,"ok":false,"error":{"code":"...","message":"..."}}
 event     {"v":1,"source":"emacs","ts":1787737891000,"data":{...}}
 ```
 
-Talk to it from any shell:
+## Driving it by hand, from each client
+
+**From a terminal**
 
 ```bash
 nats --server "$MC_NATS_URL" request emacs.query.buffer.current '{"v":1,"args":{}}'
-nats --server "$MC_NATS_URL" pub gt.cmd.inspect '{"v":1,"args":{"expression":"3 + 4"}}'
-nats --server "$MC_NATS_URL" sub 'emacs.event.>'
+nats --server "$MC_NATS_URL" request gt.query.image.info        '{"v":1,"args":{}}'
+nats --server "$MC_NATS_URL" pub emacs.cmd.buffer.open '{"v":1,"args":{"path":"/tmp/hello.txt"}}'
+nats --server "$MC_NATS_URL" pub gt.cmd.inspect        '{"v":1,"args":{"expression":"3 + 4"}}'
+nats --server "$MC_NATS_URL" sub 'emacs.event.>'     # watch Emacs
+nats --server "$MC_NATS_URL" sub '>'                 # watch everything
 ```
+
+**From Emacs** (`M-:`, or `C-x C-e` in a scratch buffer)
+
+```elisp
+(mc-demo-ask-gt)                       ; ask GT about its image
+
+(nats-request-sync mc-emacs-connection "gt.cmd.inspect"
+  (json-serialize '(:v 1 :args (:expression "1 to: 10"))))
+;; => {"ok":true,"result":{"class":"Interval","printString":"(1 to: 10)",...}}
+
+(mc-emacs-publish-event "system.event.demo.ping" '(:note "hi from emacs"))
+```
+
+**From Glamorous Toolkit** (a Playground)
+
+```smalltalk
+McGtService current client isConnected.
+
+McGtService current client
+	request: 'emacs.query.buffer.current'
+	data: '{"v":1,"args":{}}'
+	timeout: 5.
+
+McGtService current client
+	publish: 'emacs.cmd.buffer.open'
+	data: '{"v":1,"args":{"path":"/tmp/hello.txt"}}'.
+```
+
+In a windowed GT, `gt.cmd.inspect` opens a real inspector; headless it reports
+`"headless":true` and opens nothing.
 
 ## Layout
 

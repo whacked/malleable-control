@@ -149,18 +149,42 @@ as a failure reply -- a bad handler must never deafen the client."
 
 ;;;; Handlers
 
-(defun mc-emacs--current-buffer ()
-  "Best guess at the buffer the user means.
+(defun mc-emacs--interesting-buffer-p (buffer)
+  "Non-nil when BUFFER is one a caller could plausibly mean.
 
-In a windowed session that is the selected window's buffer.  In a daemon there
-is no selected window worth trusting, so fall back to the last buffer opened
-over the bus, then to the first non-internal buffer."
-  (or (and (not noninteractive)
+Excludes minibuffers and the space-prefixed internal buffers.  A daemon's
+selected window is its initial frame's minibuffer, so without this check
+`emacs.query.buffer.current' answers with \" *Minibuf-1*\" -- technically
+true, useless to everyone."
+  (and (buffer-live-p buffer)
+       (not (minibufferp buffer))
+       (not (string-prefix-p " " (buffer-name buffer)))))
+
+(defun mc-emacs--attended-p ()
+  "Non-nil when a human is plausibly looking at the selected window.
+
+A daemon with no attached client frame has a selected window, but it shows
+whatever Emacs started with -- answering `emacs.query.buffer.current' from it
+means reporting \"*scratch*\" forever, no matter what the bus has been doing."
+  (or (not (daemonp))
+      (frame-parameter (selected-frame) 'client)))
+
+(defun mc-emacs--current-buffer ()
+  "Best guess at the buffer the caller means.
+
+When someone is attached, that is the selected window's buffer.  When nobody
+is -- a bare daemon -- it is the last buffer opened over the bus, which is the
+only evidence of intent available."
+  (or (and (mc-emacs--attended-p)
            (window-live-p (selected-window))
-           (window-buffer (selected-window)))
-      (and (buffer-live-p mc-emacs--last-buffer) mc-emacs--last-buffer)
-      (seq-find (lambda (b) (not (string-prefix-p " " (buffer-name b))))
-                (buffer-list))))
+           (let ((b (window-buffer (selected-window))))
+             (and (mc-emacs--interesting-buffer-p b) b)))
+      (and (mc-emacs--interesting-buffer-p mc-emacs--last-buffer)
+           mc-emacs--last-buffer)
+      (and (window-live-p (selected-window))
+           (let ((b (window-buffer (selected-window))))
+             (and (mc-emacs--interesting-buffer-p b) b)))
+      (seq-find #'mc-emacs--interesting-buffer-p (buffer-list))))
 
 (defun mc-emacs--buffer-descriptor (buffer)
   "Return a plist describing BUFFER."

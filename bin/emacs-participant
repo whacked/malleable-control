@@ -67,6 +67,13 @@ case "$cmd" in
     else
       info "emacs daemon is not running"
     fi
+    # A daemon that lost its socket file is unreachable by emacsclient but is
+    # still very much on the bus, answering emacs.* alongside its replacement.
+    # Two responders means two replies per request, so sweep by name too.
+    if pgrep -f -- "--bg-daemon=$MC_EMACS_DAEMON" >/dev/null 2>&1; then
+      pkill -f -- "--bg-daemon=$MC_EMACS_DAEMON" 2>/dev/null || true
+      info "swept unreachable daemon(s) named '$MC_EMACS_DAEMON'"
+    fi
     ;;
   status)
     if mc_responds emacs.query.capabilities 1s; then
