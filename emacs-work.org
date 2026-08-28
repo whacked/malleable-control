@@ -1,0 +1,50 @@
+;; Resolve elisp/ from this file's own location, so the buffer works
+;; wherever the checkout lives.
+(add-to-list 'load-path
+             (expand-file-name
+              "elisp"
+              (file-name-directory
+               (or load-file-name buffer-file-name default-directory))))
+(require 'mc-emacs-service)
+(mc-emacs-start)
+(mc-demo-ask-gt)
+
+;; --- LLM chat launcher ---
+;; GT's chat lives in the image, not in a window. Three ways to surface it,
+;; all driven from here over the bus.
+(require 'mc-llm)
+(mc-llm-install-keys)   ; C-c g c/n/h/s/w/d/o/l
+
+(mc-llm-refresh-home)   ; C-c g h -- re-render GT's main window: the third
+                        ; pane becomes the chat, and a chat dropdown appears
+                        ; in the toolbar. Needed because GtHome asks whether
+                        ; there are LLM connections exactly once, while the
+                        ; image is still booting, and never asks again.
+
+(mc-llm-chat)           ; C-c g c -- chat in its own window (reuses the last)
+(mc-llm-new-chat)       ; C-c g n -- chat in its own window, fresh history
+(mc-llm-status)         ; C-c g s -- what is connectable, and why not
+
+;; Which backend a chat talks to. A chat keeps the one it was born with:
+;; GtLChat >> provider builds from the registry default the first time it is
+;; asked and then caches it forever. So changing the default moves only NEW
+;; chats -- the one on screen needs re-pointing.
+(mc-llm-switch)         ; C-c g w -- re-point the chat on screen, keep history
+(mc-llm-use)            ; C-c g d -- set the default, i.e. what NEW chats get
+(mc-llm-new-chat-on)    ; C-c g o -- new chat on a named connection
+(mc-llm-chats)          ; C-c g l -- every chat and the server it talks to
+
+;; --- Weather station demo ---
+;; Opens a Bloc view in GT with a Fetch Weather button.
+;; GT auto-detects location, fetches from Open-Meteo, renders
+;; vector weather icons, and publishes the temperature back here.
+(require 'mc-weather)
+(mc-weather-open)
+
+;; After clicking Fetch Weather in GT, check:
+mc-weather--last  ; full plist from the last reading
+
+;; --- Anything at all ---
+;; mc-llm--eval is gt.cmd.eval: whatever bin/gt-eval can do, this can.
+(mc-llm--eval "GtLConnectionRegistry instance connections size printString")
+(mc-llm--eval "(Smalltalk at: #McGtPatches) apply")

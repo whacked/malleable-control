@@ -39,7 +39,16 @@ note := [ :text |
     ifNotNil: [
       (home , '/pharo/NatsClient.st') asFileReference fileIn.
       (home , '/pharo/McGtService.st') asFileReference fileIn.
+      (home , '/pharo/McGtPatches.st') asFileReference fileIn.
+      (home , '/pharo/McLlmStream.st') asFileReference fileIn.
+      (home , '/pharo/McLlm.st') asFileReference fileIn.
       note value: 'classes loaded from ' , home.
+      "Patches to GT's own code. Kept out of the image on purpose, so they
+       are version controlled and reapplied every start. A patch that fails
+       must not stop the bus connection below."
+      [ note value: (Smalltalk at: #McGtPatches) apply ]
+        on: Error
+        do: [ :e | note value: 'patches failed: ' , e messageText printString ].
       "Forked: a down bus must not stall the image coming up."
       [ [ (Smalltalk at: #McGtService) start.
           note value: 'connected' ]

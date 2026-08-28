@@ -38,6 +38,10 @@ case "${1:-start}" in
     "$GT_CLI" "$GT_IMAGE" eval "
       '$MC_HOME/pharo/NatsClient.st' asFileReference fileIn.
       '$MC_HOME/pharo/McGtService.st' asFileReference fileIn.
+      '$MC_HOME/pharo/McGtPatches.st' asFileReference fileIn.
+      '$MC_HOME/pharo/McLlmStream.st' asFileReference fileIn.
+      '$MC_HOME/pharo/McLlm.st' asFileReference fileIn.
+      [ (Smalltalk at: #McGtPatches) apply ] on: Error do: [ :e | ].
       (Delay forMilliseconds: 700) wait.
       (Smalltalk at: #McGtService) startOn: '$MC_NATS_HOST' port: $MC_NATS_PORT.
       [ true ] whileTrue: [ (Delay forSeconds: 3600) wait ]

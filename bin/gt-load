@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# gt-load -- file a Pharo chunk file into the connected GT image.
+#
+#   bin/gt-load pharo/McGtPatches.st
+#   bin/gt-load                        # reloads every pharo/*.st this repo owns
+#
+# This is how you push edited code into a running image without restarting it.
+#
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+require_nats_cli
+require_bus
+require_participant gt
+
+files=("$@")
+if [ ${#files[@]} -eq 0 ]; then
+	files=("$MC_HOME/pharo/NatsClient.st" "$MC_HOME/pharo/McGtService.st" "$MC_HOME/pharo/McGtPatches.st" "$MC_HOME/pharo/McLlmStream.st" "$MC_HOME/pharo/McLlm.st")
+fi
+
+for f in "${files[@]}"; do
+	[ -f "$f" ] || die "no such file: $f"
+	abs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+	printf '%s ... ' "$(basename "$abs")"
+	out="$("$MC_HOME/bin/gt-eval" "'$abs' asFileReference fileIn. 'filed in'")" \
+		|| die "could not file in $abs"
+	printf '%s\n' "$out"
+done

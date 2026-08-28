@@ -193,9 +193,17 @@ Four things that look like breakage but are not:
 ```
 elisp/nats-client.el        Core NATS protocol for Emacs. Knows no subjects.
 elisp/mc-emacs-service.el   emacs.* subjects -> editor operations.
+elisp/mc-llm.el             Emacs launcher for GT's chat. Binds C-c g.
+run/llm-endpoint.txt        OpenAI-compatible servers, one per line.
+run/llm-models.txt          What each of them last said it serves.
+run/llm-default.txt         The connection chosen with 'gt-llm use'.
 pharo/NatsClient.st         Core NATS protocol for Pharo. Knows no subjects.
 pharo/McGtService.st        gt.* subjects -> GT operations. Display-agnostic.
-pharo/mc-bootstrap.st       Loads both into an image and connects.
+pharo/McGtPatches.st        Overrides of GT's own code. Reapplied every start.
+pharo/McLlm.st              GT's LLM connections, driven from the bus.
+pharo/McLlmStream.st        Streaming responses from an OpenAI-compatible server.
+pharo/McRichText.st         Demo: markdown blocks swapped for live components.
+pharo/mc-bootstrap.st       Loads all of the above into an image and connects.
 nats/nats-server.conf       Localhost-only, port 4223.
 bin/                        Lifecycle scripts.
 demo/  test/                Proof.
@@ -203,6 +211,538 @@ demo/  test/                Proof.
 
 The protocol/semantics split is deliberate: the subject namespace will churn in
 later phases, and none of that should reach wire-protocol code.
+
+## Inspecting and changing the live image
+
+`gt.cmd.eval` gives full control of a running GT over the bus, and two scripts
+wrap it.
+
+```bash
+bin/gt-eval 'Smalltalk version'          # evaluate an expression
+bin/gt-eval <<'PHARO'                    # or a whole block on stdin
+LeDatabase gtBook pages size
+PHARO
+bin/gt-load pharo/McLlm.st               # push edited code into the live image
+bin/gt-load                              # reload everything this repo owns
+```
+
+Smalltalk uses single quotes for strings, so prefer a quoted heredoc over a
+shell-quoted argument.
+
+`bin/gt-load` is the loop that makes this worth having: edit a file here, push
+it into the image you already have open, and keep the windows you were working
+in. Nothing is saved into the image — `pharo/` is the source of truth, and
+`mc-bootstrap.st` files it all back in on the next start.
+
+### Patches to GT's own code
+
+`pharo/McGtPatches.st` holds overrides of upstream GT methods. They live here
+rather than being saved into the image so they are version controlled and
+reapplied on every start. Five are in place:
+
+- The two **"Setup LLM connections"** buttons looked up a GT Book page by a
+  title upstream had since renamed, so `pageNamed:` signalled `KeyNotFound` out
+  of the button's action block and GT opened a debugger. They now resolve the
+  page by any of its known titles, then by substring, and fall back to the
+  connection registry rather than raising.
+- **Ollama discovery** assumed anything answering on Ollama's port was Ollama.
+  Any other service there answers JSON with no `models` key, which raised
+  mid-way through `updateConnections` — after it had already emptied the
+  connection list, leaving the registry with no connections at all. A failure
+  there now just means "Ollama offered nothing".
+- **A past assistant turn** was replayed to the server as `output_text`, which
+  in the Responses API is an *output* content type. An input item carrying it
+  has to be a full output message, so the item matched nothing and the request
+  was rejected before the model saw it. Replayed as `input_text` now. See
+  *When a request fails* below — this is the one that made every chat work
+  exactly once.
+- **A failed turn could not be serialized at all.** No visitor in the image
+  implements `visitGtLErrorMessage:`, so once a chat contained one error, every
+  later message in it died with a `MessageNotUnderstood` before reaching the
+  network. All three provider paths can serialize one now.
+- **The message box collapsed on every streamed update.**
+  `GtLMessageViewsElement >> onViewsReady:` throws the child holding the text
+  away and puts a freshly computed one in its place, and the replacement fills
+  asynchronously — so the box briefly holds nothing and, being
+  `vFitContentLimited`, falls to no height. The patch pins the height across
+  the swap. See *Why streaming used to flicker* below.
+
+`McGtPatches apply` is idempotent and also rebinds matching buttons in windows
+that are already open, since patching a method does not touch elements already
+drawn.
+
+## Setting up LLM connections
+
+The rightmost card on GT's Home page is not a thing in its own right. It shows
+a **"Setup LLM connections"** placeholder while
+`GtLConnectionRegistry instance hasConnectableDefaultConnection` is false, and
+GT's chat panel — prompt input and all — as soon as it is true. So there is no
+separate panel to add: make one connection connectable and that same card
+becomes the prompt. It decides once, though, so after changing anything below
+run `bin/gt-llm home` — see [Where the chat actually is](#where-the-chat-actually-is).
+
+```bash
+bin/gt-llm status                          # what is connectable, and why not
+bin/gt-llm endpoint                        # list the OpenAI-compatible servers
+bin/gt-llm endpoint add http://vllm-b:8000    # add one, keep the others
+bin/gt-llm endpoint remove http://vllm-b:8000
+bin/gt-llm probe                           # ask each what it serves
+bin/gt-llm rediscover                      # re-ask, replacing the model cache
+pbpaste | bin/gt-llm set-key anthropic
+pbpaste | bin/gt-llm set-key openai
+bin/gt-llm enable-ollama                   # local Ollama instead
+bin/gt-llm use 'Qwen3.8-27B @ vllm-b:8000'    # pick the default
+bin/gt-llm streaming on                    # live token-by-token output
+bin/gt-llm home                            # re-render GT's main window
+bin/gt-llm open-chat                       # live chat window (reuses the last)
+bin/gt-llm new-chat                        # live chat with a fresh history
+```
+
+A connection is connectable when its provider says so:
+
+| Provider          | Requirement |
+|-------------------|-------------|
+| OpenAI-compatible | `bin/gt-llm endpoint <url>` — **no key needed** |
+| Anthropic         | `~/.secrets/anthropic-api-key.txt` exists |
+| OpenAI            | `~/.secrets/open-ai-api-key.txt` exists |
+| Ollama            | enabled *and* the local Ollama server has a model pulled |
+
+`set-key` reads the key from **stdin**, never from the command line, and never
+sends it over the bus — it writes the file GT checks (mode 600) and then asks
+GT only to re-read its providers.
+
+### Any OpenAI-compatible server
+
+`endpoint` is the path that needs no credential. Point it at anything serving
+OpenAI's `/v1` — vLLM, LM Studio, llama.cpp — and one connection is registered
+per model the server reports from `/v1/models`.
+
+```bash
+bin/gt-llm endpoint http://vllm-a:8000     # make this the only one
+bin/gt-llm endpoint add http://vllm-b:8000  # or run several at once
+bin/gt-llm probe
+#   http://vllm-a:8000 -- unreachable (offering #('Qwen3.8-27B') from cache)
+#   http://vllm-b:8000 -- serves #('Qwen3.8-27B')
+```
+
+The URLs are remembered in `run/llm-endpoint.txt`, one per line, gitignored —
+the address of a server on your network is not a fact about the project. A
+`/v1` suffix and a trailing slash are stripped for you; the endpoints already
+carry their own paths.
+
+#### Several servers at once
+
+Every configured server contributes one connection per model it serves, and
+they all appear together in the `+` dropdown of the chat pane, grouped under
+**OpenAI-compatible**:
+
+```
+Qwen3.8-27B @ vllm-a:8000
+Qwen3.8-27B @ vllm-b:8000
+```
+
+The `@ host:port` is not decoration. Two vLLM servers can serve a model of the
+same name — ours both serve `Qwen3.8-27B` — and without the host the dropdown
+would offer the same word twice.
+
+**Order is preference.** The first server in the file is the one whose model
+becomes the default connection, and `endpoint add` appends, so adding a server
+never moves the default. To choose explicitly:
+
+```bash
+bin/gt-llm use 'Qwen3.8-27B @ vllm-b:8000'
+```
+
+That choice is remembered in `run/llm-default.txt` and re-applied on every
+rebuild — including at startup, from `McGtPatches apply`. It has to be:
+`GtLConnectionRegistry >> updateConnections` resets the default to its own
+hardcoded `standardDefaultConnection` every time it runs, so a choice made
+without this would survive on disk and nowhere else.
+
+#### Switching a chat's backend
+
+`use` sets the default, and the default is only ever read **once per chat**:
+
+```smalltalk
+GtLChat >> provider
+	^ provider ifNil: [ self buildDefaultProvider ]
+```
+
+Lazy, then permanent. A chat is welded to whatever was default the first time
+it needed a backend, and nothing re-reads it — so `use` cannot move a chat that
+already exists, and the chat pane's own picker latches the same way
+(`GtLChatRegistryViewModel >> selectedConnection` caches on first read too).
+
+| Want | Do |
+|---|---|
+| move the chat on screen, keeping its history | `bin/gt-llm switch '<label>'` |
+| set what **new** chats get | `bin/gt-llm use '<label>'` |
+| a new chat on one server, default untouched | `bin/gt-llm new-chat '<label>'` |
+| see which chat talks to which server | `bin/gt-llm chats` |
+
+```
+$ bin/gt-llm chats
+1.            2 message(s)  http://vllm-a:8000/
+2.            0 message(s)  http://vllm-b:8000/
+3. [on screen] 2 message(s)  http://vllm-b:8000/
+```
+
+`switch` re-points every chat currently in a window — that is what "the current
+chat" means — and falls back to the most recent chat when no chat window is
+open. History stays: it lives on the chat, not the provider.
+
+In GT itself, the chat pane has a connection button next to `+`: pick there,
+then `+`, and the new chat is built on that connection
+(`GtLChatRegistryViewModel >> addChat` uses `selectedConnection`, not the
+registry default). `bin/gt-llm use` now re-points that picker too, so the
+button and the config cannot disagree.
+
+#### A server that is off the network
+
+Model lists are cached in `run/llm-models.txt` and connection discovery is
+**cache-first**: a server GT has talked to before keeps its connections, and
+its place in the dropdown, whether or not it answers today. `bin/gt-llm
+rediscover` re-asks every server and replaces the cache.
+
+This is not a convenience. `openAiCompatibleConnectors` runs inside the
+registry's lock, on the bus read loop, every time connections are rebuilt —
+which includes every startup. A blocking call to a machine that is off the
+network stops the whole image answering for as long as the OS takes to give up
+on the connect, which is minutes. So every request that can reach the network
+is wrapped:
+
+```smalltalk
+ZnConnectionTimeout value: self endpointTimeoutSeconds during: [ ... ]
+```
+
+Five seconds, measured: an unreachable host returns `ConnectionTimedOut` in
+3014 ms at a 3-second setting rather than hanging.
+
+Note that a **default** connection pointing at a server that is down still
+costs you: GT's own UI asks that connection questions, and those requests are
+not wrapped by anything of ours. If the machine is off the network for long,
+`bin/gt-llm use` the other one.
+
+Two things had to be bridged to make this work, both in `McLlm`:
+
+- GT's nearest provider, `GtLLmStudioProvider`, is already "an OpenAI `/v1`
+  server at a base URL of my choosing, with no API key". `McLlm providerClass`
+  subclasses it and changes only the URL.
+- GT's model-listing endpoint is LM Studio's, not OpenAI's: it asks
+  `/api/v1/models` and reads a `models` array of `display_name` entries. A plain
+  OpenAI server serves `/v1/models` and answers a `data` array of `id` entries.
+  `McLlm modelsEndpointClass` is that endpoint.
+
+Both classes are built programmatically rather than declared in the chunk file,
+because their superclasses exist only inside a GT image.
+
+`open-chat` opens **a chat**, not the chat registry. The registry element — the
+list with the `+` button — is an *index*: opening a chat from it is a phlow spawn event,
+and only a phlow container catches those (an inspector, a pager,
+`GtWorldElement`). Put that list in a bare `BlSpace` and it draws fine, `+` adds
+a row, and clicking the row goes nowhere. `McLlm openChat` inspects the chat
+instead, which opens `GtPhlowChatTool` — a phlow container, and the chat itself.
+
+#### When a request fails
+
+Two defects used to make a single failure permanent. Both are patched in
+`pharo/McGtPatches.st`; they are described here because the symptoms are
+confusing and they are upstream's, so they will come back if the patches are
+ever dropped.
+
+**Every chat worked exactly once.** GT serialized a previous assistant turn as
+
+```json
+{"role": "assistant", "content": [{"type": "output_text", "text": "..."}]}
+```
+
+and sent it back in the request's `input` list. `output_text` is an *output*
+content type: an input item carrying it must also say `"type": "message"` and
+carry the id and status the server issued. Without that the item can only match
+the plain input-message shape, whose blocks may be `input_text`, `input_image`
+or `input_file` and nothing else. So vLLM rejected the whole request:
+
+```
+240 validation errors: Input should be a valid string ...
+```
+
+That is pydantic reporting that it tried every branch of the union and none
+fit — the count grows with the conversation, which is the giveaway. The first
+message in a chat has no assistant turn to replay and so always went through;
+every message after it was refused. Nothing about it depended on which server
+was up.
+
+**And then the chat was stuck for good.** When a request fails, the reply's
+final message becomes a `GtLErrorMessage` and stays in the history.
+`GtLReplyMessage >> messagesDo:` hands it to the request builder with
+everything else, serialization dispatches through `acceptVisitor:` — which
+performs `visit<ClassName>:` — and no visitor in the image implements
+`visitGtLErrorMessage:`. So every later message died with
+
+```
+Instance of GtLOpenAiResponsesMessageVisitor did not understand #visitGtLErrorMessage:
+```
+
+*before* touching the network, however healthy the server was by then. A blip
+cost the chat rather than the message.
+
+A failed turn is now replayed as a one-line note:
+
+```
+[this turn failed and was not answered: ConnectionClosed: Connection aborted to vllm-a:8000]
+```
+
+This is the one place these patches do not follow upstream. GT's own
+`GtLErrorMessage >> serializeForOpenAIResponsesAPI` reports the exception's
+message, class, description **and full stack trace** — and that turn then goes
+out with every later message for the rest of the chat's life. Measured on a
+chat three failures in: **348 KB** of request payload, nearly all of it Pharo
+backtrace, and the model answered with nothing at all. The same chat with the
+short note is 2 KB and answers normally. A model can act on "the previous turn
+failed, and why"; it can do nothing with a VM stack. The full error is still
+shown in the chat window, which is where it is useful.
+
+## Where the chat actually is
+
+GT does not have a chat *window* it opens on demand. The chat is a pane, and
+there are three places it surfaces:
+
+| Where | How it gets there |
+|-------|-------------------|
+| Third pane of the main window | `GtHomeMultiCardGetStartedSection >> gtLlmCard` |
+| Chat dropdown in the world toolbar | `GtWorldElement >> gtWorldChatRegistryActionFor:` |
+| Its own window | `bin/gt-llm open-chat` — an inspector on a `GtLChat` |
+
+**Both of the first two are decided once, while the image boots, and never
+asked again.** Each asks `GtLConnectionRegistry instance
+hasConnectableDefaultConnection`, and each asks it before `mc-bootstrap.st`
+has registered the OpenAI-compatible connector. So a GT that is perfectly well
+connected still shows the "Setup LLM connections" placeholder and no toolbar
+dropdown — the answer was cached from a moment when it was honestly false.
+
+`McGtPatches refreshHome` re-renders both from their stencils, and `apply`
+calls it, so a normal start now comes up correct. On demand:
+
+```bash
+bin/gt-llm home         # 1 main window(s) refreshed
+```
+
+The pane it draws is `GtLChatRegistryElement` — an *index* of chats, with a `+`
+that adds one. Clicking a row opens that chat, because `GtWorldElement`
+catches `GtPhlowObjectToSpawn`. That is why the same element in a bare
+`BlSpace` looks inert: the row spawns an event with nothing to catch it.
+
+### Customizing the three panes
+
+The panes are methods, found by pragma, ordered by `priority:`:
+
+```
+GtHome >> ...                              <gtHomeSection>   -- a section
+GtHomeMultiCardGetStartedSection >> ...    <gtSectionCard>   -- a card in it
+```
+
+Every pane you see is a card in the one section:
+
+| Card | Title | priority |
+|------|-------|----------|
+| `gtUsedKnowledgeBaseCard` | Local knowledge base | 1 |
+| `gtBookCard` | Glamorous Toolkit Book | 10 |
+| `gtLlmCard` | the chat, or the placeholder | 50 |
+
+So: add a pane by adding a `<gtSectionCard>` method returning a `GtHomeCard`;
+remove one by commenting out its pragma (which is exactly what upstream does
+to `GtHome >> toolsSection` and `gt4llmSection`); reorder by changing
+`priority:`. Then `bin/gt-llm home` to see it without restarting.
+
+## From Emacs
+
+`elisp/mc-llm.el` drives all of the above over the bus:
+
+```elisp
+(require 'mc-llm)
+(mc-llm-install-keys)   ; C-c g c / C-c g n / C-c g h / C-c g s
+```
+
+| Key | Command | Effect |
+|-----|---------|--------|
+| `C-c g h` | `mc-llm-refresh-home` | re-render the main window |
+| `C-c g c` | `mc-llm-chat` | chat in its own window, reusing the last |
+| `C-c g n` | `mc-llm-new-chat` | chat in its own window, fresh history |
+| `C-c g s` | `mc-llm-status` | connections report in a buffer |
+| `C-c g w` | `mc-llm-switch` | re-point the chat on screen |
+| `C-c g d` | `mc-llm-use` | set the default for new chats |
+| `C-c g o` | `mc-llm-new-chat-on` | new chat on a named connection |
+| `C-c g l` | `mc-llm-chats` | every chat and its server |
+
+The three that take a connection complete over what GT currently offers, read
+live off the bus — no list to keep in sync.
+
+`mc-llm--eval` underneath is `gt.cmd.eval`, so anything `bin/gt-eval` can do,
+Emacs can do:
+
+```elisp
+(mc-llm--eval "GtLConnectionRegistry instance connections size printString")
+```
+
+`emacs-work.org` is the scratch buffer for all of it.
+
+### Why streaming used to flicker
+
+Sampling the live window during a response found the text editor **missing in
+about a quarter of the samples**, with a different editor object almost every
+time. The box was being emptied and rebuilt, not appended to.
+
+Two causes, one ours and one GT's.
+
+Ours: `publishPreview:` built a **new** assistant message every 80 ms and
+handed it to `addAssistantMessage:`, which sets `finalMessage:` on the reply —
+stamping it finished each time, incidentally. It now reuses one message object
+for the whole response and refreshes it in place, so `finalMessage:` sees what
+it already holds and returns early. Previews are also published at 250 ms
+rather than 80 ms: GT coalesces redraws through a `BrElementUpdater` postponed
+by 300 ms, so anything faster was collapsed and thrown away — one measured
+response published 512 previews and got 157 rebuilds. The 355 wasted ones were
+not free either, because `snapshotOf:` re-serializes the whole response so far.
+
+GT's: `GtLMessageViewsElement >> onViewsReady:` does
+
+```smalltalk
+self removeChildNamed: #'message-tabs'.
+anElementOrNil ifNil: [ ^ self ].
+self addChild: anElementOrNil as: #'message-tabs'
+```
+
+and the replacement's content arrives through an async widget, so there is a
+real window with nothing in the box. `McGtPatches patchStreamingViewSwap` pins
+the element's height across the swap and restores `vFitContentLimited` on the
+next frame. The rebuild still happens — it stops being visible as a collapse.
+After the patch the box held its height through the swaps and the editor was
+missing in 2 samples of 20 rather than 5 of 22.
+
+Removing the rebuild altogether would mean updating the existing editor's text
+instead of recollecting the view, which is a larger change to GT's view layer.
+
+## Swapping markdown blocks for components
+
+`pharo/McRichText.st` is a demonstration, not part of the bus. It answers
+whether a message's text can be parsed, have its blocks replaced by live
+components, and still be the same text underneath.
+
+```
+bin/gt-eval '(Smalltalk at: #McRichText) proveRoundTrip'
+bin/gt-eval '(Smalltalk at: #McRichText) open'
+```
+
+`open` puts two renderings of one document side by side: `#asChat`, which is
+what the chat does today, and `#asComponents`, which renders the table as a
+grid and the list as checkboxes.
+
+It works because in Bloc a component is not a replacement for text — it is an
+**attribute over** text. The string is never consumed, so the backward
+direction needs no conversion at all:
+
+```
+source: 250 characters, 5 blocks
+  chars 1-19    header    -> MicHeaderBlock
+  chars 22-62   paragraph -> MicParagraphBlock
+  chars 65-164  table     -> MicTableBlock
+  chars 167-218 list      -> MicUnorderedListBlock
+  chars 221-249 code      -> MicCodeBlock
+
+asComponents:
+  components built: #('BrVerticalPane' 'BrVerticalPane' 'GtSourceCoderExpandedOnlyElement')
+  source characters replaced by a component: 181 of 250
+  text asString still equals the source: true
+```
+
+A styler is a one-argument block over the text (`BlPluggableStyler`), and a
+view takes one with `styler:`. So a component set is swappable by passing a
+different styler — nothing else in the view changes. Blocks are located by
+source interval, which is what lets a component know exactly which characters
+it stands for, and lets an edit be written back into those characters.
+
+Parsing is `MicrodownParser`, not the `LeParser` the chat uses, which is why
+tables and lists parse at all. Microdown also covers quotes, strikethrough,
+figures and math.
+
+## Streaming responses
+
+GT never streams. `GtLOpenAiResponsesEndpoint` hardcodes `'stream' -> false`,
+posts with a `ZnClient` that reads the whole body, and only then builds the
+assistant message — so the chat sits frozen until the model is completely done.
+
+```bash
+bin/gt-llm streaming on     # takes effect on the next message
+bin/gt-llm streaming off
+bin/gt-llm streaming status
+```
+
+With it on, text appears as it arrives and the chat's existing **stop button
+ends a response mid-flight, keeping the text that already came through**.
+
+`pharo/McLlmStream.st` does this **without patching GT**, which three facts make
+possible:
+
+- `GtLEndpoint >> additionalEntity` is an official hook, merged into the request
+  *last*, so `'stream' -> true` overrides the hardcoded `false`.
+- The SSE stream ends with a `response.completed` event carrying the complete
+  response object, identical in shape to the non-streaming reply. Handing that
+  to `resultFrom:context:` leaves message construction, tool calls and
+  compaction running exactly as before.
+- `GtLChat >> addAssistantMessage:` sets `finalMessage:` on the reply message —
+  a *slot*, not an append. A partial message can be published over and over as
+  text arrives, and the real one simply replaces it at the end.
+
+Partial messages are published on an 80 ms clock rather than per token, because
+tokens arrive faster than anyone reads and every publish costs a re-render. Any
+failure in the streaming path falls back to the blocking one, minus the flag
+that failed, so a chat still gets its answer.
+
+`McLlmStream report` prints what the last run did — event count, previews
+published, why the read loop ended — since a stream is otherwise hard to observe
+from outside.
+
+One known wrinkle: publishing a partial sets `finalMessage`, so
+`GtLChat >> isFinishedSuccesss` reads true from the first partial onward. Nothing
+in the chat UI uses it — the stop button keys off the provider's execution state,
+which stays live — but a chat-list view that asks may show a run as finished
+early.
+
+## macOS and emacs keys in GT editors
+
+GT's text inputs are `BrEditor` — `BrEditor < BrEditorElement < BlInfiniteElement
+< BlElement`, pure Bloc, drawn by GT. They are not `NSTextView`, so they inherit
+nothing from macOS's text system, which is where Alt-Backspace and the emacs
+bindings come from in every native field.
+
+```bash
+bin/gt-llm keys show        # every editor binding, as resolved for macOS
+bin/gt-llm keys emacs on
+bin/gt-llm keys emacs off
+```
+
+`McGtPatches patchMacOsEditorKeymap` is applied always, and is a bug fix rather
+than a preference. `BrEditorKeymapRegistry` registers cursor motion and
+selection with macOS variants — move-to-previous-word is `Ctrl+ArrowLeft`
+generally and `Alt+ArrowLeft` on macOS — but registers word *deletion* with no
+macOS variant at all, leaving delete-previous-word on `Cmd+Backspace`, which on
+macOS means "delete to start of line". The operations existed; only the bindings
+were missing. Added, not replaced:
+
+```
+deletePreviousWordShortcutId  ->  Cmd+Backspace | Alt+Backspace
+deleteNextWordShortcutId      ->  Cmd+Delete | Alt+Delete
+```
+
+`keys emacs on` adds `Ctrl+A/E/F/B/N/P/D` and `Alt+F`/`Alt+B` alongside the
+existing bindings, and is remembered in `run/emacs-editor-keys`. `Ctrl+K`,
+`Ctrl+W`, `Ctrl+Y` and `Ctrl+Space` are deliberately absent: Brick has no
+kill-to-end-of-line, no kill ring and no mark, so those need *writing*, not
+binding.
+
+Both take effect immediately in editors that are already open — `BrEditorShortcut`
+resolves its combination from the registry at dispatch, not at construction. And
+both are global to the image: every GT editor, not just the chat input.
 
 ## Known gaps
 

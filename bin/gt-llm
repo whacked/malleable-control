@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+#
+# gt-llm -- set up and inspect GT's LLM connections over the bus.
+#
+#   bin/gt-llm status                    what is connectable, and why not
+#   bin/gt-llm set-key anthropic         read a key on stdin, install it
+#   bin/gt-llm set-key openai
+#   bin/gt-llm endpoint                  list the OpenAI-compatible servers
+#   bin/gt-llm endpoint add http://h:8000    add one, keeping the others
+#   bin/gt-llm endpoint remove http://h:8000 forget one
+#   bin/gt-llm endpoint http://host:8000 make this the only one
+#   bin/gt-llm endpoint --clear          forget them all
+#   bin/gt-llm probe                     ask each server what it serves
+#   bin/gt-llm rediscover                re-ask, replacing the model cache
+#   bin/gt-llm enable-ollama             use the local Ollama server instead
+#   bin/gt-llm disable-ollama
+#   bin/gt-llm use '<label>'             pick the default for NEW chats
+#   bin/gt-llm switch '<label>'          re-point the chat already on screen
+#   bin/gt-llm chats                     every chat and the server it talks to
+#   bin/gt-llm streaming on|off|status    live token-by-token output
+#   bin/gt-llm keys emacs on|off         emacs bindings in every GT editor
+#   bin/gt-llm home                      re-render GT's main window, so the chat
+#                                        pane and the toolbar chat dropdown appear
+#   bin/gt-llm open-chat                 open a live chat (reuses the last one)
+#   bin/gt-llm new-chat ['<label>']      open a live chat with a fresh history,
+#                                        optionally on a named connection
+#
+# 'endpoint' is the one that needs no API key: any server speaking OpenAI's
+# /v1 -- vLLM, LM Studio, llama.cpp -- is registered as a connection per model
+# it reports from /v1/models. Several servers can be configured at once; each
+# model appears in the dropdown labelled '<model> @ <host:port>', and the first
+# server listed is the one whose model becomes the default.
+#
+# Model lists are cached in run/llm-models.txt, so a server that is off the
+# network keeps its place in the dropdown instead of vanishing. 'rediscover'
+# re-asks every server and replaces the cache.
+#
+# 'use' sets what NEW chats get. It cannot move a chat that already exists:
+# GtLChat >> provider builds from the default the first time it is asked and
+# then caches it forever, so a chat is welded to whatever was default when it
+# started. 'switch' hands the running chat a new provider instead, keeping its
+# history.
+#
+# set-key reads the key from stdin, never from the command line, and never
+# sends it over the bus -- it writes the file GT checks (mode 600) and then
+# asks GT only to re-read its providers. So:
+#
+#   pbpaste | bin/gt-llm set-key anthropic
+#
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+usage() { sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+gt() { "$MC_HOME/bin/gt-eval" "$@"; }
+
+key_file_for() {
+	case "$1" in
+		anthropic) printf '%s\n' "$HOME/.secrets/anthropic-api-key.txt" ;;
+		openai)    printf '%s\n' "$HOME/.secrets/open-ai-api-key.txt" ;;
+		*)         die "unknown provider '$1' -- expected 'anthropic' or 'openai'" ;;
+	esac
+}
+
+# Build the Smalltalk for an endpoint change. The URL is validated here and
+# quote-escaped there, so a URL can never be pasted into code as-is.
+endpoint_expr() {
+	local verb="$1" url="$2"
+	case "$url" in
+		http://*|https://*) ;;
+		*) die "endpoint must be a full URL, e.g. http://<host>:8000" ;;
+	esac
+	# Trailing slashes double up when GT joins the path onto the base, and a
+	# /v1 suffix does too -- the endpoints already carry it.
+	url="${url%/}"
+	url="${url%/v1}"
+	MC_URL="$url" MC_VERB="$verb" python3 -c '
+import os
+q = chr(39)
+url = os.environ["MC_URL"].replace(q, q + q)
+verb = os.environ["MC_VERB"]
+sel = {"add": "addEndpoint:", "remove": "removeEndpoint:", "set": "endpointUrl:"}[verb]
+print("(Smalltalk at: #McLlm) %s %s%s%s" % (sel, q, url, q))
+'
+}
+
+# Build the Smalltalk for a selector taking one connection label. Escaped
+# there, never pasted in raw -- a label can contain anything a model name can.
+label_expr() {
+	local sel="$1" label="$2"
+	MC_SEL="$sel" MC_LABEL="$label" python3 -c '
+import os
+q = chr(39)
+label = os.environ["MC_LABEL"].replace(q, q + q)
+print("(Smalltalk at: #McLlm) %s %s%s%s" % (os.environ["MC_SEL"], q, label, q))
+'
+}
+
+cmd="${1:-status}"
+[ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+	-h|--help|help)
+		usage
+		;;
+
+	status)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) status"
+		;;
+
+	set-key)
+		[ $# -ge 1 ] || die "usage: bin/gt-llm set-key anthropic|openai   (key on stdin)"
+		provider="$1"
+		file="$(key_file_for "$provider")"
+		[ -t 0 ] && die "read the key from stdin, not the terminal: pbpaste | bin/gt-llm set-key $provider"
+
+		key="$(cat)"
+		# Trim surrounding whitespace and any trailing newline; GT reads the
+		# file contents verbatim as the key.
+		key="$(printf '%s' "$key" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+		[ -n "$key" ] || die "no key on stdin"
+
+		mkdir -p "$(dirname "$file")"
+		chmod 700 "$(dirname "$file")"
+		if [ -e "$file" ]; then
+			printf 'overwrite existing %s? [y/N] ' "$file" >&2
+			read -r answer </dev/tty || answer=""
+			case "$answer" in y|Y|yes) ;; *) die "left $file alone" ;; esac
+		fi
+		umask 077
+		printf '%s' "$key" > "$file"
+		chmod 600 "$file"
+		info "wrote $file (mode 600, $(printf '%s' "$key" | wc -c | tr -d ' ') bytes)"
+
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) refresh"
+		;;
+
+	endpoint)
+		require_nats_cli; require_bus; require_participant gt
+		sub="${1:-list}"
+		case "$sub" in
+			list)
+				gt "(Smalltalk at: #McLlm) endpointUrls ifEmpty: [ 'none configured' ] ifNotEmpty: [ :urls | urls inject: '' into: [ :acc :u | acc isEmpty ifTrue: [ u ] ifFalse: [ acc , String lf , u ] ] ]"
+				;;
+			--clear)
+				gt "(Smalltalk at: #McLlm) endpointUrl: nil"
+				;;
+			add|remove)
+				[ $# -ge 2 ] || die "usage: bin/gt-llm endpoint $sub <url>"
+				gt "$(endpoint_expr "$sub" "$2")"
+				;;
+			*)
+				# Bare URL: replace the list with this one server. Kept for the
+				# single-server case; use 'add' to keep the ones already there.
+				gt "$(endpoint_expr set "$sub")"
+				;;
+		esac
+		;;
+
+	rediscover)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) rediscoverModels"
+		;;
+
+	probe)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) probeEndpoint"
+		;;
+
+	enable-ollama)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) enableOllama"
+		;;
+
+	disable-ollama)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) disableOllama"
+		;;
+
+	refresh)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) refresh"
+		;;
+
+	use)
+		[ $# -ge 1 ] || die "usage: bin/gt-llm use <connection label>"
+		require_nats_cli; require_bus; require_participant gt
+		gt "$(label_expr "use:" "$1")"
+		;;
+
+	switch)
+		[ $# -ge 1 ] || die "usage: bin/gt-llm switch <connection label>"
+		require_nats_cli; require_bus; require_participant gt
+		gt "$(label_expr "switchChat:" "$1")"
+		;;
+
+	chats)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) chatsReport"
+		;;
+
+	streaming)
+		require_nats_cli; require_bus; require_participant gt
+		case "${1:-status}" in
+			on)     gt "(Smalltalk at: #McLlm) enableStreaming" ;;
+			off)    gt "(Smalltalk at: #McLlm) disableStreaming" ;;
+			status) gt "'streaming ' , ((Smalltalk at: #McLlm) streamingEnabled ifTrue: [ 'on' ] ifFalse: [ 'off' ])" ;;
+			*)      die "usage: bin/gt-llm streaming on|off|status" ;;
+		esac
+		;;
+
+	keys)
+		require_nats_cli; require_bus; require_participant gt
+		case "${1:-} ${2:-}" in
+			"emacs on")  gt "(Smalltalk at: #McGtPatches) enableEmacsEditorKeymap" ;;
+			"emacs off") gt "(Smalltalk at: #McGtPatches) disableEmacsEditorKeymap" ;;
+			"show "*|"show")  gt "(Smalltalk at: #McGtPatches) describeEditorKeymap" ;;
+			*)           die "usage: bin/gt-llm keys emacs on|off   |   bin/gt-llm keys show" ;;
+		esac
+		;;
+
+	home)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McGtPatches) refreshHome printString , ' main window(s) refreshed'"
+		;;
+
+	open-chat)
+		require_nats_cli; require_bus; require_participant gt
+		gt "(Smalltalk at: #McLlm) openChat"
+		;;
+
+	new-chat)
+		require_nats_cli; require_bus; require_participant gt
+		if [ $# -ge 1 ]; then
+			gt "$(label_expr "newChatOn:" "$1")"
+		else
+			gt "(Smalltalk at: #McLlm) newChat"
+		fi
+		;;
+
+	*)
+		usage >&2
+		die "unknown command '$cmd'"
+		;;
+esac

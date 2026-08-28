@@ -3,3 +3,4 @@
 
 # Pharo drops this wherever it is run from when an evaluation raises.
 PharoDebug.log
+/.agent-shell/

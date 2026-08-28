@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# gt-eval -- evaluate a Pharo expression in the connected GT image.
+#
+#   bin/gt-eval 'Smalltalk version'      evaluate the argument
+#   bin/gt-eval < some.st                evaluate stdin
+#   echo '3 + 4' | bin/gt-eval           same
+#
+# Prints the printString of the result, or the error and exits 1. Use
+# --json for the raw reply envelope.
+#
+# Smalltalk uses single quotes for strings, so prefer a quoted heredoc:
+#
+#   bin/gt-eval <<'PHARO'
+#   LeDatabase gtBook pages size
+#   PHARO
+#
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+raw_json=0
+timeout="${MC_GT_EVAL_TIMEOUT:-30s}"
+args=()
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--json)    raw_json=1; shift ;;
+		--timeout) timeout="$2"; shift 2 ;;
+		-h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		*)         args+=("$1"); shift ;;
+	esac
+done
+
+require_nats_cli
+require_bus
+require_participant gt
+
+if [ ${#args[@]} -gt 0 ]; then expression="${args[0]}"; else expression="$(cat)"; fi
+[ -n "$expression" ] || die "nothing to evaluate"
+
+payload="$(MC_EXPR="$expression" python3 -c '
+import json, os
+print(json.dumps({"v": 1, "args": {"expression": os.environ["MC_EXPR"]}}))
+')"
+
+reply="$(mc_request gt.cmd.eval "$payload" "$timeout")" \
+	|| die "gt did not reply within $timeout"
+
+if [ "$raw_json" = 1 ]; then
+	printf '%s\n' "$reply"
+	exit 0
+fi
+
+printf '%s' "$reply" | python3 -c '
+import json, sys
+reply = json.load(sys.stdin)
+if reply.get("ok"):
+    print(reply.get("result", {}).get("value", ""))
+else:
+    err = reply.get("error", reply)
+    print("%s: %s" % (err.get("code", "error"), err.get("message", err)), file=sys.stderr)
+    raise SystemExit(1)
+'
