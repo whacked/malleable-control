@@ -163,12 +163,17 @@ applyPalette
 			fontSize: 13).
 		editorElement editor styleText])! !
 
+"live edit requires running this after"
+"McRichEdit allInstances do: [:each | each registerDefaultButtons]"
+"run (McRichEdit >> #registerDefaultButtons) sourceCode"
+"to display the registered source code"
+
 !McRichEdit methodsFor: 'button handlers'!
 registerDefaultButtons
 	"Populate the handler table with demo actions."
 	buttonHandlers := Dictionary new.
 	buttonHandlers at: 'hello' put: [
-		self showStatus: 'Hello from a rich-edit button' ].
+		self showStatus: 'NEW Hello from a rich-edit button' ].
 	buttonHandlers at: 'time' put: [
 		self showStatus: 'Current time: ' , DateAndTime now printString ].
 	buttonHandlers at: 'count' put: [ | n |

@@ -44,6 +44,14 @@
 ;; After clicking Fetch Weather in GT, check:
 mc-weather--last  ; full plist from the last reading
 
+;; --- Smalltalk REPL / eval minor mode ---
+;; nREPL-like workflow: REPL buffer + eval keybindings for .st files.
+(require 'mc-smalltalk)
+;; M-x mc-st-repl          ; open REPL
+;; M-x mc-st-mode          ; activate in .st buffers (auto for .st files)
+;; C-x C-e  eval region/line   C-c C-c  eval method at point
+;; C-c C-k  fileIn buffer      C-c C-z  switch to REPL
+
 ;; --- Anything at all ---
 ;; mc-llm--eval is gt.cmd.eval: whatever bin/gt-eval can do, this can.
 (mc-llm--eval "GtLConnectionRegistry instance connections size printString")
