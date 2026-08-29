@@ -8,9 +8,17 @@ McRichEdit -- Prototype proving three theses about hybrid text editing in GT:
   3. Cursor-driven restyling can toggle between raw source view and
      rendered widget view based on cursor locality.
 
+Styling runs in two passes.  Standard markdown -- headers, emphasis, tables,
+code blocks, lists, quotes and rules -- is parsed by McMarkdownParser and
+projected by McMarkdownStylerVisitor (see pharo/McMarkdown.st).  This editor's
+own tokens, which are not markdown at all, are overlaid afterwards by the
+regex passes below.
+
 Button model: text is parsed for <<label>> tokens.  A handler table maps
 labels to actions.  The stencil block looks up the handler fresh on every
 restyle, so toggling between raw/widget never loses the association.
+
+Requires McMarkdown.st to be filed in first.
 
 Chunk format: load with fileIn.
 "!
@@ -23,6 +31,14 @@ Object subclass: #McRichEdit
 !McRichEdit class methodsFor: 'opening'!
 open
 	^ self new openView! !
+
+!McRichEdit methodsFor: 'initialization'!
+initialize
+	"A fresh instance must be usable before openView runs -- palette
+	 branches on darkMode, and a nil there is not a boolean."
+	super initialize.
+	darkMode := false.
+	buttonHandlers := Dictionary new! !
 
 !McRichEdit methodsFor: 'palette'!
 palette
@@ -38,6 +54,14 @@ palette
 			at: 'dimDelimiter' put: (Color fromHexString: '#555555');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
 			at: 'status' put: (Color fromHexString: '#a7a9be');
+			at: 'codeBg' put: (Color fromHexString: '#24243a');
+			at: 'codeText' put: (Color fromHexString: '#c7c9d9');
+			at: 'rule' put: (Color fromHexString: '#3a3a4e');
+			at: 'tableBorder' put: (Color fromHexString: '#3a3a4e');
+			at: 'tableHeaderBg' put: (Color fromHexString: '#24243a');
+			at: 'quoteBar' put: (Color fromHexString: '#7f5af0');
+			at: 'quoteText' put: (Color fromHexString: '#8f91a8');
+			at: 'listMarker' put: (Color fromHexString: '#7f5af0');
 			yourself]
 		ifFalse: [Dictionary new
 			at: 'containerBg' put: (Color fromHexString: '#f0f0f0');
@@ -49,6 +73,14 @@ palette
 			at: 'dimDelimiter' put: (Color fromHexString: '#bbbbbb');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
 			at: 'status' put: (Color fromHexString: '#888888');
+			at: 'codeBg' put: (Color fromHexString: '#e9ebf2');
+			at: 'codeText' put: (Color fromHexString: '#2d2d2d');
+			at: 'rule' put: (Color fromHexString: '#d0d0d0');
+			at: 'tableBorder' put: (Color fromHexString: '#d5d5dd');
+			at: 'tableHeaderBg' put: (Color fromHexString: '#eeeef2');
+			at: 'quoteBar' put: (Color fromHexString: '#7f5af0');
+			at: 'quoteText' put: (Color fromHexString: '#555555');
+			at: 'listMarker' put: (Color fromHexString: '#7f5af0');
 			yourself]! !
 
 !McRichEdit methodsFor: 'opening'!
@@ -163,10 +195,15 @@ applyPalette
 			fontSize: 13).
 		editorElement editor styleText])! !
 
-"live edit requires running this after"
-"McRichEdit allInstances do: [:each | each registerDefaultButtons]"
-"run (McRichEdit >> #registerDefaultButtons) sourceCode"
-"to display the registered source code"
+"Live edit requires running this after a reload:
+   McRichEdit allInstances do: [:each | each registerDefaultButtons]
+ and to display the registered source code:
+   (McRichEdit >> #registerDefaultButtons) sourceCode
+
+ The bang that closes this comment is load-bearing. Without it the chunk runs
+ on and swallows the bang that opens the next protocol, which is then evaluated
+ as an expression rather than read as a protocol header, and the whole file
+ fails to load with a doesNotUnderstand on methodsFor:."!
 
 !McRichEdit methodsFor: 'button handlers'!
 registerDefaultButtons
@@ -192,32 +229,86 @@ showStatus: aString
 
 !McRichEdit methodsFor: 'content'!
 demoContent
-	^ '[ ] Buy groceries
-[x] Write prototype
+	"Demo document exercising every element the styler projects."
+	^ '# Rich Edit
+
+A **bold** phrase, some _italic_, and `inline code` in one paragraph
+that runs across two source lines to prove offsets survive the break.
+
+## Tasks
+
+[ ] Buy groceries
+[x] Write the parser
 [x] Prove thesis one
 [ ] Prove thesis two
 
-**Hello World** is bold text.
-So is **this phrase** here.
+## Table
+
+| Element | Status | Notes         |
+|:--------|:------:|--------------:|
+| bold    | done   | AST driven    |
+| tables  | done   | grid widget   |
+| lists   | done   | bullets       |
+
+## Code
+
+```smalltalk
+McMarkdownParser parseSource: aString
+```
+
+## Lists
+
+- unordered one
+- unordered two
+
+1. ordered one
+2. ordered two
+
+> A quote with **bold** inside it.
+
+---
 
 Colors: #FF0000 red, #00FF00 green, #3498DB blue.
 
 Buttons: <<hello>>  <<time>>  <<count>>
 
-Move your cursor into any token to reveal its raw source.'! !
+Move your cursor into any element to reveal its raw source.'! !
 
 !McRichEdit methodsFor: 'styling'!
 styleText: aText
-	"Main styling entry point. Scan for tokens and apply
-	 projection rules based on cursor locality."
+	"Main styling entry point.  The document is parsed into a Microdown AST
+	 and projected by McMarkdownStylerVisitor, then the custom tokens are
+	 overlaid.
+
+	 The two passes exist because they answer to different grammars: headers,
+	 tables, lists, code and emphasis are standard markdown and belong to the
+	 parser, while checkboxes, colour swatches and buttons are this editor's
+	 own tokens that Microdown neither knows nor should have to."
 	| str cursorPos |
 	str := aText asString.
 	cursorPos := self cursorPosition.
 
+	self styleMarkdown: aText source: str cursor: cursorPos.
+
 	self styleCheckboxes: aText source: str cursor: cursorPos.
-	self styleBold: aText source: str cursor: cursorPos.
 	self styleColors: aText source: str cursor: cursorPos.
 	self styleButtons: aText source: str cursor: cursorPos!
+
+styleMarkdown: aText source: str cursor: cursorPos
+	"Parse and project the standard markdown elements.  A styler runs on
+	 every keystroke, so a parse failure must degrade to unstyled text rather
+	 than take the editor down with it."
+	| parser |
+	[ parser := McMarkdownParser parseSource: str.
+	  (McMarkdownStylerVisitor
+		parser: parser
+		text: aText
+		cursor: cursorPos
+		palette: self palette
+		owner: self) visit: parser root ]
+		on: Error
+		do: [ :e |
+			self showStatus: 'markdown: ' , e messageText asString ]!
 
 cursorPosition
 	"Return the 0-based cursor position, or -1 if no cursor."
@@ -262,48 +353,6 @@ styleCheckboxes: aText source: str cursor: cursorPos
 							cb])
 					from: start
 					to: stop]]! !
-
-!McRichEdit methodsFor: 'styling - bold'!
-styleBold: aText source: str cursor: cursorPos
-	"Thesis 2: Hide ** delimiters and bold inner text."
-	| rx p |
-	p := self palette.
-	rx := '\*\*[^*]+\*\*' asRegex.
-	(rx matchingRangesIn: str) do: [:range |
-		| start stop |
-		start := range first.
-		stop := range last.
-		(self cursor: cursorPos isNear: start to: stop)
-			ifTrue: [
-				aText
-					attribute: (BlTextForegroundAttribute new paint: (p at: 'dimDelimiter'))
-					from: start
-					to: start + 1.
-				aText
-					attribute: (BlTextForegroundAttribute new paint: (p at: 'dimDelimiter'))
-					from: stop - 1
-					to: stop.
-				aText
-					attribute: (BlTextForegroundAttribute new paint: (p at: 'text'))
-					from: start + 2
-					to: stop - 2]
-			ifFalse: [
-				aText
-					attribute: BrTextHideAttribute new
-					from: start
-					to: start + 1.
-				aText
-					attribute: BrTextHideAttribute new
-					from: stop - 1
-					to: stop.
-				aText
-					attribute: (BlFontWeightAttribute new weight: BlFontWeight bold)
-					from: start + 2
-					to: stop - 2.
-				aText
-					attribute: (BlTextForegroundAttribute new paint: (p at: 'boldText'))
-					from: start + 2
-					to: stop - 2]]! !
 
 !McRichEdit methodsFor: 'styling - colors'!
 styleColors: aText source: str cursor: cursorPos

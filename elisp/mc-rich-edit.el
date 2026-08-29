@@ -20,9 +20,13 @@
   (interactive)
   (unless (nats-connected-p mc-emacs-connection)
     (user-error "Not connected — run M-x mc-emacs-start"))
-  (let* ((st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
-         (expr (format "'%s' asFileReference fileIn. (Smalltalk at: #McRichEdit) open. 'opened'"
-                       st-path))
+  (let* ((markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
+         (st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
+         ;; McMarkdown must load first: McRichEdit's styler calls into it.
+         (expr (format (concat "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
+                               "(Smalltalk at: #McRichEdit) open. 'opened'")
+                       markdown-path st-path))
          (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
                   (json-serialize `(:v 1 :args (:expression ,expr))))))
     (if reply

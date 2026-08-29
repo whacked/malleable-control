@@ -72,12 +72,39 @@ apply
 	self patchAssistantTurnSerialization.
 	self patchStreamingViewSwap.
 	self patchMacOsEditorKeymap.
+	self patchMicrodownEmptyTable.
 	self emacsEditorKeymapEnabled ifTrue: [ self applyEmacsEditorKeymap ].
 	repaired := self repairOpenButtons.
 	self applyRememberedLlmDefault.
 	refreshed := self refreshHome.
 	^ 'McGtPatches applied (' , repaired printString , ' open button(s) rebound, '
 		, refreshed printString , ' home(s) refreshed)'! !
+
+!McGtPatches class methodsFor: 'applying'!
+patchMicrodownEmptyTable
+	"MicTableBlock >> closeMe takes `rows first size' without checking that
+	 there are any rows, so parsing a table that contributed none raises
+	 SubscriptOutOfBounds.
+
+	 A row is contributed only by a line the block did not read as a header
+	 separator, and isHeader: answers true for any line of pipes, dashes and
+	 spaces -- including a bare `|'.  So the moment a table row is begun by
+	 typing a single pipe, Microdown throws, which for a live styler means
+	 the whole document loses its styling for as long as the row is
+	 incomplete.  Guard the empty case; an empty table simply has no rows to
+	 normalise.
+
+	 Body is upstream's, with only the guard added."
+	(Smalltalk at: #MicTableBlock ifAbsent: [ nil ]) ifNil: [ ^ self ].
+	(Smalltalk at: #MicTableBlock)
+		compile: 'closeMe
+	| firstSize |
+	rows isEmpty ifTrue: [ ^ self ].
+	firstSize := rows first size.
+	rows := rows collect: [ :each | self cut: each toSize: firstSize ].
+	rows := rows collect: [ :each |
+		each collect: [ :e | self inlineParse: e ] ]'
+		classified: 'malleable-control patch'! !
 
 !McGtPatches class methodsFor: 'applying'!
 patchGtHomeLlmCard

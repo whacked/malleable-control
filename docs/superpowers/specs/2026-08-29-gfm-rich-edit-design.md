@@ -1,7 +1,7 @@
 # Spec: GFM Rich-Edit Engine — Microdown Parser + AST Styler
 
 Date: 2026-08-29
-Status: approved, not started
+Status: implemented (see agents/notes/2026/08/2026-08-29.002-microdown-ast-styler-lessons.md)
 
 ## 1. Scope
 
