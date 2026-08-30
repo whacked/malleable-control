@@ -323,7 +323,10 @@ descendingArrow
 
 nextAscendingFor: aColumnIndex
 	"Clicking a column already ascending asks for descending; anything else
-	 asks for ascending."
+	 asks for ascending.  Same guard as arrowFor:: with fewer than two rows
+	 'ascending' is vacuously true, and without this guard the header would
+	 show no arrow while a click asked for descending anyway."
+	relation rowCount < 2 ifTrue: [ ^ true ].
 	^ (relation isSortedBy: aColumnIndex ascending: true) not!
 
 isSortable

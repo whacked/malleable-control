@@ -878,3 +878,104 @@ testCheckboxInACellWritesBackToTheDocumentIndex
 		equals: '| task |
 |------|
 | [x] go |'! !
+
+!McMarkdownTest methodsFor: 'tests - robustness'!
+testStylingSurvivesEveryCursorPositionOfATableWithWidgets
+	"A table whose cells hold every custom token, swept at every cursor
+	 position.  This is where the two reported defects showed up, and where a
+	 range-mapping mistake would raise."
+	| source |
+	source := '| task | colour | go |
+|:-----|:------:|---:|
+| [ ] **write** | #ff0000 | <<Run>> |
+| [x] `ship`    | #00ff00 | <<Stop>> |'.
+	-1 to: source size do: [ :cursor |
+		self
+			assert: (self style: source cursor: cursor) notNil
+			description: 'raised at cursor ' , cursor printString ]! !
+
+!McMarkdownTest methodsFor: 'tests - table element'!
+testTableWithNoOwnerHasAnInertHeader
+	"visitTable: used to install the sort action unconditionally, before it
+	 knew whether owner was nil, so isSortable's owner gate never fired: a
+	 table with no owner still invited a click it would silently ignore.
+	 Goes through the real visitor path (style:cursor: always passes
+	 owner: nil), not the elementForTable: helper, because the defect lived
+	 in visitTable: itself, not in isSortable."
+	| source text parser range attribute element |
+	source := '| n |
+|---|
+| 2 |
+| 1 |'.
+	text := self styleAway: source.
+	parser := self parse: source.
+	range := parser rangeOf: (parser root children
+		detect: [ :each | each class name asString = 'MicTableBlock' ]).
+	attribute := (text attributesAt: range first)
+		detect: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ].
+	element := attribute stencil build.
+	self deny: element isSortable!
+
+testNextAscendingForARowCountUnderTwoAgreesWithNoArrow
+	"nextAscendingFor: lacked arrowFor:'s guard: for fewer than two rows,
+	 isSortedBy:ascending:true is vacuously true, so a header showing no
+	 arrow would still ask for descending on the next click."
+	| element |
+	element := self elementForTable: '| n |
+|---|
+| 1 |'.
+	self assert: (element arrowFor: 1) equals: ''.
+	self assert: (element nextAscendingFor: 1)!
+
+testArrowGlyphsAreDistinctCodePoints
+	"testHeaderShowsAscendingArrowWhenAlreadySorted and
+	 testHeaderShowsDescendingArrowWhenReversed each compare arrowFor:
+	 against the accessor for that same direction, so either would still
+	 pass if descendingArrow answered the ascending code point.  Pin the
+	 two apart directly."
+	| element |
+	element := self elementForTable: '| n |
+|---|
+| 1 |
+| 2 |'.
+	self deny: element ascendingArrow = element descendingArrow.
+	self assert: (element ascendingArrow includes: (Character value: 9650)).
+	self assert: (element descendingArrow includes: (Character value: 9660))! !
+
+!McMarkdownTest methodsFor: 'tests - table header'!
+testHeaderElementCarriesTheColumnName
+	"headerElementFor:index: is one of this phase's mandated interfaces and
+	 had no test of its own: a header cell must show the column's name."
+	| element header |
+	element := self elementForTable: '| task |
+|------|
+| a |'.
+	header := element headerElementFor: (element relation columns at: 1) index: 1.
+	self assert: header text asString equals: 'task'!
+
+testHeaderElementWithACustomTokenNameStaysInert
+	"A column literally named like a custom token is built from an
+	 interval-free McRelationCell, so even though it renders the checkbox
+	 stencil, cellTextFor:isHeader: gives the styler no owner to write back
+	 to -- checking it must be a silent no-op, not an edit landing on the
+	 wrong characters of the document."
+	| reader owner element column header text index attribute box |
+	reader := self readerFor: '| a |
+|------|
+| 1 |'.
+	owner := self recordingOwner.
+	element := McMarkdownTableElement
+		relation: reader relation
+		palette: self palette
+		owner: owner.
+	column := McRelationColumn name: '[ ] x' alignment: #left.
+	header := element headerElementFor: column index: 1.
+	self assert: header class equals: BrEditorElement.
+	text := header editor text.
+	index := (1 to: text size)
+		detect: [ :each | self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: each ].
+	attribute := (text attributesAt: index)
+		detect: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ].
+	box := attribute stencil build.
+	box check.
+	self assert: owner replaceCalls isEmpty! !

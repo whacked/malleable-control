@@ -488,8 +488,9 @@ visitTable: aTable
 				relation: reader relation
 				palette: palette
 				owner: owner.
-			element sortAction: [ :columnIndex :ascending |
-				self applySortFrom: reader column: columnIndex ascending: ascending ].
+			owner ifNotNil: [
+				element sortAction: [ :columnIndex :ascending |
+					self applySortFrom: reader column: columnIndex ascending: ascending ] ].
 			element build ]
 		from: range first
 		to: range last!

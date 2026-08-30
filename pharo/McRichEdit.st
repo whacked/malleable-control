@@ -248,11 +248,13 @@ that runs across two source lines to prove offsets survive the break.
 
 ## Table
 
-| Element | Status | Notes         |
-|:--------|:------:|--------------:|
-| bold    | done   | AST driven    |
-| tables  | done   | grid widget   |
-| lists   | done   | bullets       |
+| task | colour | qty |
+|:-----|:------:|----:|
+| [ ] **write the reader** | #7f5af0 | 11 |
+| [x] `ship the styler`    | #2cb67d | 3  |
+| [ ] *sort the rows*      | #ff8906 | 7  |
+
+Click a column header to sort -- the rows are rewritten in the document.
 
 ## Code
 
