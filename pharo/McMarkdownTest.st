@@ -453,3 +453,153 @@ testALoneTableRowDoesNotBreakParsing
 	self shouldnt: [ self styleAway: '|' ] raise: Error.
 	self shouldnt: [ self styleAway: '|---|' ] raise: Error.
 	self shouldnt: [ self parse: '|' ] raise: Error! !
+
+!McMarkdownTest methodsFor: 'helpers - tables'!
+readerFor: aString
+	"Build a reader over the first table in aString."
+	| parser table |
+	parser := self parse: aString.
+	table := parser root children
+		detect: [ :each | each class name asString = 'MicTableBlock' ].
+	^ McMarkdownTableReader
+		source: parser source
+		lineIntervals: (parser lineIntervalsWithin: (parser rangeOf: table))!
+
+sourceOfCell: aCell in: aString
+	"What a cell's interval actually selects, so failures name the text."
+	aCell interval ifNil: [ ^ nil ].
+	^ aString copyFrom: aCell interval first to: aCell interval last! !
+
+!McMarkdownTest methodsFor: 'tests - table reader'!
+testReaderFindsColumnsAndRows
+	| source relation |
+	source := '| name | qty |
+|------|-----|
+| fig  | 11  |
+| pear | 3   |'.
+	relation := (self readerFor: source) relation.
+	self assert: (relation columns collect: [ :each | each name ]) asArray equals: #('name' 'qty').
+	self assert: relation rowCount equals: 2.
+	self assert: (relation at: 1 column: 1) text equals: 'fig'.
+	self assert: (relation at: 2 column: 2) text equals: '3'!
+
+testReaderRecordsCellIntervals
+	"The interval is what lets a widget inside a cell write back."
+	| source relation |
+	source := '| name | qty |
+|------|-----|
+| fig  | 11  |'.
+	relation := (self readerFor: source) relation.
+	self
+		assert: (self sourceOfCell: (relation at: 1 column: 1) in: source)
+		equals: ' fig  '.
+	self
+		assert: (self sourceOfCell: (relation at: 1 column: 2) in: source)
+		equals: ' 11  '!
+
+testReaderRecordsRowIntervals
+	| source relation |
+	source := '| a |
+|---|
+| 1 |
+| 2 |'.
+	relation := (self readerFor: source) relation.
+	self
+		assert: (source copyFrom: (relation rowAt: 2) interval first to: (relation rowAt: 2) interval last)
+		equals: '| 2 |'!
+
+testReaderReadsPlainSeparatorRow
+	"Microdown drops |---|---| and sets hasHeader; the reader must not
+	 depend on which of the two spellings was used."
+	| relation |
+	relation := (self readerFor: '| a | b |
+|---|---|
+| 1 | 2 |') relation.
+	self assert: relation rowCount equals: 1.
+	self assert: (relation columns collect: [ :each | each alignment ]) asArray equals: #(#left #left)!
+
+testReaderReadsAlignedSeparatorRow
+	"Microdown keeps |:--|--:| as data with hasHeader false."
+	| relation |
+	relation := (self readerFor: '| a | b | c |
+|:--|:-:|--:|
+| 1 | 2 | 3 |') relation.
+	self assert: relation rowCount equals: 1.
+	self
+		assert: (relation columns collect: [ :each | each alignment ]) asArray
+		equals: #(#left #center #right)!
+
+testReaderTreatsEscapedPipeAsContent
+	| relation |
+	relation := (self readerFor: '| a | b |
+|---|---|
+| x \| y | z |') relation.
+	self assert: relation columnCount equals: 2.
+	self assert: (relation at: 1 column: 1) text equals: 'x \| y'!
+
+testReaderPadsRaggedRows
+	| relation |
+	relation := (self readerFor: '| a | b | c |
+|---|---|---|
+| 1 |
+| 1 | 2 | 3 | 4 |') relation.
+	self assert: (relation rowAt: 1) size equals: 3.
+	self assert: (relation rowAt: 2) size equals: 3.
+	self assert: (relation at: 1 column: 3) source equals: ''!
+
+testReaderDefaultsToMarkdownCells
+	self assert: (self readerFor: '| a |
+|---|
+| 1 |') relation directives cellsAreMarkdown! !
+
+!McMarkdownTest methodsFor: 'tests - table sorting'!
+testSortEditReordersRowLines
+	| source edit |
+	source := '| name | qty |
+|------|-----|
+| pear | 3   |
+| fig  | 11  |'.
+	edit := (self readerFor: source) sortEditBy: 1 ascending: true.
+	self
+		assert: edit value
+		equals: '| fig  | 11  |
+| pear | 3   |'!
+
+testSortEditCoversOnlyTheDataRows
+	"The header and separator must stay where they are."
+	| source edit |
+	source := '| name |
+|------|
+| b    |
+| a    |'.
+	edit := (self readerFor: source) sortEditBy: 1 ascending: true.
+	self assert: (source copyFrom: edit key first to: edit key last) equals: '| b    |
+| a    |'!
+
+testSortEditSortsNumericallyByNumericColumn
+	| source edit |
+	source := '| n |
+|---|
+| 3 |
+| 11 |
+| 7 |'.
+	edit := (self readerFor: source) sortEditBy: 1 ascending: true.
+	self assert: edit value equals: '| 3 |
+| 7 |
+| 11 |'!
+
+testSortEditDescending
+	| source edit |
+	source := '| n |
+|---|
+| 1 |
+| 2 |'.
+	edit := (self readerFor: source) sortEditBy: 1 ascending: false.
+	self assert: edit value equals: '| 2 |
+| 1 |'!
+
+testSortEditIsNilWithNothingToReorder
+	self
+		assert: ((self readerFor: '| a |
+|---|
+| 1 |') sortEditBy: 1 ascending: true) isNil! !
