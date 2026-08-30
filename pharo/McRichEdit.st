@@ -205,7 +205,7 @@ openView
 	editorElement text: self demoContent asRopedText.
 	editorElement constraintsDo: [:c |
 		c horizontal matchParent.
-		c vertical matchParent].
+		c vertical fitContent].
 	editorElement padding: (BlInsets all: 16).
 
 	"Wrap the editor in a scroll pane so overflow scrolls with a visible bar."
