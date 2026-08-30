@@ -380,72 +380,6 @@ testStylingAnEmptyDocumentDoesNothing
 	self assert: (self styleAway: '') asString equals: ''! !
 
 !McMarkdownTest methodsFor: 'tests - tables'!
-tableModelOf: aSource
-	| parser table visitor |
-	parser := McMarkdownParser parseSource: aSource.
-	table := parser root children first.
-	visitor := McMarkdownStylerVisitor
-		parser: parser
-		text: aSource asRopedText
-		cursor: -1
-		palette: self palette
-		owner: nil.
-	^ visitor tableModelFor: table!
-
-testTableModelDropsTheSeparatorRow
-	"Whichever way the separator is spelled, it must not show up as data."
-	#('|---|---|' '|:---|---:|' '| --- | --- |') do: [ :separator |
-		| model |
-		model := self tableModelOf: '| a | b |
-' , separator , '
-| 1 | 2 |'.
-		self
-			assert: ((model at: 'rows') collect: [ :row | row asArray ]) asArray
-				= (Array with: #('a' 'b') with: #('1' '2'))
-			description: separator , ' left a stray row: '
-				, (model at: 'rows') printString ]!
-
-testTableModelMarksOneHeaderRow
-	#('|---|---|' '|:---|---:|') do: [ :separator |
-		| model |
-		model := self tableModelOf: '| a | b |
-' , separator , '
-| 1 | 2 |'.
-		self
-			assert: (model at: 'headerRows') = 1
-			description: separator , ' lost the header' ]!
-
-testTableModelReadsAlignmentColons
-	| model |
-	model := self tableModelOf: '| a | b | c | d |
-|:---|---:|:--:|---|
-| 1 | 2 | 3 | 4 |'.
-	self
-		assert: (model at: 'alignments') asArray
-		equals: #(#left #right #center #left)!
-
-testTableModelWithoutASeparatorHasNoHeader
-	| model |
-	model := self tableModelOf: '| a | b |'.
-	self assert: (model at: 'headerRows') equals: 0!
-
-testTableWidgetHasACellPerColumnAndRow
-	| parser table visitor element |
-	parser := McMarkdownParser parseSource: '| a | b |
-|---|---|
-| 1 | 2 |
-| 3 | 4 |'.
-	table := parser root children first.
-	visitor := McMarkdownStylerVisitor
-		parser: parser
-		text: '' asRopedText
-		cursor: -1
-		palette: self palette
-		owner: nil.
-	element := visitor tableElementFor: table.
-	"Three rows survive the separator, two columns each."
-	self assert: element children size equals: 6!
-
 testALoneTableRowDoesNotBreakParsing
 	"MicTableBlock >> closeMe raised SubscriptOutOfBounds on a table that
 	 contributed no rows, which is the state of every table the moment its
@@ -796,3 +730,151 @@ testTextCellsSkipTheStylerEntirely
 	element := McMarkdownTableElement relation: relation palette: self palette owner: nil.
 	text := element cellTextFor: (relation at: 1 column: 1).
 	self deny: (self in: text hasAttribute: BlFontWeightAttribute at: 5)! !
+
+!McMarkdownTest methodsFor: 'tests - table element'!
+testGridHasOneChildPerCellPlusHeaders
+	| element |
+	element := (self elementForTable: '| a | b |
+|---|---|
+| 1 | 2 |
+| 3 | 4 |') build.
+	self assert: element children size equals: 6!
+
+testHeaderShowsAscendingArrowWhenAlreadySorted
+	| element |
+	element := self elementForTable: '| n |
+|---|
+| 1 |
+| 2 |'.
+	self assert: (element arrowFor: 1) equals: element ascendingArrow!
+
+testHeaderShowsDescendingArrowWhenReversed
+	| element |
+	element := self elementForTable: '| n |
+|---|
+| 2 |
+| 1 |'.
+	self assert: (element arrowFor: 1) equals: element descendingArrow!
+
+testHeaderShowsNoArrowWhenUnsorted
+	| element |
+	element := self elementForTable: '| n |
+|---|
+| 2 |
+| 1 |
+| 3 |'.
+	self assert: (element arrowFor: 1) equals: ''!
+
+testClickingASortedColumnAsksForTheOppositeDirection
+	"Direction toggles without being remembered: it is read off the data."
+	| element |
+	element := self elementForTable: '| n |
+|---|
+| 1 |
+| 2 |'.
+	self deny: (element nextAscendingFor: 1)!
+
+testClickingAnUnsortedColumnAsksForAscending
+	| element |
+	element := self elementForTable: '| n |
+|---|
+| 2 |
+| 1 |
+| 3 |'.
+	self assert: (element nextAscendingFor: 1)! !
+
+!McMarkdownTest methodsFor: 'tests - table regression'!
+testCheckboxInACellDoesNotNestTheTable
+	"The reported defect: the custom-token pass added a second beReplace
+	 adornment inside the table's own, so the checkbox slot rendered a copy
+	 of the table.  Exactly one adornment may cover the table's range."
+	| source text parser range count |
+	source := '| a | b |
+|---|---|
+| [ ] x | y |'.
+	text := self styleAway: source.
+	parser := self parse: source.
+	range := parser rangeOf: (parser root children
+		detect: [ :each | each class name asString = 'MicTableBlock' ]).
+	count := 0.
+	range first to: range last do: [ :index |
+		count := count max: ((text attributesAt: index)
+			select: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ]) size ].
+	self assert: count equals: 1!
+
+testTableStillRendersWithTheCursorAway
+	| source text parser range |
+	source := '| a | b |
+|---|---|
+| 1 | 2 |'.
+	text := self styleAway: source.
+	parser := self parse: source.
+	range := parser rangeOf: (parser root children
+		detect: [ :each | each class name asString = 'MicTableBlock' ]).
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: range first)! !
+
+Object subclass: #McRecordingOwner
+	instanceVariableNames: 'replaceCalls buttonCalls'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McRecordingOwner methodsFor: 'initialization'!
+initialize
+	super initialize.
+	replaceCalls := OrderedCollection new.
+	buttonCalls := OrderedCollection new! !
+
+!McRecordingOwner methodsFor: 'writing'!
+replaceFrom: start to: stop with: aString
+	"Recorded rather than applied: the test asserts on the range and text a
+	 widget asked to write, not on any document it was applied to."
+	replaceCalls add: {start. stop. aString}!
+
+performButtonNamed: aLabel
+	buttonCalls add: aLabel! !
+
+!McRecordingOwner methodsFor: 'accessing'!
+replaceCalls
+	^ replaceCalls!
+
+buttonCalls
+	^ buttonCalls! !
+
+!McMarkdownTest methodsFor: 'helpers - table write-back'!
+recordingOwner
+	^ McRecordingOwner new! !
+
+!McMarkdownTest methodsFor: 'tests - table write-back'!
+testCheckboxInACellWritesBackToTheDocumentIndex
+	"Every other helper passes owner: nil, so nothing exercises write-back
+	 from a widget rendered inside a table cell.  Writing to the wrong
+	 offset is exactly the defect class this phase exists to fix."
+	| source reader owner element cell text index attribute box call result |
+	source := '| task |
+|------|
+| [ ] go |'.
+	reader := self readerFor: source.
+	owner := self recordingOwner.
+	element := McMarkdownTableElement
+		relation: reader relation
+		palette: self palette
+		owner: owner.
+	cell := reader relation at: 1 column: 1.
+	text := element cellTextFor: cell.
+	index := (1 to: text size) detect: [ :each |
+		self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: each ].
+	attribute := (text attributesAt: index)
+		detect: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ].
+	box := attribute stencil build.
+	box check.
+	self assert: owner replaceCalls size equals: 1.
+	call := owner replaceCalls first.
+	result := source
+		copyReplaceFrom: (call at: 1)
+		to: (call at: 2)
+		with: (call at: 3).
+	self
+		assert: result
+		equals: '| task |
+|------|
+| [x] go |'! !

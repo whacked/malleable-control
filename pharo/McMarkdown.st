@@ -470,14 +470,37 @@ styleListItem: anItem marker: anIndexOrNil
 !McMarkdownStylerVisitor methodsFor: 'visiting - tables'!
 visitTable: aTable
 	"A table is a multi-line block, so away from the cursor the whole run of
-	 pipe rows is replaced by one grid element."
-	| range |
+	 pipe rows is replaced by one grid element built from the relation.  The
+	 reader is captured by the sort action, which turns a header click into
+	 an ordinary document edit."
+	| range reader |
 	range := parser rangeOf: aTable.
 	range ifNil: [ ^ self ].
-	(aTable rows isNil or: [ aTable rows isEmpty ]) ifTrue: [ ^ self ].
-	(self isNear: range)
-		ifTrue: [ ^ self styleTableSourceIn: range ].
-	self replace: [ self tableElementFor: aTable ] from: range first to: range last!
+	(self isNear: range) ifTrue: [ ^ self styleTableSourceIn: range ].
+	reader := McMarkdownTableReader
+		source: parser source
+		lineIntervals: (parser lineIntervalsWithin: range).
+	reader relation rowCount = 0 ifTrue: [ ^ self ].
+	self
+		replace: [
+			| element |
+			element := McMarkdownTableElement
+				relation: reader relation
+				palette: palette
+				owner: owner.
+			element sortAction: [ :columnIndex :ascending |
+				self applySortFrom: reader column: columnIndex ascending: ascending ].
+			element build ]
+		from: range first
+		to: range last!
+
+applySortFrom: aReader column: aColumnIndex ascending: aBoolean
+	"Sorting is an edit to the document, not a property of the view."
+	| edit |
+	owner ifNil: [ ^ self ].
+	edit := aReader sortEditBy: aColumnIndex ascending: aBoolean.
+	edit ifNil: [ ^ self ].
+	owner replaceFrom: edit key first to: edit key last with: edit value!
 
 styleTableSourceIn: aRange
 	"Cursor on the table: leave the pipe syntax legible, with the separators
@@ -492,113 +515,13 @@ styleTableSourceIn: aRange
 		(self isDelimiterLine: (parser lineAt: interval))
 			ifTrue: [ self dimFrom: interval first to: interval last ] ]!
 
-tableModelFor: aTable
-	"Normalise a Microdown table into what the widget needs: the rows to
-	 show, the column alignments, and how many leading rows are header.
-
-	 This is separated from building the element because it is where all the
-	 judgement lives.  Microdown handles the GFM separator row inconsistently
-	 -- it drops a plain |---|---| but hands back |:---|---:| as if it were
-	 data -- so neither its rows nor its hasHeader flag can be trusted alone.
-
-	 Answers a Dictionary keyed `rows', `alignments' and `headerRows'."
-	| rows delimiterIndex alignments headerRows |
-	rows := aTable rows collect: [ :row |
-		row collect: [ :cell | self textOfCell: cell ] ].
-	delimiterIndex := 0.
-	rows doWithIndex: [ :row :index |
-		(delimiterIndex = 0 and: [ self isDelimiterRow: row ])
-			ifTrue: [ delimiterIndex := index ] ].
-	alignments := delimiterIndex = 0
-		ifTrue: [ Array new: 0 ]
-		ifFalse: [ (rows at: delimiterIndex) collect: [ :each | self alignmentFor: each ] ].
-	headerRows := delimiterIndex = 0
-		ifTrue: [ (aTable hasHeader and: [ rows size > 1 ]) ifTrue: [ 1 ] ifFalse: [ 0 ] ]
-		ifFalse: [ delimiterIndex - 1 ].
-	delimiterIndex = 0 ifFalse: [
-		rows := (rows copyFrom: 1 to: delimiterIndex - 1)
-			, (rows copyFrom: delimiterIndex + 1 to: rows size) ].
-	^ Dictionary new
-		at: 'rows' put: rows;
-		at: 'alignments' put: alignments;
-		at: 'headerRows' put: headerRows;
-		yourself!
-
-tableElementFor: aTable
-	"The grid widget shown in place of the pipe rows."
-	| model rows alignments headerRows columnCount grid |
-	model := self tableModelFor: aTable.
-	rows := model at: 'rows'.
-	alignments := model at: 'alignments'.
-	headerRows := model at: 'headerRows'.
-	columnCount := rows inject: 1 into: [ :best :row | best max: row size ].
-	grid := BlElement new.
-	grid layout: (BlGridLayout horizontal columnCount: columnCount).
-	grid constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
-	grid background: (self paletteAt: 'editorBg').
-	grid border: (BlBorder paint: (self paletteAt: 'tableBorder') width: 1).
-	grid margin: (BlInsets top: 2 bottom: 2).
-	rows doWithIndex: [ :row :rowIndex |
-		1 to: columnCount do: [ :columnIndex |
-			grid addChild: (self
-				tableCellFor: (row at: columnIndex ifAbsent: [ '' ])
-				alignment: (alignments at: columnIndex ifAbsent: [ #left ])
-				isHeader: rowIndex <= headerRows) ] ].
-	^ grid!
-
-tableCellFor: aString alignment: aSymbol isHeader: aBoolean
-	| cell content |
-	content := aString asRopedText.
-	content
-		foreground: (self paletteAt: (aBoolean ifTrue: [ 'boldText' ] ifFalse: [ 'text' ]));
-		fontSize: 14.
-	aBoolean ifTrue: [ content bold ].
-	cell := BlTextElement new.
-	cell text: content.
-	cell padding: (BlInsets top: 3 right: 10 bottom: 3 left: 10).
-	aBoolean ifTrue: [ cell background: (self paletteAt: 'tableHeaderBg') ].
-	cell constraintsDo: [ :c |
-		c horizontal fitContent.
-		c vertical fitContent.
-		aSymbol = #right ifTrue: [ c grid horizontal alignRight ].
-		aSymbol = #center ifTrue: [ c grid horizontal alignCenter ].
-		aSymbol = #left ifTrue: [ c grid horizontal alignLeft ] ].
-	^ cell!
-
-textOfCell: aCell
-	"A Microdown table cell is a collection of inline nodes."
-	aCell isString ifTrue: [ ^ aCell ].
-	^ String streamContents: [ :stream |
-		aCell do: [ :node |
-			stream nextPutAll: ([ node text ] on: Error do: [ :e | '' ]) ] ]!
-
-isDelimiterRow: aRow
-	"True for a GFM alignment row: every cell is dashes with optional colons."
-	aRow isEmpty ifTrue: [ ^ false ].
-	^ aRow allSatisfy: [ :each | self isDelimiterCell: each ]!
-
-isDelimiterCell: aString
-	| trimmed |
-	trimmed := aString trimBoth.
-	trimmed isEmpty ifTrue: [ ^ false ].
-	(trimmed includes: $-) ifFalse: [ ^ false ].
-	^ (trimmed reject: [ :char | char = $- or: [ char = $: ] ]) isEmpty!
-
 isDelimiterLine: aString
 	| trimmed |
 	trimmed := aString trimBoth.
 	trimmed isEmpty ifTrue: [ ^ false ].
 	(trimmed includes: $-) ifFalse: [ ^ false ].
 	^ (trimmed reject: [ :char |
-		char = $- or: [ char = $: or: [ char = $| or: [ char = $  ] ] ] ]) isEmpty!
-
-alignmentFor: aString
-	| trimmed |
-	trimmed := aString trimBoth.
-	(trimmed beginsWith: ':')
-		ifTrue: [ ^ (trimmed endsWith: ':') ifTrue: [ #center ] ifFalse: [ #left ] ].
-	(trimmed endsWith: ':') ifTrue: [ ^ #right ].
-	^ #left! !
+		char = $- or: [ char = $: or: [ char = $| or: [ char = $  ] ] ] ]) isEmpty! !
 
 !McMarkdownStylerVisitor methodsFor: 'helpers'!
 fontSizeForLevel: aLevel

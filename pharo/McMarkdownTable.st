@@ -278,3 +278,65 @@ editorElementFor: aText
 	element := BrEditorElement new.
 	element editor: model.
 	^ element! !
+
+!McMarkdownTableElement methodsFor: 'building'!
+build
+	"Fill the grid: one header row from the columns, then one row per row of
+	 the relation."
+	| count |
+	count := relation columnCount max: 1.
+	self layout: (BlGridLayout horizontal columnCount: count).
+	self constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	self background: (self paletteAt: 'editorBg').
+	self border: (BlBorder paint: (self paletteAt: 'tableBorder') width: 1).
+	self margin: (BlInsets top: 2 bottom: 2).
+	self removeChildren.
+	relation columns doWithIndex: [ :column :index |
+		self addChild: (self headerElementFor: column index: index) ].
+	1 to: relation rowCount do: [ :rowIndex |
+		1 to: count do: [ :columnIndex |
+			self addChild: (self
+				cellElementFor: (relation at: rowIndex column: columnIndex)
+				alignment: (relation columns
+					at: columnIndex
+					ifAbsent: [ McRelationColumn name: '' alignment: #left ]) alignment
+				isHeader: false) ] ].
+	^ self! !
+
+!McMarkdownTableElement methodsFor: 'sorting'!
+arrowFor: aColumnIndex
+	"The arrow is derived from the data, so no sort state is stored: there is
+	 nothing to keep in sync with a rope that changes on every keystroke."
+	relation rowCount < 2 ifTrue: [ ^ '' ].
+	(relation isSortedBy: aColumnIndex ascending: true) ifTrue: [ ^ self ascendingArrow ].
+	(relation isSortedBy: aColumnIndex ascending: false) ifTrue: [ ^ self descendingArrow ].
+	^ ''!
+
+ascendingArrow
+	"Built from a code point rather than written as a literal: chunk files are
+	 read byte-wise and a multi-byte character in a string literal does not
+	 survive fileIn reliably."
+	^ ' ' , (String with: (Character value: 9650))!
+
+descendingArrow
+	^ ' ' , (String with: (Character value: 9660))!
+
+nextAscendingFor: aColumnIndex
+	"Clicking a column already ascending asks for descending; anything else
+	 asks for ascending."
+	^ (relation isSortedBy: aColumnIndex ascending: true) not!
+
+isSortable
+	^ relation directives isSortable and: [ sortAction notNil ]! !
+
+!McMarkdownTableElement methodsFor: 'header'!
+headerElementFor: aColumn index: anIndex
+	| cell |
+	cell := self
+		cellElementFor: (McRelationCell source: aColumn name , (self arrowFor: anIndex) interval: nil)
+		alignment: aColumn alignment
+		isHeader: true.
+	self isSortable ifTrue: [
+		cell addEventHandlerOn: BlClickEvent do: [ :event |
+			sortAction value: anIndex value: (self nextAscendingFor: anIndex) ] ].
+	^ cell! !
