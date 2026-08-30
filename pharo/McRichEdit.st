@@ -209,10 +209,16 @@ openView
 	editorElement padding: (BlInsets all: 16).
 
 	scrollbar := BlVerticalScrollbarElement new beAlwaysVisible.
-	scrollbar thumb: (BlElement new aptitude: BrGlamorousScrollbarThumbAptitude new).
-	scrollbar track: (BlElement new aptitude: BrGlamorousScrollbarTrackAptitude new).
+	scrollbar thumb: (BlElement new
+		background: (Color gray alpha: 0.4);
+		geometry: (BlRoundedRectangleGeometry cornerRadius: 3);
+		constraintsDo: [:c | c horizontal exact: 6. c vertical matchParent]).
+	scrollbar track: (BlElement new
+		background: Color transparent;
+		constraintsDo: [:c | c horizontal exact: 6. c vertical matchParent]).
 	scrollbar constraintsDo: [:c |
 		c ignoreByLayout.
+		c horizontal exact: 10.
 		c ignored horizontal alignRight.
 		c ignored vertical alignBottom].
 	scrollbar attachTo: editorElement.

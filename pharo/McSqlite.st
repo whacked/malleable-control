@@ -49,15 +49,26 @@ resolvedDbPath
 !McSqliteSource methodsFor: 'querying'!
 query: aSqlString
 	"Execute aSqlString against the database and answer an McRelation.
-	 Results are cached by (dbPath, sql, file modification time) so the
-	 styler -- which runs on every keystroke -- does not shell out to
-	 sqlite3 on every restyle.  Signals an Error on failure."
-	| resolved cacheKey modTime cached |
+	 Both results and errors are cached by (dbPath, sql) so the styler
+	 -- which runs on every keystroke -- never hits the filesystem or
+	 shells out to sqlite3 more than once for the same inputs.  A
+	 successful cache entry is keyed with the file's modification time,
+	 so it invalidates when the database changes.  An error entry is
+	 keyed with 'error' and invalidated by clearCache or by the retry
+	 button moving the cursor into the fence and back out.
+	 Signals an Error on failure."
+	| baseKey cached resolved modTime cacheKey |
+	baseKey := dbPath , '|' , aSqlString.
+	cached := self class queryCache at: baseKey , '|error' ifAbsent: [ nil ].
+	cached ifNotNil: [ Error signal: cached ].
 	resolved := self resolvedDbPath.
 	resolved exists ifFalse: [
-		Error signal: 'Database not found: ' , resolved pathString ].
+		| msg |
+		msg := 'Database not found: ' , resolved pathString.
+		self class queryCache at: baseKey , '|error' put: msg.
+		Error signal: msg ].
 	modTime := resolved modificationTime.
-	cacheKey := dbPath , '|' , aSqlString , '|' , modTime printString.
+	cacheKey := baseKey , '|' , modTime printString.
 	cached := self class queryCache at: cacheKey ifAbsent: [ nil ].
 	cached ifNotNil: [ ^ cached ].
 	^ self class queryCache at: cacheKey put: (self executeQuery: aSqlString on: resolved)!

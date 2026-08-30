@@ -614,23 +614,28 @@ visitDatabaseView: aCodeBlock range: aRange info: anInfoString
 	"Replace the whole fence with a table widget when the query succeeds, or
 	 an error box with a retry button when it fails.  Moving the cursor into
 	 the fence reveals the raw source and also triggers a fresh attempt on
-	 the next cursor move away."
-	| dbPath sql |
+	 the next cursor move away.
+
+	 The query runs during styling (with caching) so the stencil block only
+	 builds a cheap element from an already-available result.  Before this,
+	 the stencil ran the query at layout time -- on every cursor move."
+	| dbPath sql relation errorMessage pal ownr |
 	dbPath := anInfoString copyFrom: 'sql&db=' size + 1 to: anInfoString size.
 	sql := aCodeBlock body ifNil: [ '' ].
 	sql := sql trimBoth.
+	"Run the query now (cached), capturing either the relation or the error."
+	[ relation := (McSqliteSource on: dbPath) query: sql ]
+		on: Error do: [ :e | errorMessage := e messageText asString ].
+	"Capture palette and owner for the stencil closure."
+	pal := palette.
+	ownr := owner.
 	self
 		replace: [
-			[ | source relation element |
-			  source := McSqliteSource on: dbPath.
-			  relation := source query: sql.
-			  element := McMarkdownTableElement
-				relation: relation
-				palette: palette
-				owner: nil.
-			  element build ]
-				on: Error
-				do: [ :e | self dbErrorElementFor: e message dbPath: dbPath sql: sql ] ]
+			errorMessage
+				ifNotNil: [ self dbErrorElementFor: errorMessage dbPath: dbPath sql: sql ]
+				ifNil: [
+					(McMarkdownTableElement
+						relation: relation palette: pal owner: nil) build ] ]
 		from: aRange first
 		to: aRange first.
 	aRange first + 1 <= aRange last ifTrue: [
@@ -664,6 +669,7 @@ dbErrorElementFor: aMessage dbPath: aDbPath sql: aSql
 	button label: 'Retry'.
 	button beSmallSize.
 	button action: [ :btn |
+		McSqliteSource clearCache.
 		owner ifNotNil: [ owner editorElement editor styleText ] ].
 	container addChild: label.
 	container addChild: detail.
