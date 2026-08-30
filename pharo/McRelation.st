@@ -83,10 +83,38 @@ interval
 	^ interval!
 
 text
-	"The source with the common inline markers removed.  Deliberately crude:
-	 this produces a sort key, not a rendering, and the renderer does the
-	 real parse."
-	^ (source copyWithoutAll: '*`') trimBoth!
+	"The source with the emphasis wrapped around it removed.  Deliberately
+	 crude: this produces a sort key, not a rendering, and the renderer does
+	 the real parse.
+
+	 Only balanced runs at the two ends are stripped, never every occurrence
+	 anywhere.  Stripping anywhere missed `_' -- and _..._ is this Microdown
+	 build's only italic spelling, so the one italic form that renders was
+	 the one the sort key kept, putting `_pear_' after `apple'.  It also
+	 turned `5*3' into `53', which then parsed as one well-formed number and
+	 sorted among the numbers as fifty-three."
+	^ self stripDelimitersFrom: source trimBoth!
+
+stripDelimitersFrom: aString
+	"Peel one matched pair of delimiter runs at a time, so `**_pear_**'
+	 unwraps to `pear' while `*fig' and `5*3' are left exactly as written."
+	| marker leading trailing width |
+	aString isEmpty ifTrue: [ ^ aString ].
+	marker := aString first.
+	('*_`' includes: marker) ifFalse: [ ^ aString ].
+	leading := 0.
+	[ leading < aString size and: [ (aString at: leading + 1) = marker ] ]
+		whileTrue: [ leading := leading + 1 ].
+	trailing := 0.
+	[ trailing < aString size and: [ (aString at: aString size - trailing) = marker ] ]
+		whileTrue: [ trailing := trailing + 1 ].
+	width := leading min: trailing.
+	"Nothing matched at both ends -- and without this the recursion below
+	 would hand itself the same string forever."
+	width = 0 ifTrue: [ ^ aString ].
+	aString size > (width * 2) ifFalse: [ ^ aString ].
+	^ self stripDelimitersFrom:
+		((aString copyFrom: width + 1 to: aString size - width) trimBoth)!
 
 number
 	"Answer the cell as a Number, or nil when the text is not one well-formed
@@ -102,8 +130,10 @@ number
 	^ [ stripped asNumber ] on: Error do: [ :e | nil ]!
 
 sortKey
-	"A Number when the cell is one, otherwise the lowercased text.  The
-	 relation decides whether a whole column may use the numeric form."
+	"A Number when the cell is one, otherwise the lowercased text.  One
+	 cell's view of itself: whether a whole column may compare numerically,
+	 and where an empty cell lands, are facts about the column, so the
+	 relation computes the keys it sorts on in sortKeysFor:."
 	^ self number ifNil: [ self text asLowercase ]! !
 
 !McRelationCell methodsFor: 'printing'!
@@ -193,14 +223,34 @@ at: aRowIndex column: aColumnIndex
 
 !McRelation methodsFor: 'sorting'!
 sortKeysFor: aColumnIndex
-	"The column's sort keys, demoted to text unless every one is a Number.
-	 A single non-numeric cell makes the whole column compare as text --
-	 mixing the two would raise on the first comparison."
-	| keys |
-	keys := (1 to: self rowCount) collect: [ :each |
-		(self at: each column: aColumnIndex) sortKey ].
-	(keys allSatisfy: [ :each | each isNumber ]) ifTrue: [ ^ keys ].
-	^ keys collect: [ :each | each asString asLowercase ]!
+	"The column's sort keys, demoted to text unless every non-empty cell in
+	 it is a Number.  A single non-numeric cell makes the whole column
+	 compare as text -- mixing the two would raise on the first comparison.
+
+	 Numericness is decided over the non-empty cells only.  Blank cells are
+	 ordinary in hand-written tables, and padCells:to: manufactures one for
+	 every ragged row, so counting them would demote an otherwise numeric
+	 column and sort 11 before 3 on perfectly ordinary input.  An empty cell
+	 has no value at all, so its key is nil rather than '', and
+	 key:precedes:ascending: sorts nils to the end of either direction."
+	| cells present |
+	cells := (1 to: self rowCount) collect: [ :each | self at: each column: aColumnIndex ].
+	present := cells reject: [ :each | each text isEmpty ].
+	(present notEmpty and: [ present allSatisfy: [ :each | each number notNil ] ])
+		ifTrue: [ ^ cells collect: [ :each |
+			each text isEmpty ifTrue: [ nil ] ifFalse: [ each number ] ] ].
+	^ cells collect: [ :each |
+		each text isEmpty ifTrue: [ nil ] ifFalse: [ each text asLowercase ] ]!
+
+key: aKey precedes: anotherKey ascending: aBoolean
+	"An empty cell has no value, so it sorts to the end of the order in both
+	 directions: it should lead neither the ascending one nor the descending
+	 one.  nil is that absence."
+	anotherKey isNil ifTrue: [ ^ true ].
+	aKey isNil ifTrue: [ ^ false ].
+	^ aBoolean
+		ifTrue: [ aKey <= anotherKey ]
+		ifFalse: [ aKey >= anotherKey ]!
 
 orderedRowIndicesBy: aColumnIndex ascending: aBoolean
 	"Answer the permutation of row indices that sorts the relation by a
@@ -210,9 +260,7 @@ orderedRowIndicesBy: aColumnIndex ascending: aBoolean
 	self rowCount = 0 ifTrue: [ ^ #() ].
 	keys := self sortKeysFor: aColumnIndex.
 	^ ((1 to: self rowCount) asSortedCollection: [ :a :b |
-		aBoolean
-			ifTrue: [ (keys at: a) <= (keys at: b) ]
-			ifFalse: [ (keys at: a) >= (keys at: b) ] ]) asArray!
+		self key: (keys at: a) precedes: (keys at: b) ascending: aBoolean ]) asArray!
 
 isSortedBy: aColumnIndex ascending: aBoolean
 	"Whether the rows are already in that order.  Derived, so a header arrow

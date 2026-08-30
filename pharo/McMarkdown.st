@@ -480,7 +480,11 @@ visitTable: aTable
 	reader := McMarkdownTableReader
 		source: parser source
 		lineIntervals: (parser lineIntervalsWithin: range).
-	reader relation rowCount = 0 ifTrue: [ ^ self ].
+	"columnCount, not rowCount: a header and separator with no data rows yet
+	 is the state every table passes through while it is being typed, and it
+	 has a header worth drawing.  Guarding on rowCount showed raw pipes
+	 there."
+	reader relation columnCount = 0 ifTrue: [ ^ self ].
 	self
 		replace: [
 			| element |

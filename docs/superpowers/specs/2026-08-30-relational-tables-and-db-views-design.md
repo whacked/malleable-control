@@ -225,10 +225,17 @@ couple of thin tests cover the fence-to-call mapping.
 
 The recursion primitive. Given a rope, its source string, a document
 offset, a cursor position, a palette and an owner, it applies every
-inline-level decoration: bold, italic, monospace, links and images via
-`MicInlineParser new parse:`, plus checkboxes, colour swatches and buttons.
-Widget actions write back through the document offset, so the same
-component serves a range of the document and a cell's own private rope.
+inline-level decoration: bold, italic and monospace via `MicInlineParser
+new parse:`, plus checkboxes, colour swatches and buttons. Widget actions
+write back through the document offset, so the same component serves a
+range of the document and a cell's own private rope.
+
+Links and images are *not* part of it. They are phase 2 (section 12), and
+until then the styler whitelists the three symmetric-delimiter format
+classes and leaves `MicLinkBlock` and `MicFigureBlock` untouched: the
+delimiter-width heuristic it uses to find the inner text is only valid for
+symmetric delimiters, and applied to a link it would hide the wrong halves
+of the source. All phase 1 owes them is to not mangle them.
 
 The three regex passes move here out of `McRichEdit` and become
 range-scoped. The visitor invokes them per block content range, never over
@@ -357,8 +364,8 @@ further, because the editor's whole premise is documents that do things.
 
 | File | Contents |
 |---|---|
-| `pharo/McRelation.st` | new -- `McRelation`, `McRelationColumn`, `McRelationRow`, `McRelationCell` |
-| `pharo/McTableDirectives.st` | new -- `McTableDirectives`, `McTableFormulaLanguage`, `McSmalltalkFormulaLanguage`, `McTableFormula` |
+| `pharo/McRelation.st` | new -- `McRelation`, `McRelationColumn`, `McRelationRow`, `McRelationCell`, `McTableDirectives` |
+| `pharo/McTableFormula.st` | new in phase 2 -- `McTableFormulaLanguage`, `McSmalltalkFormulaLanguage`, `McTableFormula` |
 | `pharo/McSqlite.st` | new -- `McSqliteSource`, `McSqliteError` |
 | `pharo/McMarkdownInline.st` | new -- `McMarkdownInlineStyler` |
 | `pharo/McMarkdownTable.st` | new -- `McMarkdownTableReader`, `McMarkdownTableElement` |
@@ -368,11 +375,18 @@ further, because the editor's whole premise is documents that do things.
 | `pharo/McSqliteTest.st` | new -- source and fixture database tests |
 | `pharo/McMarkdownTest.st` | gains reader, inline styler, and regression tests |
 
-`McMarkdown.st` is 717 lines holding two classes already. The new work is
-split across focused files rather than added to it. Load order:
-`McRelation`, `McTableDirectives`, `McSqlite`, `McMarkdownInline`,
-`McMarkdownTable`, `McMarkdown`, `McRichEdit` -- to be reflected in
-`elisp/mc-rich-edit.el` and `test/run-pharo-tests.sh`.
+`McTableDirectives` was meant to have a file of its own. Phase 1 put it in
+`McRelation.st` instead: it is a handful of accessors, it is read by every
+relation, and it has no dependency the relation family does not already
+have. The formula classes keep the separate file, under the name they are
+actually about.
+
+`McMarkdown.st` is 595 lines holding two classes already. The new work is
+split across focused files rather than added to it. Load order as shipped:
+`McRelation`, `McMarkdownInline`, `McMarkdownTable`, `McMarkdown`,
+`McRichEdit`, with `McTableFormula` and `McSqlite` joining after
+`McRelation` in later phases -- reflected in `elisp/mc-rich-edit.el` and
+`test/run-pharo-tests.sh`.
 
 ## 11. Testing
 
@@ -385,18 +399,28 @@ defaults per producer, each option, an unknown option ignored, a fence with
 no table following it. Formula parsing and per-row evaluation, including
 the error path and a derived column being unsorted and interval-free.
 
-`McMarkdownTableReaderTest` -- cell intervals asserted by the substring
-they select, following the existing pattern rather than asserting on
-numbers; both separator spellings; escaped `\|`; ragged rows; alignment
-parsing; the source produced by a sort round-tripping through the reader.
+Reader coverage -- cell intervals asserted by the substring they select,
+following the existing pattern rather than asserting on numbers; both
+separator spellings; escaped `\|`; ragged rows; alignment parsing; the
+source produced by a sort round-tripping through the reader.
+
+Inline styler coverage -- emphasis offsets within a cell substring; a
+checkbox at a cell offset producing a write-back range that selects the
+right document characters; two overlapping tokens never nesting two
+adornments. Links and images arrive with phase 2.
+
+Both were planned as `McMarkdownTableReaderTest` and
+`McMarkdownInlineStylerTest`. Phase 1 folded them into `McMarkdownTest.st`
+as protocols instead -- `tests - table reader`, `tests - table sorting`,
+`tests - inline styler`, `tests - inline scoping`, `tests - cell
+rendering`, `tests - table element` -- because they all share that class's
+palette, parse and styling helpers, which a separate class would have had
+to duplicate or inherit. The file is now 1113 lines and wants splitting;
+that is phase-2 work, and the protocol names are the seams to split along.
 
 `McSqliteTest` -- against a fixture `.sqlite` built in `setUp` by shelling
 out; `-ascii` framing, empty results, the error path, and `-readonly`
 refusing a write.
-
-`McMarkdownInlineStylerTest` -- emphasis offsets within a cell substring; a
-checkbox at a cell offset producing a write-back range that selects the
-right document characters; links and images.
 
 Regression tests for the two reported defects -- emphasis surviving into a
 rendered cell, and a checkbox in a cell producing exactly one adornment

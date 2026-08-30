@@ -3,9 +3,10 @@ McRelationTest -- tests for the relational read model.
 
 The model is deliberately free of Bloc and of Microdown, so everything here
 runs without a window and without a parser.  What is worth pinning down is
-the sorting semantics: a column sorts numerically only when every cell in it
-is a number, markup does not affect the sort key, and `sorted' is derived
-from the data rather than remembered.
+the sorting semantics: a column sorts numerically only when every non-empty
+cell in it is a number, an empty cell sorts to the end of either direction,
+markup does not affect the sort key, and `sorted' is derived from the data
+rather than remembered.
 
 Chunk format: load with fileIn.
 "!
@@ -72,7 +73,28 @@ testCellNumberRejectsMalformedNumbers
 
 testCellSortKeyFallsBackToLowercasedText
 	self assert: (self cell: 'Fig') sortKey equals: 'fig'.
-	self assert: (self cell: '11') sortKey equals: 11! !
+	self assert: (self cell: '11') sortKey equals: 11!
+
+testCellTextStripsBalancedItalicUnderscores
+	"This Microdown build recognises _..._ as its only italic spelling, so
+	 the one italic form that renders was the one the sort key kept."
+	self assert: (self cell: '_pear_') text equals: 'pear'.
+	self assert: (self cell: '__pear__') text equals: 'pear'.
+	self assert: (self cell: '**_pear_**') text equals: 'pear'!
+
+testCellTextKeepsAnInteriorDelimiter
+	"Stripping every '*' anywhere turned '5*3' into '53', which then parsed
+	 as one well-formed number and sorted among the numbers as fifty-three.
+	 Only balanced runs at the two ends are markup."
+	self assert: (self cell: '5*3') text equals: '5*3'.
+	self assert: (self cell: '5*3') number isNil.
+	self assert: (self cell: 'a_b') text equals: 'a_b'!
+
+testCellTextLeavesUnbalancedDelimitersAlone
+	"Nothing to strip when the two ends do not match, and a cell that is
+	 nothing but delimiters keeps them rather than emptying itself."
+	self assert: (self cell: '*fig') text equals: '*fig'.
+	self assert: (self cell: '**') text equals: '**'! !
 
 !McRelationTest methodsFor: 'tests - sorting'!
 testNumericColumnSortsNumerically
@@ -120,6 +142,45 @@ testMarkupDoesNotAffectSortOrder
 	self
 		assert: (relation orderedRowIndicesBy: 1 ascending: true) asArray
 		equals: #(2 1)!
+
+testItalicMarkupDoesNotAffectSortOrder
+	"The '**' spelling was covered; the underscore one, which is the only
+	 italic this Microdown build parses, was not -- and it sorted '_pear_'
+	 before 'apple'."
+	| relation |
+	relation := self relationWithRows: #( #('_pear_') #('apple') ).
+	self
+		assert: (relation orderedRowIndicesBy: 1 ascending: true) asArray
+		equals: #(2 1)!
+
+testEmptyCellDoesNotDemoteANumericColumn
+	"Section 3: a column is numeric when every *non-empty* cell parses as a
+	 Number.  Blank cells are ordinary in hand-written tables, and
+	 padCells:to: manufactures one for every ragged row, so requiring every
+	 cell sorted an ordinary numeric column as text: '', '11', '3'."
+	| relation |
+	relation := self relationWithRows: #( #('3') #('') #('11') ).
+	self
+		assert: (relation orderedRowIndicesBy: 1 ascending: true) asArray
+		equals: #(1 3 2)!
+
+testEmptyCellsSortLastInBothDirections
+	"An empty cell has no value, so it leads neither order."
+	| relation |
+	relation := self relationWithRows: #( #('3') #('') #('11') ).
+	self
+		assert: (relation orderedRowIndicesBy: 1 ascending: false) asArray
+		equals: #(3 1 2)!
+
+testEmptyCellSortsLastInATextColumn
+	| relation |
+	relation := self relationWithRows: #( #('pear') #('') #('apple') ).
+	self
+		assert: (relation orderedRowIndicesBy: 1 ascending: true) asArray
+		equals: #(3 1 2).
+	self
+		assert: (relation orderedRowIndicesBy: 1 ascending: false) asArray
+		equals: #(1 3 2)!
 
 testIsSortedByIsDerivedFromTheData
 	"There is no stored sort state -- the arrow is computed."

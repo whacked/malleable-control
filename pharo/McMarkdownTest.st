@@ -627,7 +627,39 @@ testCustomTokensDoNotApplyInsideACodeFence
 testDocumentStillRendersCheckboxesInParagraphs
 	| text |
 	text := self styleAway: '[ ] a real one'.
-	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 1)! !
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 1)!
+
+testOverlappingTokensNeverNestTwoAdornments
+	"Scoping the passes to one range stopped a widget from landing inside a
+	 table's own adornment, but inside a single range the four passes still
+	 ran over the same source knowing nothing of each other: measured, this
+	 string put a checkbox beReplace inside a button beReplace, and a swatch
+	 beAppend inside another, which is the same configuration as the
+	 reported defect.  No character may carry two dynamic adornments."
+	| text |
+	text := self styleFragmentAway: '<<[ ] go>> and #ff0000 <<x #00ff00 y>>'.
+	1 to: text size do: [ :index |
+		self
+			assert: ((text attributesAt: index)
+				select: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ]) size <= 1
+			description: 'two adornments at index ' , index printString ]!
+
+testTheFirstPassToClaimARangeKeepsIt
+	"styleAll's order is the precedence: emphasis, checkboxes, colours,
+	 buttons.  The checkbox claims 3 to 5 first, so the button spanning the
+	 whole token is skipped and its angle brackets stay literal text."
+	| text |
+	text := self styleFragmentAway: '<<[ ] go>>'.
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 3).
+	self deny: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 1)!
+
+testAdjacentTokensBothStillRender
+	"The claim must reject only an intersection, not mere adjacency: two
+	 tokens that touch are not nested."
+	| text |
+	text := self styleFragmentAway: '[ ]<<Go>>'.
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 1).
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 4)! !
 
 !McMarkdownTest methodsFor: 'helpers - cells'!
 elementForTable: aString
@@ -801,6 +833,25 @@ testCheckboxInACellDoesNotNestTheTable
 		count := count max: ((text attributesAt: index)
 			select: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ]) size ].
 	self assert: count equals: 1!
+
+testHeaderOnlyTableStillRenders
+	"A header and a separator with no data rows yet is the state every table
+	 passes through while it is being typed.  Guarding visitTable: on
+	 rowCount rendered nothing at all there -- raw pipes -- where the
+	 pre-relational path drew the header.  The guard belongs on columnCount:
+	 the header renders as soon as the separator lands."
+	| source text parser range attribute element |
+	source := '| a | b |
+|---|---|'.
+	text := self styleAway: source.
+	parser := self parse: source.
+	range := parser rangeOf: (parser root children
+		detect: [ :each | each class name asString = 'MicTableBlock' ]).
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: range first).
+	attribute := (text attributesAt: range first)
+		detect: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ].
+	element := attribute stencil build.
+	self assert: element children size equals: 2!
 
 testTableStillRendersWithTheCursorAway
 	| source text parser range |
@@ -1019,10 +1070,13 @@ testEmphasisActuallyCollapsesInACellThatAlsoHoldsAWidget
 	space extent: 400 @ 100.
 	space root addChild: styledElement.
 	space root addChild: comparator.
-	space show.
-	space pulse.
-	self assert: styledElement extent x < comparator extent x.
-	space close!
+	"ensure:, because a shown BlSpace left behind by a failing assertion
+	 outlives the test: the suite is re-run against the same image, and the
+	 next run would inherit it."
+	[ space show.
+	  space pulse.
+	  self assert: styledElement extent x < comparator extent x ]
+		ensure: [ space close ]!
 
 testEmphasisCollapsesInACellInsideABuiltGrid
 	"Same defect, checked in the configuration that actually failed in the
@@ -1052,7 +1106,8 @@ testEmphasisCollapsesInACellInsideABuiltGrid
 	space extent: 400 @ 100.
 	space root addChild: element.
 	space root addChild: comparator.
-	space show.
-	space pulse.
-	self assert: gridCell extent x < comparator extent x.
-	space close! !
+	"ensure:, for the same reason as the test above."
+	[ space show.
+	  space pulse.
+	  self assert: gridCell extent x < comparator extent x ]
+		ensure: [ space close ]! !

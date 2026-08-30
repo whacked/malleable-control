@@ -19,11 +19,21 @@ fence, and a checkbox inside a table added a second beReplace adornment on top
 of the table's own, which made the cell render a copy of the table.  Scoping
 every pass to a range removes the possibility rather than guarding against it.
 
+Scoping alone is not the whole of it, though, because the four passes run over
+the same range knowing nothing of each other: '<<[ ] go>>' would put the
+checkbox's beReplace inside the button's.  So a widget claims the source
+characters it covers, in `claims', and a later pass skips any range that
+intersects a claim -- so at most one widget ever covers a character.  The
+first claim wins, which makes styleAll's order the precedence: emphasis (which
+claims nothing, being plain attributes), then checkboxes, then colour
+swatches, then buttons.  A checkbox inside a button therefore renders as a
+checkbox, and the button's angle brackets stay literal.
+
 Chunk format: load with fileIn.
 "!
 
 Object subclass: #McMarkdownInlineStyler
-	instanceVariableNames: 'source targetMap documentMap text cursor palette owner'
+	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -52,7 +62,8 @@ setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText c
 	text := aText.
 	cursor := anInteger.
 	palette := aPalette.
-	owner := anOwner! !
+	owner := anOwner.
+	claims := OrderedCollection new! !
 
 !McMarkdownInlineStyler methodsFor: 'accessing'!
 paletteAt: aKey
@@ -66,7 +77,9 @@ documentAt: anIndex
 
 !McMarkdownInlineStyler methodsFor: 'styling'!
 styleAll
-	"Emphasis first, then the tokens Microdown does not know about."
+	"Emphasis first, then the tokens Microdown does not know about.  This
+	 order is also the precedence when two tokens overlap: the first pass to
+	 claim a source range keeps it -- see claimFromSource:toSource:."
 	self styleEmphasis.
 	self styleCheckboxes.
 	self styleColours.
@@ -101,13 +114,31 @@ dimFromSource: start toSource: stop
 		fromSource: start
 		toSource: stop!
 
+claimFromSource: start toSource: stop
+	"Answer whether the source range start..stop is free of widgets, and
+	 record it when it is.  Two adornments over the same character render
+	 unpredictably -- that is the defect this class exists to remove -- and
+	 the passes cannot see each other's work in the rope, because a hide
+	 attribute and an adornment are indistinguishable there.  First claim
+	 wins: see the class comment for why the order in styleAll is the
+	 precedence.  Adjacency is not intersection, so two tokens that merely
+	 touch both render."
+	(start isNil or: [ stop isNil ]) ifTrue: [ ^ false ].
+	start > stop ifTrue: [ ^ false ].
+	(claims anySatisfy: [ :each | start <= each last and: [ stop >= each first ] ])
+		ifTrue: [ ^ false ].
+	claims add: (start to: stop).
+	^ true!
+
 replace: aStencil fromSource: start toSource: stop
+	(self claimFromSource: start toSource: stop) ifFalse: [ ^ self ].
 	self
 		apply: (BrTextAdornmentDynamicAttribute new beReplace; stencil: aStencil)
 		fromSource: start
 		toSource: stop!
 
 append: aStencil fromSource: start toSource: stop
+	(self claimFromSource: start toSource: stop) ifFalse: [ ^ self ].
 	self
 		apply: (BrTextAdornmentDynamicAttribute new beAppend; stencil: aStencil)
 		fromSource: start
