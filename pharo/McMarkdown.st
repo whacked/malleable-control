@@ -632,7 +632,9 @@ visitDatabaseView: aCodeBlock range: aRange info: anInfoString
 				on: Error
 				do: [ :e | self dbErrorElementFor: e message dbPath: dbPath sql: sql ] ]
 		from: aRange first
-		to: aRange last!
+		to: aRange first.
+	aRange first + 1 <= aRange last ifTrue: [
+		self hideFrom: aRange first + 1 to: aRange last ]!
 
 dbErrorElementFor: aMessage dbPath: aDbPath sql: aSql
 	"A bordered box showing the error, the query that caused it, and a retry

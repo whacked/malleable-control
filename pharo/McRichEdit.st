@@ -149,7 +149,7 @@ palette
 openView
 	"Create the editor with demo content, wire up the styler
 	 and cursor-driven restyling, and open in a new window."
-	| editorModel styler headerRow toggleButton scrollPane |
+	| editorModel styler headerRow toggleButton |
 	darkMode := false.
 
 	space := BlSpace new.
@@ -205,18 +205,10 @@ openView
 	editorElement text: self demoContent asRopedText.
 	editorElement constraintsDo: [:c |
 		c horizontal matchParent.
-		c vertical fitContent].
+		c vertical matchParent].
 	editorElement padding: (BlInsets all: 16).
 
-	"Wrap the editor in a scroll pane so overflow scrolls with a visible bar."
-	scrollPane := BrScrollPane new.
-	scrollPane aptitude: BrScrollPaneAptitude new
-		+ BrGlamorousWithVerticalScrollbarAptitude new.
-	scrollPane constraintsDo: [:c |
-		c horizontal matchParent.
-		c vertical matchParent].
-	scrollPane addChild: editorElement.
-	editorFrame addChild: scrollPane.
+	editorFrame addChild: editorElement.
 
 	editorModel := editorElement editor.
 	editorModel useSyncStylerStrategy.
