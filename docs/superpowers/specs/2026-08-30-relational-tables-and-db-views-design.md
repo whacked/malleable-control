@@ -92,9 +92,10 @@ McRelationCell
 ```
 
 `orderedRowIndicesBy:ascending:` answers a permutation rather than a sorted
-relation. It is the single shared definition of "sorted": the GFM path
-applies it to source lines, and a database view uses it only to decide
-which arrow to draw. A column is numeric when every non-empty cell in it
+relation. It is the single shared definition of "sorted", used by the GFM path to
+reorder source lines. A database view does not use it -- it delegates
+ordering to the query -- but shares `isSortedBy:ascending:`, which is what
+decides the arrow in both cases. A column is numeric when every non-empty cell in it
 parses as a `Number`; otherwise comparison is case-insensitive on the
 markup-stripped text, so `**fig**` sorts under `fig`.
 
@@ -169,6 +170,10 @@ Whether the cell's source is treated as markdown at all is the relation's
 `cellsAreMarkdown`. It is true for `McMarkdownTableReader`, whose cells
 hold markdown, and false for `McSqliteSource`, whose cells hold data --
 otherwise a database value containing `**` would silently turn bold.
+
+When it is false the inline styler is skipped entirely, custom tokens
+included. A query cell reading `[ ]` stays literal text: it is data, its
+`interval` is nil, and a checkbox would have nowhere to write back to.
 
 The element used depends on what the styling produced:
 
@@ -271,6 +276,9 @@ because the editor's whole premise is documents that do things.
 | `pharo/McMarkdownTable.st` | new -- `McMarkdownTableReader`, `McMarkdownTableElement` |
 | `pharo/McMarkdown.st` | `McMarkdownParser` unchanged; visitor loses cell stringification and inline styling |
 | `pharo/McRichEdit.st` | loses three regex passes; gains the query cache |
+| `pharo/McRelationTest.st` | new -- relation and sorting tests |
+| `pharo/McSqliteTest.st` | new -- source, fixture database, and `McSqlQuery` tests |
+| `pharo/McMarkdownTest.st` | gains reader, inline styler, and regression tests |
 
 `McMarkdown.st` is 717 lines holding two classes already. The new work is
 split across focused files rather than added to it. Load order:
