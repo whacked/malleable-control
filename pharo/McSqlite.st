@@ -14,12 +14,19 @@ Chunk format: load with fileIn.
 
 Object subclass: #McSqliteSource
 	instanceVariableNames: 'dbPath'
-	classVariableNames: ''
+	classVariableNames: 'QueryCache'
 	package: 'MalleableControl'!
 
 !McSqliteSource class methodsFor: 'instance creation'!
 on: aPath
 	^ self new setDbPath: aPath! !
+
+!McSqliteSource class methodsFor: 'cache'!
+queryCache
+	^ QueryCache ifNil: [ QueryCache := Dictionary new ]!
+
+clearCache
+	QueryCache := nil! !
 
 !McSqliteSource methodsFor: 'initialization'!
 setDbPath: aString
@@ -42,16 +49,28 @@ resolvedDbPath
 !McSqliteSource methodsFor: 'querying'!
 query: aSqlString
 	"Execute aSqlString against the database and answer an McRelation.
-	 Signals an Error with a descriptive message on failure."
-	| resolved process exitCode stdout stderr |
+	 Results are cached by (dbPath, sql, file modification time) so the
+	 styler -- which runs on every keystroke -- does not shell out to
+	 sqlite3 on every restyle.  Signals an Error on failure."
+	| resolved cacheKey modTime cached |
 	resolved := self resolvedDbPath.
 	resolved exists ifFalse: [
 		Error signal: 'Database not found: ' , resolved pathString ].
+	modTime := resolved modificationTime.
+	cacheKey := dbPath , '|' , aSqlString , '|' , modTime printString.
+	cached := self class queryCache at: cacheKey ifAbsent: [ nil ].
+	cached ifNotNil: [ ^ cached ].
+	^ self class queryCache at: cacheKey put: (self executeQuery: aSqlString on: resolved)!
+
+executeQuery: aSqlString on: aResolvedPath
+	"Run the query and parse the result.  Separated from query: so the
+	 cache logic stays in one place."
+	| process exitCode stdout stderr |
 	process := GtSubprocessWithInMemoryOutput new
 		command: 'sqlite3';
 		arguments: {
 			'-readonly'. '-header'. '-ascii'.
-			resolved pathString.
+			aResolvedPath pathString.
 			aSqlString };
 		runAndWait.
 	exitCode := process exitCode.

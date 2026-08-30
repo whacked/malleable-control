@@ -149,7 +149,7 @@ palette
 openView
 	"Create the editor with demo content, wire up the styler
 	 and cursor-driven restyling, and open in a new window."
-	| editorModel styler headerRow toggleButton |
+	| editorModel styler headerRow toggleButton scrollbar |
 	darkMode := false.
 
 	space := BlSpace new.
@@ -208,7 +208,17 @@ openView
 		c vertical matchParent].
 	editorElement padding: (BlInsets all: 16).
 
+	scrollbar := BlVerticalScrollbarElement new beAlwaysVisible.
+	scrollbar thumb: (BlElement new aptitude: BrGlamorousScrollbarThumbAptitude new).
+	scrollbar track: (BlElement new aptitude: BrGlamorousScrollbarTrackAptitude new).
+	scrollbar constraintsDo: [:c |
+		c ignoreByLayout.
+		c ignored horizontal alignRight.
+		c ignored vertical alignBottom].
+	scrollbar attachTo: editorElement.
+
 	editorFrame addChild: editorElement.
+	editorFrame addChild: scrollbar.
 
 	editorModel := editorElement editor.
 	editorModel useSyncStylerStrategy.
