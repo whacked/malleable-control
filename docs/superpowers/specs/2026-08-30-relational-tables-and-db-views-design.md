@@ -1,4 +1,4 @@
-# Spec: Relational Tables and Database Views
+# Spec: Relational Tables, Table Directives, and Database Views
 
 Date: 2026-08-30
 Status: approved, not started
@@ -27,9 +27,10 @@ the AST or about which ranges a widget has already claimed. `beReplace`
 regions do not compose. A widget must own its range exclusively and render
 its own contents.
 
-Beyond the defects, tables should become functional: sortable by clicking a
-column header, and available as a projection of a database query rather
-than only of literal pipe rows.
+Beyond the defects, a table should be able to declare how it is rendered,
+should be sortable by clicking a column header, should be able to derive a
+column from its own data, and should be available as a projection of a
+database query rather than only of literal pipe rows.
 
 ## 2. Scope
 
@@ -41,17 +42,22 @@ than only of literal pipe rows.
   over any source range, used for the document and recursively for cells
 - Custom tokens (`[ ]`, `#RRGGBB`, `<<button>>`) move out of `McRichEdit`
   into that component and become range-scoped
-- Table cells render as fully-styled markdown, including widgets
-- Column-header sorting for GFM tables, applied by rewriting the source
+- Table cells render as fully-styled markdown, including widgets, links and
+  images -- or as plain text, by declaration
+- **Table directives**: a fence immediately preceding a table declaring how
+  it renders and what it derives
+- Column-header sorting, applied by rewriting the source
+- Column derivation, behind a deliberately replaceable language seam
 - Fenced database views, read-only, executed through `sqlite3`
-- Column-header sorting for database views, applied by rewriting `order by`
 
 ### Out of scope
 
-- Writing to the database. Cells are read-only; see section 7.
-- Filtering, grouping, aggregation UI. The query expresses those.
-- SQL parsing. `McSqlQuery` rewrites a trailing `order by` and nothing more.
-- Data sources other than SQLite, though the seam is described in 6.4.
+- Writing to the database. Cells are read-only; see section 9.
+- Sorting a database view. See 4.3.
+- A real table query language. Section 7 builds a placeholder and the seam
+  it will be replaced through.
+- Formula dependencies: cross-row references, and formulas reading other
+  derived columns.
 - Nested tables, and block-level markdown inside a cell.
 
 ## 3. The read model
@@ -72,12 +78,13 @@ McRelation
     rowsDo:          -> iterate McRelationRow
     rowAt:           -> McRelationRow
     at:column:       -> McRelationCell
-    cellsAreMarkdown -> Boolean, see 5.2
+    directives       -> McTableDirectives
     orderedRowIndicesBy: anIndex ascending: aBoolean  -> Array of indices
     isSortedBy: anIndex ascending: aBoolean           -> Boolean
 
 McRelationColumn
     name, alignment  -> #left | #center | #right
+    isDerived        -> Boolean, see section 7
 
 McRelationRow
     at: aName        -> McRelationCell, by column name
@@ -91,27 +98,96 @@ McRelationCell
                         markup-stripped String, lowercased
 ```
 
+An *interval* is Pharo's range object, here the character span in the whole
+document string that a cell or row occupies. A cell needs it so a widget
+rendered inside the cell knows which characters of the document to rewrite
+when clicked. Query results have no such span, and theirs is nil.
+
 `orderedRowIndicesBy:ascending:` answers a permutation rather than a sorted
-relation. It is the single shared definition of "sorted", used by the GFM path to
-reorder source lines. A database view does not use it -- it delegates
-ordering to the query -- but shares `isSortedBy:ascending:`, which is what
-decides the arrow in both cases. A column is numeric when every non-empty cell in it
-parses as a `Number`; otherwise comparison is case-insensitive on the
-markup-stripped text, so `**fig**` sorts under `fig`.
+relation. It is the single shared definition of "sorted", used by the GFM
+path to reorder source lines and by both paths, through
+`isSortedBy:ascending:`, to decide which arrow a header draws. A column is
+numeric when every non-empty cell in it parses as a `Number`; otherwise
+comparison is case-insensitive on the markup-stripped text, so `**fig**`
+sorts under `fig`.
 
-## 4. Producers
+## 4. Table directives
 
-### 4.1 `McMarkdownTableReader`
+### 4.1 Syntax
 
-Answers an `McRelation` given the document source and a table's line
-intervals, with every cell and row carrying its document `Interval`.
+A table's properties are declared by a fenced block immediately preceding
+it. A database view uses the same shape, with the query in the body:
 
-It reads the source directly rather than using `MicTableBlock >> rows`,
-for three reasons. Microdown's rows are inline-parsed and stripped, so
-document positions are already gone. Its handling of the separator row is
+````
+```table&cells=text&sort=off          ```sql&db=tasks.sqlite
+total = qty * price                   select name, qty from fruit
+```                                    ```
+| item | qty | price | total |
+|------|----:|------:|------:|
+| fig  |  11 |  0.50 |       |
+````
+
+**The info string carries options; the body carries whatever produces or
+computes the content** -- formulas for a literal table, SQL for a database
+view. One mechanism, one parse path.
+
+This shape was chosen on evidence rather than taste. Microdown parses a
+fence followed by a pipe table as exactly two blocks, with or without a
+blank line between them, and hands back the info string verbatim as
+`MicCodeBlock >> firstLine`. The convention used by Djot, Pandoc, MyST and
+Quarto -- a `{key=value}` attribute line before the block -- was tried
+first and is unusable here: `{` at the start of a line opens a
+`MicMetaDataBlock` that swallows the table, leaving a single child. Org
+mode's affixed `#+KEY:` lines are the same idea as the fence and would need
+new grammar; the fence needs none.
+
+A directives fence binds to the table that follows it, separated by at most
+one blank line. A fence with no table after it is left as an ordinary code
+block. Like all markup, the fence hides when the cursor is away and shows
+as raw source when the cursor enters it.
+
+### 4.2 Options
+
+| Option | Values | Default |
+|---|---|---|
+| `cells` | `markdown`, `text` | `markdown` for a literal table, `text` for a database view |
+| `sort` | `on`, `off` | `on` for a literal table, `off` for a database view |
+| `db` | a path | -- (database views only) |
+
+`cells=markdown` renders each cell's source through the inline styler, so
+links, images, emphasis, inline code and custom widgets all work inside
+cells. `cells=text` skips the styler entirely and renders the cell
+literally. Both are available to both producers: the defaults reflect that
+a literal table holds markdown and a query result holds data, but a
+document that stores markdown in a database column can say so.
+
+### 4.3 Why database views do not sort
+
+Sorting a database view by clicking a header would have to either rewrite
+the query's `order by` or sort the fetched page. Rewriting means parsing
+SQL well enough to know where the clause ends. Sorting the page lies
+whenever the query has a `limit`, because the rows that would sort to the
+top may not have been fetched.
+
+Neither is worth it: the query already expresses ordering. So `sort`
+defaults to `off` for database views, the header is simply not clickable,
+and no SQL is ever parsed or rewritten. A view whose result genuinely is
+the whole table can opt in with `sort=on`, which sorts the fetched rows.
+
+## 5. Producers
+
+### 5.1 `McMarkdownTableReader`
+
+Answers an `McRelation` given the document source, a table's line
+intervals, and its directives, with every cell and row carrying its
+document `Interval`.
+
+It reads the source directly rather than using `MicTableBlock >> rows`, for
+three reasons. Microdown's rows are inline-parsed and stripped, so document
+positions are already gone. Its handling of the separator row is
 inconsistent -- a plain `|---|---|` is dropped and `hasHeader` set, while
 `|:---|---:|` is handed back as data with `hasHeader` false -- which the
-current code has to second-guess. And both checkbox write-back and sorting
+current code has to second-guess. And both widget write-back and sorting
 need exact intervals. Microdown keeps the job it is good at: telling us
 where the table is.
 
@@ -119,7 +195,7 @@ The reader handles `\|` as a literal pipe, pads or truncates ragged rows to
 the separator row's column count, and takes alignments from the separator
 row.
 
-### 4.2 `McSqliteSource`
+### 5.2 `McSqliteSource`
 
 A plain object, usable with no editor present:
 
@@ -138,13 +214,18 @@ readonly database`.
 Cells carry no intervals. Alignment is derived: numeric columns right,
 everything else left.
 
-## 5. Rendering
+The fence is sugar over this object -- extract `db=` from the info string,
+take the body as the query, call `query:`. The execution model is therefore
+tested directly, in code, with no editor and no fence involved; only a
+couple of thin tests cover the fence-to-call mapping.
 
-### 5.1 `McMarkdownInlineStyler`
+## 6. Rendering
+
+### 6.1 `McMarkdownInlineStyler`
 
 The recursion primitive. Given a rope, its source string, a document
 offset, a cursor position, a palette and an owner, it applies every
-inline-level decoration: bold, italic and monospace via
+inline-level decoration: bold, italic, monospace, links and images via
 `MicInlineParser new parse:`, plus checkboxes, colour swatches and buttons.
 Widget actions write back through the document offset, so the same
 component serves a range of the document and a cell's own private rope.
@@ -160,20 +241,15 @@ literal, which is correct. And with the cursor inside a table you see raw
 `[ ]` rather than a live checkbox, which matches how `**bold**` already
 behaves there.
 
-### 5.2 Cells
+### 6.2 Cells
 
-A cell's source is styled into its own rope by `McMarkdownInlineStyler`,
-with the document offset set to the cell's interval start and the cursor
-forced away so the cell always renders.
-
-Whether the cell's source is treated as markdown at all is the relation's
-`cellsAreMarkdown`. It is true for `McMarkdownTableReader`, whose cells
-hold markdown, and false for `McSqliteSource`, whose cells hold data --
-otherwise a database value containing `**` would silently turn bold.
-
-When it is false the inline styler is skipped entirely, custom tokens
-included. A query cell reading `[ ]` stays literal text: it is data, its
-`interval` is nil, and a checkbox would have nowhere to write back to.
+When the table's `cells` option is `markdown`, a cell's source is styled
+into its own rope by `McMarkdownInlineStyler`, with the document offset set
+to the cell's interval start and the cursor forced away so the cell always
+renders. When it is `text`, the styler is skipped entirely and the cell
+renders literally -- so a database value containing `**` does not silently
+turn bold, and a value reading `[ ]` does not become a checkbox with
+nowhere to write back to.
 
 The element used depends on what the styling produced:
 
@@ -190,64 +266,74 @@ editor yields one live `BrCheckbox` and an extent of 66.4x18 against
 51.3x16 for the text alone. GT embeds editors this way itself; see
 `BrEmbeddedEditorExamples`.
 
-### 5.3 `McMarkdownTableElement`
+### 6.3 `McMarkdownTableElement`
 
-A view over an `McRelation` and nothing more. It takes the relation, a
-`sortAction:` block of `[ :columnIndex :ascending | ]`, and an optional
-`refreshAction:`. It does not know where its data came from.
+A view over an `McRelation` and nothing more. It takes the relation and a
+`sortAction:` block of `[ :columnIndex :ascending | ]`, which is nil when
+the table's `sort` option is off. It does not know where its data came
+from.
 
-Header cells are clickable when a sort action is supplied. The arrow shows
-only when the relation reports that column as currently sorted in that
-direction, so there is **no stored sort state** -- nothing to keep in sync
-with a rope that changes on every keystroke. Clicking toggles direction.
+Header cells are clickable only when a sort action is supplied. The arrow
+shows only when the relation reports that column as currently sorted in
+that direction, so there is **no stored sort state** -- nothing to keep in
+sync with a rope that changes on every keystroke. Clicking toggles
+direction.
 
-## 6. Database views
+## 7. Column derivation
 
-### 6.1 Syntax
+Org mode is the only real prior art for table formulas; no Markdown dialect
+has them. This design takes org's concept -- a formula list attached to the
+table, recalculating cells from the table's own data -- and none of its
+syntax.
 
-````
-```sql&db=data/tasks.sqlite
-select name, qty from fruit order by qty desc
+**The formula language here is a placeholder and is expected to be thrown
+away.** Table querying, sorting and modification is its own domain with its
+own body of work, and adopting a proven language from it is a separate
+exercise. What this spec commits to is the seam, not the syntax:
+
 ```
-````
+McTableFormulaLanguage        (abstract)
+    parseFormulasFrom: aString  -> Array of McTableFormula, or errors
 
-This is sugar over section 4.2, and deliberately thin: extract `db=` from
-`MicCodeBlock >> firstLine`, take the body as the query, call
-`McSqliteSource`. Microdown already parses the fence and hands back the
-info string verbatim, so there is no new grammar.
+McTableFormula
+    targetColumnName
+    valueForRow: anMcRelationRow  -> a value, or an McFormulaError
+```
 
-The form matches the prior art -- Obsidian Dataview, Quarto, Observable
-Framework and Org Babel all put a view in a parameterised fence and reserve
-inline syntax for scalars -- and it degrades to an ordinary code block in
-any other renderer.
+Swapping the language means subclassing `McTableFormulaLanguage` and
+changing which class the directives ask. Nothing else in the pipeline
+moves.
 
-Relative paths resolve against the project root; absolute paths are taken
-as given.
+The placeholder, `McSmalltalkFormulaLanguage`, reads one formula per body
+line as `name = expression` and evaluates the expression with the row's
+literal columns bound as variables. It is the simplest thing available
+rather than the most powerful: the image already has a compiler, so this
+needs no grammar and no evaluator, where even a small arithmetic DSL would
+need both.
 
-### 6.2 When queries run
+Evaluation is a single pass with no ordering. A formula reads only the
+table's literal columns, in its own row: never another derived column,
+never another row. So there is no dependency graph, no recalculation order,
+and no cycle detection. Aggregates and cross-row references are the real
+language's problem, not the placeholder's.
 
-The cursor-locality model settles this. While a query is being typed the
-cursor is inside the block, so it renders as raw source and no query runs.
-Execution can only follow the cursor leaving. No debounce is needed.
+A derived column appears in the relation with `isDerived` true. Its cells
+have no interval -- they are computed, not written -- and are therefore
+rendered as text and never sorted into the source. A formula that fails
+renders its error in the cell.
+
+## 8. Execution of database views
+
+The cursor-locality model settles when queries run. While a query is being
+typed the cursor is inside the block, so it renders as raw source and no
+query runs. Execution can only follow the cursor leaving. No debounce is
+needed.
 
 A result cache on `McRichEdit`, keyed by `(dbPath, sql)`, covers restyling
 on every keystroke elsewhere in the document. A miss renders a "running"
 placeholder and runs the query off the UI thread, then requests a restyle.
 A refresh control in the widget drops the entry and re-runs. The cache is
 bounded at 32 entries.
-
-### 6.3 Sorting a view
-
-Clicking a header rewrites the `order by` clause in the fence body, which
-is an ordinary document edit -- the same rule as a GFM table, applied to
-the query instead of to rows.
-
-`McSqlQuery` is deliberately shallow: it finds a trailing `order by` and
-replaces it, or appends one. When it cannot rewrite confidently the header
-is simply not clickable. Sorting the fetched page client-side would lie
-whenever the query has a `limit`, so it is not offered.
-
-### 6.4 Errors and the source seam
 
 A failed query renders as a bordered error box carrying sqlite3's stderr.
 Nothing escapes the styler as an exception; the existing rule that a parse
@@ -258,41 +344,46 @@ SQLite is implemented. A later source -- a Smalltalk expression, a CSV, a
 bus query -- would add a producer answering an `McRelation` and touch
 nothing in the renderer. No such source is built now.
 
-## 7. Trust
+## 9. Trust
 
 A document with a database view executes SQL from that document when the
-cursor leaves the block. This is the same trust model `<<button>>` handlers
+cursor leaves the block, and a table with formulas evaluates expressions
+from that document. This is the same trust model `<<button>>` handlers
 already carry: a document is as trustworthy as its author. `-readonly`
-bounds the damage to reads. This is stated rather than mitigated further,
-because the editor's whole premise is documents that do things.
+bounds the database case to reads. This is stated rather than mitigated
+further, because the editor's whole premise is documents that do things.
 
-## 8. Files
+## 10. Files
 
 | File | Contents |
 |---|---|
 | `pharo/McRelation.st` | new -- `McRelation`, `McRelationColumn`, `McRelationRow`, `McRelationCell` |
-| `pharo/McSqlite.st` | new -- `McSqliteSource`, `McSqliteError`, `McSqlQuery` |
+| `pharo/McTableDirectives.st` | new -- `McTableDirectives`, `McTableFormulaLanguage`, `McSmalltalkFormulaLanguage`, `McTableFormula` |
+| `pharo/McSqlite.st` | new -- `McSqliteSource`, `McSqliteError` |
 | `pharo/McMarkdownInline.st` | new -- `McMarkdownInlineStyler` |
 | `pharo/McMarkdownTable.st` | new -- `McMarkdownTableReader`, `McMarkdownTableElement` |
 | `pharo/McMarkdown.st` | `McMarkdownParser` unchanged; visitor loses cell stringification and inline styling |
 | `pharo/McRichEdit.st` | loses three regex passes; gains the query cache |
-| `pharo/McRelationTest.st` | new -- relation and sorting tests |
-| `pharo/McSqliteTest.st` | new -- source, fixture database, and `McSqlQuery` tests |
+| `pharo/McRelationTest.st` | new -- relation, sorting, directives, formula tests |
+| `pharo/McSqliteTest.st` | new -- source and fixture database tests |
 | `pharo/McMarkdownTest.st` | gains reader, inline styler, and regression tests |
 
 `McMarkdown.st` is 717 lines holding two classes already. The new work is
 split across focused files rather than added to it. Load order:
-`McRelation`, `McSqlite`, `McMarkdownInline`, `McMarkdownTable`,
-`McMarkdown`, `McRichEdit` -- to be reflected in `elisp/mc-rich-edit.el`
-and `test/run-pharo-tests.sh`.
+`McRelation`, `McTableDirectives`, `McSqlite`, `McMarkdownInline`,
+`McMarkdownTable`, `McMarkdown`, `McRichEdit` -- to be reflected in
+`elisp/mc-rich-edit.el` and `test/run-pharo-tests.sh`.
 
-## 9. Testing
+## 11. Testing
 
 Everything load-bearing is pure or shell-only, so most of it tests without
 Bloc.
 
 `McRelationTest` -- sort keys and numeric detection, the ordering
-permutation, `isSortedBy:ascending:`, named row access.
+permutation, `isSortedBy:ascending:`, named row access. Directive parsing:
+defaults per producer, each option, an unknown option ignored, a fence with
+no table following it. Formula parsing and per-row evaluation, including
+the error path and a derived column being unsorted and interval-free.
 
 `McMarkdownTableReaderTest` -- cell intervals asserted by the substring
 they select, following the existing pattern rather than asserting on
@@ -301,48 +392,57 @@ parsing; the source produced by a sort round-tripping through the reader.
 
 `McSqliteTest` -- against a fixture `.sqlite` built in `setUp` by shelling
 out; `-ascii` framing, empty results, the error path, and `-readonly`
-refusing a write. `McSqlQuery` order-by rewrite cases, including the
-refusal case.
+refusing a write.
 
 `McMarkdownInlineStylerTest` -- emphasis offsets within a cell substring; a
 checkbox at a cell offset producing a write-back range that selects the
-right document characters.
+right document characters; links and images.
 
 Regression tests for the two reported defects -- emphasis surviving into a
 rendered cell, and a checkbox in a cell producing exactly one adornment
 attribute over the table range rather than a nested table.
 
 The existing full-cursor-sweep robustness test gains demo content with
-widgets inside cells and a query block.
+widgets inside cells, a directives fence, a derived column and a query
+block.
 
-## 10. Phases
+## 12. Phases
 
-**Phase 1** -- sections 3, 4.1, 5 and GFM sorting. Stands alone and fixes
-both reported defects.
+**Phase 1** -- sections 3, 5.1, 6, and sorting. Cells render emphasis,
+inline code and custom widgets. Fixes both reported defects and stands
+alone.
 
-**Phase 2** -- sections 4.2 and 6. Additive; reuses the widget unchanged.
+**Phase 2** -- sections 4 and 7: the directives fence, `cells` and `sort`
+options, links and images in cells, and derivation behind its seam.
 
-## 11. Risks
+**Phase 3** -- sections 5.2 and 8: database views.
+
+## 13. Risks
 
 | Risk | Mitigation |
 |---|---|
 | An embedded editor per widget-bearing cell is expensive | Only cells whose rope actually carries an adornment pay for one; the widget is built only when the cursor is away. Measure before optimising further. |
 | Rewriting rows on sort loses the cursor | `replaceFrom:to:with:` already replaces the whole rope, as checkboxes do today. Preserving the cursor is a separate improvement, applying equally to the existing behaviour. |
-| `McSqlQuery` mis-rewrites an exotic query | It refuses rather than guesses; a header that cannot be rewritten is not clickable. |
+| The placeholder formula language leaks into the design | The seam is specified before the placeholder, and the placeholder is the only implementation of it. Tests target `McTableFormulaLanguage`'s protocol, not its syntax. |
 | A slow query blocks the UI | The query runs off the UI thread behind a placeholder, and cannot be triggered while typing. |
 | Microdown changes its table handling | The reader no longer depends on `MicTableBlock >> rows`, only on where the block starts and ends. |
+| A directives fence drifts away from its table during editing | Binding is positional and re-evaluated on every parse; a fence with no table after it degrades to an ordinary code block rather than erroring. |
 
-## 12. Success criteria
+## 14. Success criteria
 
 1. Bold, italic, inline code, checkboxes, colour swatches and buttons all
-   render inside table cells.
+   render inside table cells, and links and images do after phase 2.
 2. A checkbox in a cell toggles the correct characters in the document and
    never renders a copy of the table.
 3. Clicking a column header reorders the rows in the document source, and
    the arrow reflects the document's actual order with no stored state.
-4. A `sql&db=` fence renders as the same table widget; clicking a header
-   rewrites its `order by`.
-5. `McSqliteSource` is usable from a playground with no editor present, and
+4. A `table&cells=text` fence renders its table literally; the same table
+   without the fence renders its cells as markdown.
+5. A derived column computes per row, and swapping the formula language
+   means writing one subclass and changing nothing else.
+6. A `sql&db=` fence renders as the same table widget, with sorting off and
+   no SQL ever rewritten.
+7. `McSqliteSource` is usable from a playground with no editor present, and
    is tested that way.
-6. A failed query and a malformed table both degrade to a visible message
-   rather than an exception out of the styler.
+8. A failed query, a failed formula, and a malformed table all degrade to a
+   visible message rather than an exception out of the styler.
