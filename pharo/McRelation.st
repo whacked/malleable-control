@@ -157,6 +157,9 @@ name
 alignment
 	^ alignment!
 
+alignment: aSymbol
+	alignment := aSymbol!
+
 isDerived
 	"False in phase 1; derived columns arrive with the formula seam."
 	^ derived! !

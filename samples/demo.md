@@ -20,6 +20,12 @@ that runs across two source lines to prove offsets survive the break.
 
 Click a column header to sort -- the rows are rewritten in the document.
 
+## Database View
+
+```sql&db=data/tasks.sqlite
+SELECT name, done, prio FROM tasks ORDER BY prio
+```
+
 ## Code
 
 ```smalltalk

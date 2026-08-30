@@ -23,19 +23,22 @@
   (let* ((relation-path (expand-file-name "pharo/McRelation.st" mc-rich-edit-home))
          (inline-path (expand-file-name "pharo/McMarkdownInline.st" mc-rich-edit-home))
          (table-path (expand-file-name "pharo/McMarkdownTable.st" mc-rich-edit-home))
+         (sqlite-path (expand-file-name "pharo/McSqlite.st" mc-rich-edit-home))
          (markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
          (st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
          ;; Load order matters: McMarkdownTable's cell reader depends on
-         ;; McRelation, McMarkdown's visitor calls into McMarkdownInline for
-         ;; every block it styles and into McMarkdownTable for table cells,
+         ;; McRelation, McSqlite depends on McRelation, McMarkdown's visitor
+         ;; calls into McMarkdownInline, McMarkdownTable, and McSqlite,
          ;; and McRichEdit's styler calls into McMarkdown.
          (expr (format (concat "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
                                "(Smalltalk at: #McRichEdit) open. 'opened'")
-                       relation-path inline-path table-path markdown-path st-path))
+                       relation-path inline-path table-path sqlite-path
+                       markdown-path st-path))
          (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
                   (json-serialize `(:v 1 :args (:expression ,expr))))))
     (if reply

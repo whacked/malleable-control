@@ -19,6 +19,7 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McRelation.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownInline.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownTable.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McSqlite.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdown.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRichEdit.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRelationTest.st' asFileReference fileIn.

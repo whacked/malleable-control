@@ -28,7 +28,7 @@ Chunk format: load with fileIn.
 "!
 
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement container titleLabel statusLabel darkMode buttonHandlers'
+	instanceVariableNames: 'space editorElement container titleLabel statusLabel toggleLabel darkMode buttonHandlers'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -149,7 +149,7 @@ palette
 openView
 	"Create the editor with demo content, wire up the styler
 	 and cursor-driven restyling, and open in a new window."
-	| editorModel styler headerRow toggleButton toggleLabel editorFrame |
+	| editorModel styler headerRow toggleButton editorFrame |
 	darkMode := false.
 
 	space := BlSpace new.
@@ -171,6 +171,7 @@ openView
 	titleLabel constraintsDo: [:c | c horizontal matchParent].
 
 	toggleLabel := BrLabel new.
+	toggleLabel aptitude: BrGlamorousLabelAptitude new.
 	toggleLabel text: ('Dark Mode' asRopedText fontSize: 13).
 	toggleLabel margin: (BlInsets right: 8).
 	toggleLabel constraintsDo: [:c | c linear vertical alignCenter].
@@ -197,6 +198,7 @@ openView
 	editorFrame clipChildren: true.
 
 	editorElement := BrEditor new.
+	editorElement addAptitude: BrGlamorousWithVerticalScrollbarAptitude new.
 	editorElement text: self demoContent asRopedText.
 	editorElement constraintsDo: [:c |
 		c horizontal matchParent.
@@ -252,6 +254,9 @@ applyPalette
 			foreground: (p at: 'title');
 			fontSize: 22;
 			bold).
+		toggleLabel text: ('Dark Mode' asRopedText
+			foreground: (p at: 'status');
+			fontSize: 13).
 		statusLabel text: (statusLabel text asString asRopedText
 			foreground: (p at: 'status');
 			fontSize: 13).
@@ -344,6 +349,10 @@ demoContent
 
 _No demo file found.  Expected: ' , ref pathString , '_
 '! !
+
+!McRichEdit methodsFor: 'accessing'!
+editorElement
+	^ editorElement! !
 
 !McRichEdit methodsFor: 'styling'!
 styleText: aText

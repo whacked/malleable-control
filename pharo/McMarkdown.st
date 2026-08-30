@@ -415,12 +415,17 @@ visitHorizontalLine: aLine
 
 visitCode: aCodeBlock
 	"Monospace the whole block over a tinted background, and collapse the
-	 fence lines when the cursor is elsewhere."
-	| range lines |
+	 fence lines when the cursor is elsewhere.  A code block whose info
+	 string starts with sql&db= is a database view: when the cursor is away,
+	 its entire range is replaced by a query result table or an error box."
+	| range lines info |
 	range := parser rangeOf: aCodeBlock.
 	range ifNil: [ ^ self ].
 	lines := parser lineIntervalsWithin: range.
 	lines isEmpty ifTrue: [ ^ self ].
+	info := aCodeBlock firstLine ifNil: [ '' ].
+	((info beginsWith: 'sql&db=') and: [ (self isNear: range) not ])
+		ifTrue: [ ^ self visitDatabaseView: aCodeBlock range: range info: info ].
 	self monospaceFrom: range first to: range last.
 	self fontSize: 14 from: range first to: range last.
 	self background: (self paletteAt: 'codeBg') from: range first to: range last.
@@ -603,3 +608,62 @@ quoteBarElement
 	bar background: (self paletteAt: 'quoteBar').
 	bar margin: (BlInsets left: 2 right: 10).
 	^ bar! !
+
+!McMarkdownStylerVisitor methodsFor: 'visiting - database views'!
+visitDatabaseView: aCodeBlock range: aRange info: anInfoString
+	"Replace the whole fence with a table widget when the query succeeds, or
+	 an error box with a retry button when it fails.  Moving the cursor into
+	 the fence reveals the raw source and also triggers a fresh attempt on
+	 the next cursor move away."
+	| dbPath sql |
+	dbPath := anInfoString copyFrom: 'sql&db=' size + 1 to: anInfoString size.
+	sql := aCodeBlock body ifNil: [ '' ].
+	sql := sql trimBoth.
+	self
+		replace: [
+			[ | source relation element |
+			  source := McSqliteSource on: dbPath.
+			  relation := source query: sql.
+			  element := McMarkdownTableElement
+				relation: relation
+				palette: palette
+				owner: nil.
+			  element build ]
+				on: Error
+				do: [ :e | self dbErrorElementFor: e message dbPath: dbPath sql: sql ] ]
+		from: aRange first
+		to: aRange last!
+
+dbErrorElementFor: aMessage dbPath: aDbPath sql: aSql
+	"A bordered box showing the error, the query that caused it, and a retry
+	 button.  Retry re-runs the query in place; if the database has appeared
+	 in the meantime, the next restyle replaces this box with a table."
+	| container label detail button |
+	container := BlElement new.
+	container layout: BlLinearLayout vertical.
+	container constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	container padding: (BlInsets all: 10).
+	container margin: (BlInsets top: 2 bottom: 2).
+	container border: (BlBorder paint: (Color red alpha: 0.5) width: 1).
+	container background: ((self paletteAt: 'codeBg') mixed: 0.1 with: Color red).
+	label := BlTextElement new.
+	label text: (aMessage asRopedText
+		foreground: (Color red darker);
+		fontSize: 13;
+		bold).
+	label margin: (BlInsets bottom: 4).
+	detail := BlTextElement new.
+	detail text: (('db=' , aDbPath , '  sql=' , aSql) asRopedText
+		foreground: (self paletteAt: 'dimDelimiter');
+		fontSize: 12).
+	detail margin: (BlInsets bottom: 6).
+	button := BrButton new.
+	button aptitude: BrGlamorousButtonWithLabelAptitude new.
+	button label: 'Retry'.
+	button beSmallSize.
+	button action: [ :btn |
+		owner ifNotNil: [ owner editorElement editor styleText ] ].
+	container addChild: label.
+	container addChild: detail.
+	container addChild: button.
+	^ container! !
