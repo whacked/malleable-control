@@ -36,6 +36,64 @@ Object subclass: #McRichEdit
 open
 	^ self new openView! !
 
+!McRichEdit class methodsFor: 'rendering'!
+renderElement: anElement toFile: aPathString
+	"Render anElement off-screen into a PNG at aPathString and answer its
+	 extent.  The element is placed alone in a hidden space so it lays out
+	 exactly as it would on screen."
+	^ self renderElement: anElement toFile: aPathString extent: nil!
+
+renderElement: anElement toFile: aPathString extent: anExtentOrNil
+	"Render anElement into a PNG at aPathString.  When anExtentOrNil is nil
+	 the space sizes to the element; otherwise the space is forced to that
+	 extent and the element fills it."
+	| sp form |
+	sp := BlSpace new.
+	anExtentOrNil
+		ifNil: [
+			sp root layout: BlLinearLayout horizontal.
+			sp root constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+			anElement constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ] ]
+		ifNotNil: [
+			sp extent: anExtentOrNil.
+			anElement constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ] ].
+	sp root addChild: anElement.
+	sp pulse. sp pulse. sp pulse.
+	form := sp root exportAsForm.
+	PNGReadWriter putForm: form onFileNamed: aPathString.
+	^ anElement extent!
+
+renderMarkdown: aString toFile: aPathString
+	"Render a markdown string as it would appear in the editor and write it
+	 to aPathString as a PNG.  Useful for quickly checking what a fragment
+	 looks like without opening the full editor."
+	| inst pal ed model styler |
+	inst := self new.
+	pal := inst palette.
+	ed := BrEditor new.
+	ed text: aString asRopedText.
+	ed aptitude: (BrGlamorousRegularEditorAptitude new
+		foreground: (pal at: 'text');
+		fontSize: 14;
+		background: (pal at: 'editorBg')).
+	ed constraintsDo: [ :c | c horizontal exact: 600. c vertical fitContent ].
+	ed padding: (BlInsets all: 16).
+	model := ed editor.
+	model useSyncStylerStrategy.
+	styler := BlPluggableStyler new block: [ :aText |
+		"Drive the parser and visitor directly rather than through
+		 styleText:, which dereferences the instance's editorElement for
+		 cursor position.  Here there is no live cursor -- force it to -1
+		 so every element renders."
+		[ | parser |
+		  parser := McMarkdownParser parseSource: aText asString.
+		  (McMarkdownStylerVisitor
+			parser: parser text: aText cursor: -1
+			palette: pal owner: nil) visit: parser root ]
+			on: Error do: [ :e | "degrade to unstyled" ] ].
+	ed styler: styler.
+	^ self renderElement: ed toFile: aPathString extent: 620@400! !
+
 !McRichEdit methodsFor: 'initialization'!
 initialize
 	"A fresh instance must be usable before openView runs -- palette
