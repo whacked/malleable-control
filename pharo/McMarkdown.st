@@ -485,6 +485,16 @@ visitTable: aTable
 	 has a header worth drawing.  Guarding on rowCount showed raw pipes
 	 there."
 	reader relation columnCount = 0 ifTrue: [ ^ self ].
+	"But a separator row is what makes a run of pipes a table at all.
+	 Microdown answers a MicTableBlock for any line holding pipes, so on
+	 columnCount alone a lone '| a | b |' -- an ordinary sentence with pipes
+	 in it, or the header line of a table one keystroke before its separator
+	 exists -- became a bordered grid of empty cells with its own text
+	 hidden underneath.  A table with a separator and no rows still renders
+	 its header; one without a separator only renders once it has rows, as
+	 it did before."
+	(reader relation rowCount = 0 and: [ reader hasSeparatorRow not ])
+		ifTrue: [ ^ self ].
 	self
 		replace: [
 			| element |

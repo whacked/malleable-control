@@ -853,6 +853,24 @@ testHeaderOnlyTableStillRenders
 	element := attribute stencil build.
 	self assert: element children size equals: 2!
 
+testPipeLineWithNoSeparatorIsNotRenderedAsATable
+	"Microdown makes a MicTableBlock out of any line holding pipes, so
+	 rendering every zero-row one replaced an ordinary sentence with pipes
+	 in it -- and the header line of a table a keystroke before its
+	 separator exists -- with a bordered grid of empty cells, hiding the
+	 text.  Without a separator row and without data rows, leave the source
+	 alone."
+	| text |
+	text := self styleAway: '| a | b |'.
+	self assert: (self adornmentCountIn: text) equals: 0!
+
+testReaderReportsWhetherThereIsASeparatorRow
+	"What tells a table from a sentence that happens to hold pipes."
+	self assert: (self readerFor: '| a |
+|---|
+| 1 |') hasSeparatorRow.
+	self deny: (self readerFor: '| a | b |') hasSeparatorRow!
+
 testTableStillRendersWithTheCursorAway
 	| source text parser range |
 	source := '| a | b |

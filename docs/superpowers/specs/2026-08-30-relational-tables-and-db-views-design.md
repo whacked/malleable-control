@@ -240,8 +240,13 @@ of the source. All phase 1 owes them is to not mangle them.
 The three regex passes move here out of `McRichEdit` and become
 range-scoped. The visitor invokes them per block content range, never over
 the whole document, so a range a widget has claimed is simply never
-descended into. The overlapping-`beReplace` defect dies by construction
-rather than by a guard.
+descended into. *Across* blocks, that kills the overlapping-`beReplace`
+defect by construction rather than by a guard. *Within* one range it takes a
+guard, because the passes still run over the same source knowing nothing of
+each other: the styler keeps the source intervals its widgets cover and a
+later pass skips any range intersecting one. First claim wins, so the pass
+order -- emphasis, checkboxes, colour swatches, buttons -- is the
+precedence.
 
 Two deliberate consequences. A `[ ]` inside a fenced code block now stays
 literal, which is correct. And with the cursor inside a table you see raw

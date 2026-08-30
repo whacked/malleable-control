@@ -32,7 +32,21 @@ source
 	^ source!
 
 relation
-	^ relation ifNil: [ relation := self readRelation ]! !
+	^ relation ifNil: [ relation := self readRelation ]!
+
+separatorIndex
+	"Which line is the |---|---| row, or 0 for a run of pipes that has none.
+	 Forces the relation, because reading it is where the row is found.
+
+	 Worth answering rather than keeping private: Microdown makes a
+	 MicTableBlock out of any line containing a pipe, so the separator is the
+	 only thing that tells a table from a sentence, and a caller deciding
+	 whether to render a grid needs to ask."
+	self relation.
+	^ separatorIndex!
+
+hasSeparatorRow
+	^ self separatorIndex > 0! !
 
 !McMarkdownTableReader methodsFor: 'reading'!
 readRelation
