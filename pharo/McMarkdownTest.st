@@ -694,3 +694,105 @@ testDocumentStillRendersCheckboxesInParagraphs
 	| text |
 	text := self styleAway: '[ ] a real one'.
 	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 1)! !
+
+!McMarkdownTest methodsFor: 'helpers - cells'!
+elementForTable: aString
+	| reader |
+	reader := self readerFor: aString.
+	^ McMarkdownTableElement
+		relation: reader relation
+		palette: self palette
+		owner: nil!
+
+cellTextIn: aString at: aRowIndex column: aColumnIndex
+	| reader element |
+	reader := self readerFor: aString.
+	element := McMarkdownTableElement
+		relation: reader relation
+		palette: self palette
+		owner: nil.
+	^ element cellTextFor: (reader relation at: aRowIndex column: aColumnIndex)! !
+
+!McMarkdownTest methodsFor: 'tests - cell rendering'!
+testCellRendersBold
+	"The reported defect: emphasis was flattened to a plain string one call
+	 before it could be styled."
+	| text |
+	text := self cellTextIn: '| a |
+|---|
+| **fig** |' at: 1 column: 1.
+	self assert: (self in: text hasAttribute: BlFontWeightAttribute at: 5)!
+
+testCellRendersACheckboxAsAnAdornment
+	| text |
+	text := self cellTextIn: '| a |
+|---|
+| [ ] todo |' at: 1 column: 1.
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 3)!
+
+testPlainCellHasNoAdornment
+	| element text |
+	element := self elementForTable: '| a |
+|---|
+| plain |'.
+	text := element cellTextFor: ((self readerFor: '| a |
+|---|
+| plain |') relation at: 1 column: 1).
+	self deny: (element hasAdornment: text)!
+
+testPlainCellUsesTheCheapElement
+	| element cell |
+	element := self elementForTable: '| a |
+|---|
+| plain |'.
+	cell := element
+		cellElementFor: ((self readerFor: '| a |
+|---|
+| plain |') relation at: 1 column: 1)
+		alignment: #left
+		isHeader: false.
+	self assert: cell class equals: BlTextElement!
+
+testWidgetCellUsesAnEmbeddedEditor
+	"Only the editor's segment machinery realises adornments."
+	| element cell |
+	element := self elementForTable: '| a |
+|---|
+| [ ] todo |'.
+	cell := element
+		cellElementFor: ((self readerFor: '| a |
+|---|
+| [ ] todo |') relation at: 1 column: 1)
+		alignment: #left
+		isHeader: false.
+	self assert: cell class equals: BrEditorElement!
+
+testBoldCellUsesAnEmbeddedEditor
+	"BlTextElement honours neither adornments nor hide, so a cell holding
+	 only bold text -- no widget -- still needs the embedded editor, or its
+	 ** delimiters render visibly instead of collapsing."
+	| element cell |
+	element := self elementForTable: '| a |
+|---|
+| **fig** |'.
+	cell := element
+		cellElementFor: ((self readerFor: '| a |
+|---|
+| **fig** |') relation at: 1 column: 1)
+		alignment: #left
+		isHeader: false.
+	self assert: cell class equals: BrEditorElement!
+
+testTextCellsSkipTheStylerEntirely
+	"cells=text means the source is data, not markup."
+	| relation element text |
+	relation := McRelation
+		columns: (Array with: (McRelationColumn name: 'a' alignment: #left))
+		rows: (Array with: (McRelationRow
+			cells: (Array with: (McRelationCell source: '**not bold**' interval: nil))
+			columns: (Array with: (McRelationColumn name: 'a' alignment: #left))
+			interval: nil))
+		directives: McTableDirectives forQuery.
+	element := McMarkdownTableElement relation: relation palette: self palette owner: nil.
+	text := element cellTextFor: (relation at: 1 column: 1).
+	self deny: (self in: text hasAttribute: BlFontWeightAttribute at: 5)! !

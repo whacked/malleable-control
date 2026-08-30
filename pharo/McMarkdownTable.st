@@ -159,3 +159,122 @@ lineSeparator
 	first := (self relation rowAt: 1) interval last.
 	second := (self relation rowAt: 2) interval first.
 	^ source copyFrom: first + 1 to: second - 1! !
+
+BlElement subclass: #McMarkdownTableElement
+	instanceVariableNames: 'relation palette owner sortAction'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McMarkdownTableElement class methodsFor: 'instance creation'!
+relation: aRelation palette: aPalette owner: anOwner
+	^ self new setRelation: aRelation palette: aPalette owner: anOwner! !
+
+!McMarkdownTableElement methodsFor: 'initialization'!
+setRelation: aRelation palette: aPalette owner: anOwner
+	relation := aRelation.
+	palette := aPalette.
+	owner := anOwner! !
+
+!McMarkdownTableElement methodsFor: 'accessing'!
+relation
+	^ relation!
+
+paletteAt: aKey
+	^ palette at: aKey ifAbsent: [ Color gray ]!
+
+sortAction: aBlock
+	"A two-argument block of columnIndex and ascending, or nil for a table
+	 that does not sort."
+	sortAction := aBlock! !
+
+!McMarkdownTableElement methodsFor: 'cells'!
+cellTextFor: aCell
+	^ self cellTextFor: aCell isHeader: false!
+
+cellTextFor: aCell isHeader: aBoolean
+	"A cell is a smaller document: its source goes through the same inline
+	 styler, with the cursor forced away so it always renders, and with the
+	 document map set from the cell's interval so a widget inside it writes
+	 back to the right characters.
+
+	 When the table's cells are data rather than markup, the styler is
+	 skipped entirely -- a value containing ** must not turn bold, and one
+	 reading [ ] must not become a checkbox with nowhere to write.
+
+	 Base styling is applied first: a whole-range foreground added afterwards
+	 would override the colours the styler puts on individual runs.
+
+	 styleAll has no rescue of its own.  The visitor's calls to it are
+	 covered by McRichEdit>>styleMarkdown:source:cursor:'s on: Error do:, but
+	 a cell's text is built inside the table widget's stencil block, which
+	 Bloc evaluates at render time -- outside that rescue entirely.  Without
+	 a rescue here, a styling failure would escape into Bloc's render loop
+	 instead of degrading, so this cell gets its own: on failure it falls
+	 back to its literal, base-styled source rope."
+	| text |
+	relation directives cellsAreMarkdown
+		ifFalse: [ ^ self baseTextFor: aCell isHeader: aBoolean ].
+	text := self baseTextFor: aCell isHeader: aBoolean.
+	[ (McMarkdownInlineStyler
+		source: aCell source
+		targetMap: (McMarkdownInlineStyler identityMapOfSize: aCell source size)
+		documentMap: (aCell interval
+			ifNil: [ McMarkdownInlineStyler identityMapOfSize: aCell source size ]
+			ifNotNil: [ :interval | McMarkdownInlineStyler mapForInterval: interval ])
+		text: text
+		cursor: -1
+		palette: palette
+		owner: (aCell interval ifNil: [ nil ] ifNotNil: [ :ignored | owner ])) styleAll ]
+		on: Error do: [ :e | ^ self baseTextFor: aCell isHeader: aBoolean ].
+	^ text!
+
+baseTextFor: aCell isHeader: aBoolean
+	| text |
+	text := aCell source asRopedText.
+	text foreground: (self paletteAt: (aBoolean ifTrue: [ 'boldText' ] ifFalse: [ 'text' ])).
+	text fontSize: 14.
+	aBoolean ifTrue: [ text bold ].
+	^ text!
+
+hasAdornment: aText
+	"The base class, not the narrower BrTextAdornmentDynamicAttribute: a
+	 hide attribute -- used to collapse ** delimiters -- is itself a
+	 BrTextAdornmentAttribute, and BlTextElement honours neither hide nor
+	 adornments.  Measured in this image: a bold-only cell's ** delimiters
+	 stayed visible in a BlTextElement (37.07 -> 36.07 wide) but collapsed in
+	 an embedded BrEditorElement (58.80 -> 25.20 wide).  So any cell holding
+	 an adornment of either kind -- hide included -- needs the editor, and
+	 only a cell with none at all may take the cheap element."
+	1 to: aText size do: [ :index |
+		((aText attributesAt: index) anySatisfy: [ :each |
+			each isKindOf: BrTextAdornmentAttribute ]) ifTrue: [ ^ true ] ].
+	^ false!
+
+cellElementFor: aCell alignment: aSymbol isHeader: aBoolean
+	"Adornments are realised only by the editor's segment machinery, never by
+	 a plain text painter, so a cell holding a widget needs an embedded
+	 editor.  Everything else -- the overwhelming majority -- gets the cheap
+	 element and costs what a cell costs today."
+	| content element |
+	content := self cellTextFor: aCell isHeader: aBoolean.
+	element := (self hasAdornment: content)
+		ifTrue: [ self editorElementFor: content ]
+		ifFalse: [ BlTextElement new text: content; yourself ].
+	element padding: (BlInsets top: 3 right: 10 bottom: 3 left: 10).
+	aBoolean ifTrue: [ element background: (self paletteAt: 'tableHeaderBg') ].
+	element constraintsDo: [ :c |
+		c horizontal fitContent.
+		c vertical fitContent.
+		aSymbol = #right ifTrue: [ c grid horizontal alignRight ].
+		aSymbol = #center ifTrue: [ c grid horizontal alignCenter ].
+		aSymbol = #left ifTrue: [ c grid horizontal alignLeft ] ].
+	^ element!
+
+editorElementFor: aText
+	| model element |
+	model := BrTextEditorModel new.
+	model text: aText.
+	model beReadOnlyWithoutSelection.
+	element := BrEditorElement new.
+	element editor: model.
+	^ element! !
