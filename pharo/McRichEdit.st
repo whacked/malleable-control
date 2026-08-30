@@ -8,17 +8,19 @@ McRichEdit -- Prototype proving three theses about hybrid text editing in GT:
   3. Cursor-driven restyling can toggle between raw source view and
      rendered widget view based on cursor locality.
 
-Styling runs in two passes.  Standard markdown -- headers, emphasis, tables,
-code blocks, lists, quotes and rules -- is parsed by McMarkdownParser and
-projected by McMarkdownStylerVisitor (see pharo/McMarkdown.st).  This editor's
-own tokens, which are not markdown at all, are overlaid afterwards by the
-regex passes below.
+The document is parsed by McMarkdownParser and projected by
+McMarkdownStylerVisitor (see pharo/McMarkdown.st).  Inline decoration --
+emphasis and this editor's own tokens (checkboxes, colour swatches, buttons)
+alike -- is reached per block through McMarkdownInlineStyler (see
+pharo/McMarkdownInline.st), scoped to that block's own range.  Nothing scans
+the flat document: a range a widget has claimed is simply never descended
+into.
 
 Button model: text is parsed for <<label>> tokens.  A handler table maps
 labels to actions.  The stencil block looks up the handler fresh on every
 restyle, so toggling between raw/widget never loses the association.
 
-Requires McMarkdown.st to be filed in first.
+Requires McMarkdownInline.st and McMarkdown.st to be filed in first.
 
 Chunk format: load with fileIn.
 "!
@@ -277,22 +279,11 @@ Move your cursor into any element to reveal its raw source.'! !
 !McRichEdit methodsFor: 'styling'!
 styleText: aText
 	"Main styling entry point.  The document is parsed into a Microdown AST
-	 and projected by McMarkdownStylerVisitor, then the custom tokens are
-	 overlaid.
-
-	 The two passes exist because they answer to different grammars: headers,
-	 tables, lists, code and emphasis are standard markdown and belong to the
-	 parser, while checkboxes, colour swatches and buttons are this editor's
-	 own tokens that Microdown neither knows nor should have to."
-	| str cursorPos |
-	str := aText asString.
-	cursorPos := self cursorPosition.
-
-	self styleMarkdown: aText source: str cursor: cursorPos.
-
-	self styleCheckboxes: aText source: str cursor: cursorPos.
-	self styleColors: aText source: str cursor: cursorPos.
-	self styleButtons: aText source: str cursor: cursorPos!
+	 and projected by McMarkdownStylerVisitor, which reaches inline
+	 decoration -- emphasis and this editor's own tokens alike -- through
+	 McMarkdownInlineStyler, per block.  Nothing scans the flat document any
+	 more: a range a widget has claimed is simply never descended into."
+	self styleMarkdown: aText source: aText asString cursor: self cursorPosition!
 
 styleMarkdown: aText source: str cursor: cursorPos
 	"Parse and project the standard markdown elements.  A styler runs on
@@ -317,122 +308,6 @@ cursorPosition
 	editorElement editor cursors do: [:c | pos := c position].
 	^ pos! !
 
-!McRichEdit methodsFor: 'styling - checkboxes'!
-styleCheckboxes: aText source: str cursor: cursorPos
-	"Thesis 1: Replace [ ]/[x] with live checkbox widgets."
-	| rx p |
-	p := self palette.
-	rx := '\[[ xX]\]' asRegex.
-	(rx matchingRangesIn: str) do: [:range |
-		| start stop |
-		start := range first.
-		stop := range last.
-		(self cursor: cursorPos isNear: start to: stop)
-			ifTrue: [
-				aText
-					attribute: (BlTextForegroundAttribute new paint: (p at: 'highlight'))
-					from: start
-					to: stop]
-			ifFalse: [
-				| checked |
-				checked := (str at: start + 1) = $x or: [(str at: start + 1) = $X].
-				aText
-					attribute: (BrTextAdornmentDynamicAttribute new
-						beReplace;
-						stencil: [
-							| cb |
-							cb := BrCheckbox new.
-							cb aptitude: BrGlamorousCheckboxAptitude new.
-							cb checked: checked.
-							cb beNormalSize.
-							cb margin: (BlInsets right: 4).
-							cb whenCheckedDo: [
-								self replaceFrom: start + 1 to: start + 1 with: 'x'].
-							cb whenUncheckedDo: [
-								self replaceFrom: start + 1 to: start + 1 with: ' '].
-							cb])
-					from: start
-					to: stop]]! !
-
-!McRichEdit methodsFor: 'styling - colors'!
-styleColors: aText source: str cursor: cursorPos
-	"Thesis 1+2: Append a color swatch after hex codes."
-	| rx p |
-	p := self palette.
-	rx := '#[0-9A-Fa-f]{6}' asRegex.
-	(rx matchingRangesIn: str) do: [:range |
-		| start stop hex |
-		start := range first.
-		stop := range last.
-		hex := str copyFrom: start + 1 to: stop.
-		(self cursor: cursorPos isNear: start to: stop)
-			ifTrue: [
-				aText
-					attribute: (BlTextForegroundAttribute new paint: (p at: 'highlight'))
-					from: start
-					to: stop]
-			ifFalse: [
-				aText
-					attribute: (BrTextAdornmentDynamicAttribute new
-						beAppend;
-						stencil: [
-							| swatch |
-							swatch := BlElement new.
-							swatch size: 14@14.
-							swatch geometry: (BlRoundedRectangleGeometry cornerRadius: 3).
-							swatch background: (Color fromHexString: hex).
-							swatch margin: (BlInsets left: 4).
-							swatch])
-					from: start
-					to: stop]]! !
-
-!McRichEdit methodsFor: 'styling - buttons'!
-styleButtons: aText source: str cursor: cursorPos
-	"Replace <<label>> with a live button wired to the handler table.
-	 The handler is looked up fresh on every restyle — no stale refs."
-	| rx p |
-	p := self palette.
-	rx := '<<[^>]+>>' asRegex.
-	(rx matchingRangesIn: str) do: [:range |
-		| start stop label |
-		start := range first.
-		stop := range last.
-		label := str copyFrom: start + 2 to: stop - 2.
-		(self cursor: cursorPos isNear: start to: stop)
-			ifTrue: [
-				"Cursor nearby — show raw <<label>> syntax"
-				aText
-					attribute: (BlTextForegroundAttribute new paint: (p at: 'highlight'))
-					from: start
-					to: stop]
-			ifFalse: [
-				"Cursor away — render as a clickable button"
-				aText
-					attribute: (BrTextAdornmentDynamicAttribute new
-						beReplace;
-						stencil: [
-							| btn handler |
-							handler := buttonHandlers at: label ifAbsent: [ nil ].
-							btn := BrButton new.
-							btn label: label.
-							btn aptitude: BrGlamorousButtonWithLabelAptitude new.
-							btn beSmallSize.
-							btn margin: (BlInsets left: 2 right: 2).
-							btn action: [
-								handler
-									ifNil: [ self showStatus: 'No handler for: ' , label ]
-									ifNotNil: [ handler value ] ].
-							btn])
-					from: start
-					to: stop]]! !
-
-!McRichEdit methodsFor: 'cursor locality'!
-cursor: cursorPos isNear: start to: stop
-	"True when the cursor is within or adjacent to the token range.
-	 Cursor is 0-based; text ranges are 1-based."
-	cursorPos < 0 ifTrue: [^ false].
-	^ cursorPos >= (start - 2) and: [cursorPos <= stop]! !
-
 !McRichEdit methodsFor: 'text mutation'!
 replaceFrom: start to: stop with: aString
 	"Replace a range of the underlying editor text.
@@ -441,4 +316,11 @@ replaceFrom: start to: stop with: aString
 	text := editorElement editor text.
 	str := text asString.
 	newStr := (str copyFrom: 1 to: start - 1) , aString , (str copyFrom: stop + 1 to: str size).
-	editorElement editor text: newStr asRopedText! !
+	editorElement editor text: newStr asRopedText!
+
+performButtonNamed: aLabel
+	| handler |
+	handler := buttonHandlers at: aLabel ifAbsent: [ nil ].
+	handler
+		ifNil: [ self showStatus: 'No handler for: ' , aLabel ]
+		ifNotNil: [ handler value ]! !

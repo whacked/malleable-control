@@ -603,3 +603,79 @@ testSortEditIsNilWithNothingToReorder
 		assert: ((self readerFor: '| a |
 |---|
 | 1 |') sortEditBy: 1 ascending: true) isNil! !
+
+!McMarkdownTest methodsFor: 'helpers - inline'!
+styleFragment: aString cursor: anInteger
+	"Style aString as a standalone fragment, the way a table cell is styled."
+	| text |
+	text := aString asRopedText.
+	(McMarkdownInlineStyler
+		source: aString
+		targetMap: (McMarkdownInlineStyler identityMapOfSize: aString size)
+		documentMap: (McMarkdownInlineStyler identityMapOfSize: aString size)
+		text: text
+		cursor: anInteger
+		palette: self palette
+		owner: nil) styleAll.
+	^ text!
+
+styleFragmentAway: aString
+	^ self styleFragment: aString cursor: -1!
+
+adornmentCountIn: aText
+	"Counts widget replacements/appends (checkboxes, swatches, buttons), not
+	 the plain BrTextHideAttribute used to collapse delimiters and fences --
+	 which is itself, perhaps surprisingly, a kind of BrTextAdornmentAttribute."
+	| count |
+	count := 0.
+	1 to: aText size do: [ :index |
+		((aText attributesAt: index) anySatisfy: [ :each |
+			each isKindOf: BrTextAdornmentDynamicAttribute ]) ifTrue: [ count := count + 1 ] ].
+	^ count! !
+
+!McMarkdownTest methodsFor: 'tests - inline styler'!
+testFragmentStylesBold
+	| text |
+	text := self styleFragmentAway: 'a **b** c'.
+	self assert: (self in: text hasAttribute: BlFontWeightAttribute at: 5).
+	self assert: (self in: text hasAttribute: BrTextHideAttribute at: 3)!
+
+testFragmentStylesItalic
+	| text |
+	text := self styleFragmentAway: 'a _b_ c'.
+	self assert: (self in: text hasAttribute: BlFontEmphasisAttribute at: 4)!
+
+testFragmentRevealsMarkupNearTheCursor
+	| text |
+	text := self styleFragment: 'a **b** c' cursor: 4.
+	self deny: (self in: text hasAttribute: BrTextHideAttribute at: 3)!
+
+testFragmentRendersACheckbox
+	| text |
+	text := self styleFragmentAway: '[ ] todo'.
+	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 1)!
+
+testFragmentRendersAColourSwatch
+	| text |
+	text := self styleFragmentAway: 'pick #ff0000 now'.
+	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 6)!
+
+testFragmentRendersAButton
+	| text |
+	text := self styleFragmentAway: 'press <<Go>> now'.
+	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 7)! !
+
+!McMarkdownTest methodsFor: 'tests - inline scoping'!
+testCustomTokensDoNotApplyInsideACodeFence
+	"The passes used to scan the flat document, so a checkbox rendered inside
+	 a code block.  They are per-block now, and code blocks are literal."
+	| text |
+	text := self styleAway: '```
+[ ] not a checkbox
+```'.
+	self assert: (self adornmentCountIn: text) equals: 0!
+
+testDocumentStillRendersCheckboxesInParagraphs
+	| text |
+	text := self styleAway: '[ ] a real one'.
+	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 1)! !

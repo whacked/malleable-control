@@ -246,7 +246,7 @@ stripPrefix: aPattern from: aLine
 	^ aLine copyFrom: found first last + 1 to: aLine size! !
 
 MicrodownVisitor subclass: #McMarkdownStylerVisitor
-	instanceVariableNames: 'parser text cursor palette owner map'
+	instanceVariableNames: 'parser text cursor palette owner'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -258,9 +258,10 @@ The visitor never touches the source rope -- it only adds attributes, so the
 document text stays the single source of truth and every projection is
 reversible by moving the cursor.
 
-`map' holds the inline index map of the block currently being visited, so that
-the inline visits (bold, italic, monospace) can turn a node's block-relative
-start/end into document offsets.  Block visits set it before descending.!
+Inline decoration -- emphasis and this editor's own tokens alike -- is not
+done here.  Each block visit hands its inline source and index map to
+McMarkdownInlineStyler, which is the same component a table cell uses to style
+its own private rope.!
 
 !McMarkdownStylerVisitor class methodsFor: 'instance creation'!
 parser: aParser text: aText cursor: anInteger palette: aPalette owner: anOwner
@@ -277,8 +278,7 @@ setParser: aParser text: aText cursor: anInteger palette: aPalette owner: anOwne
 	text := aText.
 	cursor := anInteger.
 	palette := aPalette.
-	owner := anOwner.
-	map := #()! !
+	owner := anOwner! !
 
 !McMarkdownStylerVisitor methodsFor: 'accessing'!
 paletteAt: aKey
@@ -350,13 +350,23 @@ visitRoot: aRoot
 	^ self visitChildrenOf: aRoot!
 
 visitInlineChildrenOf: aBlock
-	"Descend into a block's inline nodes with its index map installed, then
-	 restore the caller's map so nested blocks do not corrupt each other."
-	| saved |
-	saved := map.
-	map := parser inlineMapOf: aBlock.
-	[ (aBlock children ifNil: [ #() ]) do: [ :each | each accept: self ] ]
-		ensure: [ map := saved ]! !
+	"Hand the block's inline source to the shared styler.  The block's inline
+	 string is not its document substring -- Microdown joins the lines with a
+	 CR and strips the markup prefix -- so the parser's index map is what
+	 relates the two, and it serves as both the target and the document map
+	 because the rope being decorated is the document."
+	| inlineSource blockMap |
+	inlineSource := parser inlineSourceOf: aBlock.
+	blockMap := parser inlineMapOf: aBlock.
+	(inlineSource isNil or: [ blockMap isNil ]) ifTrue: [ ^ self ].
+	(McMarkdownInlineStyler
+		source: inlineSource
+		targetMap: blockMap
+		documentMap: blockMap
+		text: text
+		cursor: cursor
+		palette: palette
+		owner: owner) styleAll! !
 
 !McMarkdownStylerVisitor methodsFor: 'visiting - blocks'!
 visitHeader: aHeader
@@ -432,66 +442,6 @@ visitUnorderedList: aList
 visitOrderedList: aList
 	aList children doWithIndex: [ :item :index |
 		self styleListItem: item marker: index ]! !
-
-!McMarkdownStylerVisitor methodsFor: 'visiting - inline'!
-visitBold: aNode
-	self
-		styleInline: aNode
-		near: [ :range :inner | self dimDelimitersOf: range inner: inner ]
-		away: [ :range :inner |
-			self hideDelimitersOf: range inner: inner.
-			self boldFrom: inner first to: inner last.
-			self foreground: (self paletteAt: 'boldText') from: inner first to: inner last ]!
-
-visitItalic: aNode
-	self
-		styleInline: aNode
-		near: [ :range :inner | self dimDelimitersOf: range inner: inner ]
-		away: [ :range :inner |
-			self hideDelimitersOf: range inner: inner.
-			self italicFrom: inner first to: inner last ]!
-
-visitMonospace: aNode
-	self
-		styleInline: aNode
-		near: [ :range :inner | self dimDelimitersOf: range inner: inner ]
-		away: [ :range :inner |
-			self hideDelimitersOf: range inner: inner.
-			self monospaceFrom: inner first to: inner last.
-			self background: (self paletteAt: 'codeBg') from: inner first to: inner last.
-			self foreground: (self paletteAt: 'codeText') from: inner first to: inner last ]! !
-
-!McMarkdownStylerVisitor methodsFor: 'visiting - inline private'!
-styleInline: aNode near: aNearBlock away: anAwayBlock
-	"Shared shape for every delimited inline run.  The delimiter width is
-	 derived from the node rather than hardcoded, because it differs per
-	 markup (** for bold, _ for italic, ` for monospace) and Microdown
-	 already knows the inner text."
-	| range inner width |
-	range := parser sourceRangeOf: aNode within: map.
-	range ifNil: [ ^ self ].
-	width := self delimiterWidthOf: aNode range: range.
-	width < 1 ifTrue: [ ^ self ].
-	inner := (range first + width) to: (range last - width).
-	inner first > inner last ifTrue: [ ^ self ].
-	(self isNear: range)
-		ifTrue: [ aNearBlock value: range value: inner ]
-		ifFalse: [ anAwayBlock value: range value: inner ]!
-
-delimiterWidthOf: aNode range: aRange
-	"Half the difference between the raw span and the inner text is the width
-	 of one delimiter."
-	| innerSize |
-	innerSize := ([ aNode substring size ] on: Error do: [ :e | 0 ]).
-	^ (aRange size - innerSize) // 2!
-
-dimDelimitersOf: aRange inner: anInner
-	self dimFrom: aRange first to: anInner first - 1.
-	self dimFrom: anInner last + 1 to: aRange last!
-
-hideDelimitersOf: aRange inner: anInner
-	self hideFrom: aRange first to: anInner first - 1.
-	self hideFrom: anInner last + 1 to: aRange last! !
 
 !McMarkdownStylerVisitor methodsFor: 'visiting - lists'!
 styleListItem: anItem marker: anIndexOrNil

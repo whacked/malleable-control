@@ -20,13 +20,22 @@
   (interactive)
   (unless (nats-connected-p mc-emacs-connection)
     (user-error "Not connected — run M-x mc-emacs-start"))
-  (let* ((markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
+  (let* ((relation-path (expand-file-name "pharo/McRelation.st" mc-rich-edit-home))
+         (inline-path (expand-file-name "pharo/McMarkdownInline.st" mc-rich-edit-home))
+         (table-path (expand-file-name "pharo/McMarkdownTable.st" mc-rich-edit-home))
+         (markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
          (st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
-         ;; McMarkdown must load first: McRichEdit's styler calls into it.
+         ;; Load order matters: McMarkdownTable's cell reader depends on
+         ;; McRelation, McMarkdown's visitor calls into McMarkdownInline for
+         ;; every block it styles and into McMarkdownTable for table cells,
+         ;; and McRichEdit's styler calls into McMarkdown.
          (expr (format (concat "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
                                "(Smalltalk at: #McRichEdit) open. 'opened'")
-                       markdown-path st-path))
+                       relation-path inline-path table-path markdown-path st-path))
          (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
                   (json-serialize `(:v 1 :args (:expression ,expr))))))
     (if reply
