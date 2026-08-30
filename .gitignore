@@ -4,3 +4,9 @@
 # Pharo drops this wherever it is run from when an evaluation raises.
 PharoDebug.log
 /.agent-shell/
+
+# Test databases -- recreated by hand or setUp, not committed.
+*.sqlite
+
+# Local config overrides (mc-config.default.st is the committed fallback).
+/mc-config.st

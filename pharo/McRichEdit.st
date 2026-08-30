@@ -289,54 +289,61 @@ showStatus: aString
 			foreground: (p at: 'status');
 			fontSize: 13)])! !
 
+!McRichEdit methodsFor: 'config'!
+projectRoot
+	"The project root directory.  Uses the McHome global set by
+	 gt-install-startup, falling back to the working directory."
+	^ ((Smalltalk at: #McHome ifAbsent: [ nil ])
+		ifNil: [ FileLocator workingDirectory resolve ]
+		ifNotNil: [ :path | path asFileReference ]) asAbsolute!
+
+config
+	"Answer a Dictionary of configuration values.  Evaluates mc-config.st
+	 from the project root, falling back to mc-config.default.st.  The
+	 file must answer a Dictionary whose keys and values are all strings;
+	 anything else is rejected and the next candidate is tried."
+	| root candidates |
+	root := self projectRoot.
+	candidates := #( 'mc-config.st' 'mc-config.default.st' ).
+	candidates do: [ :name |
+		| ref |
+		ref := root / name.
+		ref exists ifTrue: [
+			[ | raw |
+			  raw := OpalCompiler new source: ref contents; evaluate.
+			  (self validateConfig: raw) ifTrue: [ ^ raw ] ]
+				on: Error do: [ :e | "skip malformed config" ] ] ].
+	^ Dictionary new!
+
+validateConfig: anObject
+	"Answer true only when anObject is a Dictionary mapping strings to
+	 strings.  The config file is arbitrary Smalltalk, so the result must
+	 be checked before it is trusted."
+	(anObject isKindOf: Dictionary) ifFalse: [ ^ false ].
+	anObject keysAndValuesDo: [ :key :value |
+		(key isString and: [ value isString ]) ifFalse: [ ^ false ] ].
+	^ true!
+
+demoFile
+	"The path of the markdown file to load, resolved from the config.
+	 Relative paths are resolved against the project root."
+	| raw ref |
+	raw := self config at: 'demoFile' ifAbsent: [ 'samples/demo.md' ].
+	ref := raw asFileReference.
+	ref isAbsolute ifFalse: [ ref := self projectRoot / raw ].
+	^ ref! !
+
 !McRichEdit methodsFor: 'content'!
 demoContent
-	"Demo document exercising every element the styler projects."
+	"Load the demo document from the configured file.  Falls back to a
+	 minimal placeholder if the file does not exist."
+	| ref |
+	ref := self demoFile.
+	ref exists ifTrue: [ ^ ref contents ].
 	^ '# Rich Edit
 
-A **bold** phrase, some _italic_, and `inline code` in one paragraph
-that runs across two source lines to prove offsets survive the break.
-
-## Tasks
-
-[ ] Buy groceries
-[x] Write the parser
-[x] Prove thesis one
-[ ] Prove thesis two
-
-## Table
-
-| task | colour | qty |
-|:-----|:------:|----:|
-| [ ] **write the reader** | #7f5af0 | 11 |
-| [x] `ship the styler`    | #2cb67d | 3  |
-| [ ] _sort the rows_      | #ff8906 | 7  |
-
-Click a column header to sort -- the rows are rewritten in the document.
-
-## Code
-
-```smalltalk
-McMarkdownParser parseSource: aString
-```
-
-## Lists
-
-- unordered one
-- unordered two
-
-1. ordered one
-2. ordered two
-
-> A quote with **bold** inside it.
-
----
-
-Colors: #FF0000 red, #00FF00 green, #3498DB blue.
-
-Buttons: <<hello>>  <<time>>  <<count>>
-
-Move your cursor into any element to reveal its raw source.'! !
+_No demo file found.  Expected: ' , ref pathString , '_
+'! !
 
 !McRichEdit methodsFor: 'styling'!
 styleText: aText
