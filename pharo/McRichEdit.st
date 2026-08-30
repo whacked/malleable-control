@@ -28,7 +28,7 @@ Chunk format: load with fileIn.
 "!
 
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement container titleLabel statusLabel toggleLabel darkMode buttonHandlers'
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel darkMode buttonHandlers'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -149,7 +149,7 @@ palette
 openView
 	"Create the editor with demo content, wire up the styler
 	 and cursor-driven restyling, and open in a new window."
-	| editorModel styler headerRow toggleButton editorFrame |
+	| editorModel styler headerRow toggleButton scrollPane |
 	darkMode := false.
 
 	space := BlSpace new.
@@ -198,13 +198,25 @@ openView
 	editorFrame clipChildren: true.
 
 	editorElement := BrEditor new.
+	editorElement aptitude: (BrGlamorousRegularEditorAptitude new
+		foreground: (self palette at: 'text');
+		fontSize: 16;
+		background: (self palette at: 'editorBg')).
 	editorElement text: self demoContent asRopedText.
 	editorElement constraintsDo: [:c |
 		c horizontal matchParent.
 		c vertical matchParent].
 	editorElement padding: (BlInsets all: 16).
 
-	editorFrame addChild: editorElement.
+	"Wrap the editor in a scroll pane so overflow scrolls with a visible bar."
+	scrollPane := BrScrollPane new.
+	scrollPane aptitude: BrScrollPaneAptitude new
+		+ BrGlamorousWithVerticalScrollbarAptitude new.
+	scrollPane constraintsDo: [:c |
+		c horizontal matchParent.
+		c vertical matchParent].
+	scrollPane addChild: editorElement.
+	editorFrame addChild: scrollPane.
 
 	editorModel := editorElement editor.
 	editorModel useSyncStylerStrategy.
@@ -242,14 +254,10 @@ applyPalette
 	p := self palette.
 	space enqueueTask: (BlTaskAction new action: [
 		container background: (p at: 'containerBg').
-		editorElement parent
+		editorFrame
 			background: (p at: 'editorBg');
 			border: (BlBorder paint: (p at: 'editorBorder') width: 1).
-		editorElement aptitude: (BrGlamorousRegularEditorAptitude new
-			foreground: (p at: 'text');
-			fontSize: 16;
-			background: (p at: 'editorBg'))
-			+ BrGlamorousWithVerticalScrollbarAptitude new.
+		editorElement background: (p at: 'editorBg').
 		titleLabel text: ('Rich Edit Prototype' asRopedText
 			foreground: (p at: 'title');
 			fontSize: 22;
