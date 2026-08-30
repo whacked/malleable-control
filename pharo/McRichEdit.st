@@ -198,7 +198,6 @@ openView
 	editorFrame clipChildren: true.
 
 	editorElement := BrEditor new.
-	editorElement addAptitude: BrGlamorousWithVerticalScrollbarAptitude new.
 	editorElement text: self demoContent asRopedText.
 	editorElement constraintsDo: [:c |
 		c horizontal matchParent.
@@ -249,7 +248,8 @@ applyPalette
 		editorElement aptitude: (BrGlamorousRegularEditorAptitude new
 			foreground: (p at: 'text');
 			fontSize: 16;
-			background: (p at: 'editorBg')).
+			background: (p at: 'editorBg'))
+			+ BrGlamorousWithVerticalScrollbarAptitude new.
 		titleLabel text: ('Rich Edit Prototype' asRopedText
 			foreground: (p at: 'title');
 			fontSize: 22;
