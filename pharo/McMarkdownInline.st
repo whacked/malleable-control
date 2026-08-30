@@ -134,8 +134,15 @@ styleEmphasis
 	nodes do: [ :each | self styleEmphasisNode: each ]!
 
 styleEmphasisNode: aNode
+	"The width heuristic below only makes sense for symmetric delimiters --
+	 ** for bold, _ for italic, ` for monospace -- so anything else, notably
+	 MicLinkBlock and MicFigureBlock, is left alone before any of it runs.
+	 Link and image rendering is a later phase; all this owes them is to not
+	 mangle them."
 	| name start stop width inner |
 	name := aNode class name asString.
+	(#('MicBoldFormatBlock' 'MicItalicFormatBlock' 'MicMonospaceFormatBlock')
+		includes: name) ifFalse: [ ^ self ].
 	start := [ aNode start ] on: Error do: [ :e | nil ].
 	stop := [ aNode end ] on: Error do: [ :e | nil ].
 	(start isNil or: [ stop isNil ]) ifTrue: [ ^ self ].
@@ -164,6 +171,9 @@ styleEmphasisNode: aNode
 			fromSource: inner first toSource: inner last.
 		self
 			apply: (BlTextUnderlayAttribute paint: (self paletteAt: 'codeBg'))
+			fromSource: inner first toSource: inner last.
+		self
+			apply: (BlTextForegroundAttribute new paint: (self paletteAt: 'codeText'))
 			fromSource: inner first toSource: inner last ]!
 
 delimiterWidthOf: aNode from: start to: stop

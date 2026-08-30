@@ -653,22 +653,37 @@ testFragmentRevealsMarkupNearTheCursor
 testFragmentRendersACheckbox
 	| text |
 	text := self styleFragmentAway: '[ ] todo'.
-	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 1)!
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 1)!
 
 testFragmentRendersAColourSwatch
 	| text |
 	text := self styleFragmentAway: 'pick #ff0000 now'.
-	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 6)!
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 6)!
 
 testFragmentRendersAButton
 	| text |
 	text := self styleFragmentAway: 'press <<Go>> now'.
-	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 7)! !
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 7)!
+
+testFragmentLeavesLinksAlone
+	"The emphasis width heuristic is only valid for symmetric delimiters.
+	 Applied to a link it would hide the wrong halves of the source."
+	| text |
+	text := self styleFragmentAway: 'see [label](http://x) end'.
+	1 to: text size do: [ :index |
+		self deny: (self in: text hasAttribute: BrTextHideAttribute at: index) ]!
+
+testFragmentLeavesImagesAlone
+	| text |
+	text := self styleFragmentAway: 'a !![alt](u.png) b'.
+	1 to: text size do: [ :index |
+		self deny: (self in: text hasAttribute: BrTextHideAttribute at: index) ]! !
 
 !McMarkdownTest methodsFor: 'tests - inline scoping'!
 testCustomTokensDoNotApplyInsideACodeFence
-	"The passes used to scan the flat document, so a checkbox rendered inside
-	 a code block.  They are per-block now, and code blocks are literal."
+	"visitCode: never calls visitInlineChildrenOf:, so a fenced code block's
+	 content is never handed to McMarkdownInlineStyler at all -- no custom
+	 token can render inside one."
 	| text |
 	text := self styleAway: '```
 [ ] not a checkbox
@@ -678,4 +693,4 @@ testCustomTokensDoNotApplyInsideACodeFence
 testDocumentStillRendersCheckboxesInParagraphs
 	| text |
 	text := self styleAway: '[ ] a real one'.
-	self assert: (self in: text hasAttribute: BrTextAdornmentAttribute at: 1)! !
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 1)! !

@@ -20,7 +20,9 @@ Button model: text is parsed for <<label>> tokens.  A handler table maps
 labels to actions.  The stencil block looks up the handler fresh on every
 restyle, so toggling between raw/widget never loses the association.
 
-Requires McMarkdownInline.st and McMarkdown.st to be filed in first.
+Requires McRelation.st, McMarkdownInline.st, McMarkdownTable.st and
+McMarkdown.st to be filed in first, in that order -- see test/run-pharo-tests.sh
+and elisp/mc-rich-edit.el, which both file in that chain.
 
 Chunk format: load with fileIn.
 "!
