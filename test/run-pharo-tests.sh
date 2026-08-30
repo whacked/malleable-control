@@ -16,9 +16,9 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/NatsClient.st' asFileReference fileIn.
   '$MC_HOME/pharo/NatsClientTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McGtPatches.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McRelation.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdown.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRichEdit.st' asFileReference fileIn.
-  '$MC_HOME/pharo/McRelation.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRelationTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownTest.st' asFileReference fileIn.
   (Smalltalk at: #McGtPatches) apply.

@@ -89,14 +89,16 @@ text
 	^ (source copyWithoutAll: '*`') trimBoth!
 
 number
-	"Answer the cell as a Number, or nil when the text is not entirely
-	 numeric.  asNumber alone would read `3 apples' as 3 and sort it among
-	 the numbers."
+	"Answer the cell as a Number, or nil when the text is not one well-formed
+	 number.  A character-class check is not enough: asNumber parses greedily
+	 and stops at the first character it cannot use, so `1.2.3' comes back as
+	 1.2 without raising, and a column of semvers would sort as truncated
+	 numbers.  The whole string has to match before asNumber is trusted."
 	| stripped |
 	stripped := self text.
 	stripped isEmpty ifTrue: [ ^ nil ].
-	(stripped allSatisfy: [ :each |
-		each isDigit or: [ '+-.eE' includes: each ] ]) ifFalse: [ ^ nil ].
+	('[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?' asRegex matches: stripped)
+		ifFalse: [ ^ nil ].
 	^ [ stripped asNumber ] on: Error do: [ :e | nil ]!
 
 sortKey

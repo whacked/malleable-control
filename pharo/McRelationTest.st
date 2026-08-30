@@ -45,11 +45,30 @@ testCellNumberRecognisesNumbers
 	self assert: (self cell: '11') number equals: 11.
 	self assert: (self cell: ' -2.5 ') number equals: -2.5!
 
+testCellNumberRecognisesWellFormedVariants
+	"Leading zeros, trailing fractional zeros and exponents are all still
+	 one well-formed number."
+	self assert: (self cell: '011') number equals: 11.
+	self assert: (self cell: '1.50') number equals: 1.5.
+	self assert: (self cell: '1e3') number equals: 1000!
+
 testCellNumberRejectsPartiallyNumericText
 	"`3 apples' must not sort as 3."
 	self assert: (self cell: '3 apples') number isNil.
 	self assert: (self cell: 'fig') number isNil.
 	self assert: (self cell: '') number isNil!
+
+testCellNumberRejectsMalformedNumbers
+	"asNumber parses greedily and stops at the first character it cannot
+	 use, so a character-class guard alone is not enough: `1.2.3' would
+	 come back as 1.2 without raising.  number must reject anything that
+	 is not one well-formed number, not just anything built from numeric
+	 characters."
+	self assert: (self cell: '1.2.3') number isNil.
+	self assert: (self cell: '5-3') number isNil.
+	self assert: (self cell: '1..2') number isNil.
+	self assert: (self cell: '5+') number isNil.
+	self assert: (self cell: '1.2e') number isNil!
 
 testCellSortKeyFallsBackToLowercasedText
 	self assert: (self cell: 'Fig') sortKey equals: 'fig'.
@@ -84,6 +103,15 @@ testDescendingReversesTheOrder
 	relation := self relationWithRows: #( #('3') #('11') #('7') ).
 	self
 		assert: (relation orderedRowIndicesBy: 1 ascending: false) asArray
+		equals: #(2 3 1)!
+
+testSemverColumnSortsAsTextNotTruncatedNumber
+	"1.2.3 is not one well-formed number, so this column must sort as text
+	 rather than compare on a truncated numeric parse (1.2.3 -> 1.2)."
+	| relation |
+	relation := self relationWithRows: #( #('1.2.3') #('1.10.0') #('1.2.0') ).
+	self
+		assert: (relation orderedRowIndicesBy: 1 ascending: true) asArray
 		equals: #(2 3 1)!
 
 testMarkupDoesNotAffectSortOrder
