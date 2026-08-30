@@ -252,7 +252,7 @@ that runs across two source lines to prove offsets survive the break.
 |:-----|:------:|----:|
 | [ ] **write the reader** | #7f5af0 | 11 |
 | [x] `ship the styler`    | #2cb67d | 3  |
-| [ ] *sort the rows*      | #ff8906 | 7  |
+| [ ] _sort the rows_      | #ff8906 | 7  |
 
 Click a column header to sort -- the rows are rewritten in the document.
 

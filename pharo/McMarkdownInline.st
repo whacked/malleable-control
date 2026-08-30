@@ -128,10 +128,29 @@ isNearSource: start to: stop
 !McMarkdownInlineStyler methodsFor: 'styling - emphasis'!
 styleEmphasis
 	"Microdown's inline parser gives start/end for each formatted run,
-	 relative to the string it was handed -- which is exactly our source."
+	 relative to the string it was handed -- which is exactly our source,
+	 with the checkbox brackets masked out first (see maskedForEmphasis).
+	 Measured: MicInlineParser new parse: '[ ] **fig**' answers a single
+	 opaque MicTextBlock and no MicBoldFormatBlock at all -- an unresolved
+	 open bracket reads to Microdown as the start of a link, and once it
+	 cannot complete one it swallows the rest of the line as plain text,
+	 hiding every run of emphasis after it.  The mask is
+	 character-for-character the same length as the checkbox token, so
+	 every start/end the parser reports still indexes correctly into the
+	 real source."
 	| nodes |
-	nodes := [ MicInlineParser new parse: source ] on: Error do: [ :e | #() ].
+	nodes := [ MicInlineParser new parse: self maskedForEmphasis ] on: Error do: [ :e | #() ].
 	nodes do: [ :each | self styleEmphasisNode: each ]!
+
+maskedForEmphasis
+	"A copy of source with '[ ]'/'[x]' checkbox tokens blanked out to the
+	 same length, so styleEmphasis's parse does not choke on them; see
+	 styleEmphasis for why."
+	| masked |
+	masked := source copy.
+	('\[[ xX]\]' asRegex matchingRangesIn: source) do: [ :range |
+		range first to: range last do: [ :index | masked at: index put: $  ] ].
+	^ masked!
 
 styleEmphasisNode: aNode
 	"The width heuristic below only makes sense for symmetric delimiters --

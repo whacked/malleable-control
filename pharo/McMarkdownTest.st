@@ -979,3 +979,80 @@ testHeaderElementWithACustomTokenNameStaysInert
 	box := attribute stencil build.
 	box check.
 	self assert: owner replaceCalls isEmpty! !
+
+!McMarkdownTest methodsFor: 'tests - cell rendering'!
+testEmphasisActuallyCollapsesInACellThatAlsoHoldsAWidget
+	"Every other cell-rendering test asserts on attributes, which all kept
+	 passing while the live table rendered raw, uncollapsed markdown: for a
+	 cell mixing a checkbox with emphasis, MicInlineParser reads the
+	 unresolved '[' as the start of a link, and once '[ ] **fig**' cannot
+	 complete one it swallows the rest of the line into one opaque text
+	 node -- no MicBoldFormatBlock, so no BrTextHideAttribute or
+	 BlFontWeightAttribute, ever reaches the rope.  A bare '**fig**' cell
+	 with no checkbox already collapsed correctly before this fix, so it
+	 would not have caught the defect; this measures the actual rendered
+	 extent instead of an attribute, comparing the real styled cell against
+	 the identical cell with only the hide/weight attributes stripped --
+	 same checkbox widget, same base text, same element class -- so extent
+	 is the one thing left free to vary."
+	| relation element cell styled deEmphasized styledElement comparator space |
+	relation := McRelation
+		columns: (Array with: (McRelationColumn name: 'a' alignment: #left))
+		rows: (Array with: (McRelationRow
+			cells: (Array with: (McRelationCell source: '[ ] **fig**' interval: nil))
+			columns: (Array with: (McRelationColumn name: 'a' alignment: #left))
+			interval: nil))
+		directives: McTableDirectives forMarkdownTable.
+	element := McMarkdownTableElement relation: relation palette: self palette owner: nil.
+	cell := relation at: 1 column: 1.
+	styled := element cellTextFor: cell.
+	deEmphasized := styled copy.
+	deEmphasized clearAttributesOfClass: BrTextHideAttribute.
+	deEmphasized clearAttributesOfClass: BlFontWeightAttribute.
+	styledElement := element editorElementFor: styled copy.
+	comparator := element editorElementFor: deEmphasized.
+	styledElement padding: (BlInsets top: 3 right: 10 bottom: 3 left: 10).
+	comparator padding: (BlInsets top: 3 right: 10 bottom: 3 left: 10).
+	styledElement constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	comparator constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	space := BlSpace new.
+	space extent: 400 @ 100.
+	space root addChild: styledElement.
+	space root addChild: comparator.
+	space show.
+	space pulse.
+	self assert: styledElement extent x < comparator extent x.
+	space close!
+
+testEmphasisCollapsesInACellInsideABuiltGrid
+	"Same defect, checked in the configuration that actually failed in the
+	 live image: a cell reached through McMarkdownTableElement>>build --
+	 the real header-plus-rows grid -- not a hand-assembled standalone
+	 cell."
+	| relation element cell gridCell styled deEmphasized comparator space |
+	relation := McRelation
+		columns: (Array with: (McRelationColumn name: 'a' alignment: #left))
+		rows: (Array with: (McRelationRow
+			cells: (Array with: (McRelationCell source: '[ ] **fig**' interval: nil))
+			columns: (Array with: (McRelationColumn name: 'a' alignment: #left))
+			interval: nil))
+		directives: McTableDirectives forMarkdownTable.
+	element := McMarkdownTableElement relation: relation palette: self palette owner: nil.
+	element build.
+	gridCell := element children at: 2.
+	cell := relation at: 1 column: 1.
+	styled := element cellTextFor: cell.
+	deEmphasized := styled copy.
+	deEmphasized clearAttributesOfClass: BrTextHideAttribute.
+	deEmphasized clearAttributesOfClass: BlFontWeightAttribute.
+	comparator := element editorElementFor: deEmphasized.
+	comparator padding: (BlInsets top: 3 right: 10 bottom: 3 left: 10).
+	comparator constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	space := BlSpace new.
+	space extent: 400 @ 100.
+	space root addChild: element.
+	space root addChild: comparator.
+	space show.
+	space pulse.
+	self assert: gridCell extent x < comparator extent x.
+	space close! !
