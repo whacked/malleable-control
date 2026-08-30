@@ -245,6 +245,7 @@ cellTextFor: aCell isHeader: aBoolean
 baseTextFor: aCell isHeader: aBoolean
 	| text |
 	text := aCell source asRopedText.
+	text attribute: (BlFontFamilyAttribute new name: 'Source Sans Pro') from: 1 to: text size.
 	text foreground: (self paletteAt: (aBoolean ifTrue: [ 'boldText' ] ifFalse: [ 'text' ])).
 	text fontSize: 14.
 	aBoolean ifTrue: [ text bold ].
