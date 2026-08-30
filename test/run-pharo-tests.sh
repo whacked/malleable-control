@@ -18,11 +18,13 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McGtPatches.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdown.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRichEdit.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McRelation.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McRelationTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownTest.st' asFileReference fileIn.
   (Smalltalk at: #McGtPatches) apply.
   failed := false.
   suites := OrderedCollection new.
-  #( #NatsClientTest #McMarkdownTest ) do: [ :each |
+  #( #NatsClientTest #McRelationTest #McMarkdownTest ) do: [ :each |
     result := (Smalltalk at: each) suite run.
     (result hasFailures or: [ result hasErrors ]) ifTrue: [ failed := true ].
     suites add: each -> result ].
