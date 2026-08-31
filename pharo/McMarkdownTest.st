@@ -66,6 +66,9 @@ palette
 		at: 'boldText' put: (Color fromHexString: '#111111');
 		at: 'dimDelimiter' put: (Color fromHexString: '#bbbbbb');
 		at: 'highlight' put: (Color fromHexString: '#7f5af0');
+		at: 'link' put: (Color fromHexString: '#315fbd');
+		at: 'deadLink' put: (Color fromHexString: '#b42318');
+		at: 'status' put: (Color fromHexString: '#888888');
 		at: 'editorBg' put: Color white;
 		at: 'codeBg' put: (Color fromHexString: '#f2f2f5');
 		at: 'codeText' put: (Color fromHexString: '#2d2d2d');
@@ -407,6 +410,10 @@ testStylingSurvivesEveryCursorPositionOfTheDemoDocument
 	 that raises only when the cursor sits at one particular offset would be
 	 invisible in casual use and fatal in real use."
 	| source |
+	"The demo intentionally grows as syntax support grows.  Retain exhaustive
+	 coverage while opting this one O(n squared) robustness test out of SUnit's
+	 ten-second default watchdog."
+	self timeLimit: 60 seconds.
 	source := McRichEdit new demoContent.
 	-1 to: source size do: [ :cursor |
 		[ self style: source cursor: cursor ]

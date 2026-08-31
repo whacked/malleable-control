@@ -85,7 +85,7 @@ localPathPartOf: aString
 
 !McRichEdit methodsFor: 'links - actions'!
 activateLink: aLink
-	| state file url |
+	| state file url fragment |
 	state := self linkStateFor: aLink.
 	state = #web ifTrue: [
 		url := self webUrlForTarget: aLink target.
@@ -97,8 +97,34 @@ activateLink: aLink
 		^ self ].
 	state = #local ifTrue: [
 		file := self resolvedFileForLink: aLink.
-		file ifNotNil: [ ^ self openDocument: file ] ].
+		file ifNotNil: [
+			(self isCurrentDocumentFile: file) ifTrue: [
+				fragment := self linkFragmentForTarget: aLink target.
+				fragment
+					ifNil: [ self showStatus: 'Already open: ' , self relativeDocumentPath ]
+					ifNotNil: [ self showStatus: 'Already open; anchor navigation pending: #' , fragment ].
+				^ self ].
+			^ self openDocument: file ] ].
 	self showStatus: 'Dead link: ' , aLink target! !
+
+!McRichEdit methodsFor: 'links - current document'!
+isCurrentDocumentFile: aFileReference
+	"Compare normalized absolute spellings so relative, slash-absolute and
+	 file:// targets all recognize the document already in the editor."
+	^ [ aFileReference asFileReference asAbsolute pathString
+		= self documentFile asFileReference asAbsolute pathString ]
+		on: Error
+		do: [ :e | false ]!
+
+linkFragmentForTarget: aString
+	"Resolution deliberately strips the fragment, while this method retains it
+	 for the future within-document anchor implementation."
+	| hash fragment |
+	hash := aString indexOf: $#.
+	hash = 0 ifTrue: [ ^ nil ].
+	fragment := aString copyFrom: hash + 1 to: aString size.
+	(fragment includes: $?) ifTrue: [ fragment := fragment copyUpTo: $? ].
+	^ fragment! !
 
 !McRichEdit methodsFor: 'links - images'!
 imageElementFor: aLink

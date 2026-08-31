@@ -321,7 +321,8 @@ openView
 	container constraintsDo: [:c | c horizontal matchParent. c vertical matchParent].
 	container padding: (BlInsets all: 24).
 
-	"Header row: title + toggle."
+	"Header row: path badge + title + toggle.  Keeping the badge first gives
+	 its tooltip the largest useful placement area to the right."
 	headerRow := BlElement new.
 	headerRow layout: BlLinearLayout horizontal.
 	headerRow constraintsDo: [:c | c horizontal matchParent. c vertical fitContent].
@@ -341,6 +342,7 @@ openView
 		c vertical fitContent.
 		c linear vertical alignCenter ].
 	pathTooltip := BrGlamorousWithExplicitTooltipAptitude new.
+	pathTooltip content: [ self pathTooltipContent ].
 	pathLabel addAptitude: pathTooltip.
 	self updatePathComponent.
 
@@ -360,8 +362,8 @@ openView
 	toggleButton whenUncheckedDo: [
 		self darkMode: false. self applyPalette].
 
-	headerRow addChild: titleLabel.
 	headerRow addChild: pathLabel.
+	headerRow addChild: titleLabel.
 	headerRow addChild: toggleLabel.
 	headerRow addChild: toggleButton.
 
@@ -571,8 +573,25 @@ updatePathComponent
 	pathLabel ifNil: [ ^ self ].
 	pathLabel text: (self relativeDocumentPath asRopedText
 		foreground: (self palette at: 'link');
+		fontSize: 12)!
+
+pathTooltipContent
+	"Use explicit content instead of the tooltip's text: convenience API.
+	 The latter creates a menu item whose label is shortened to the available
+	 anchor width; a fit-content text element retains the complete path."
+	| label |
+	label := BlTextElement new.
+	label text: (self documentFile fullName asRopedText
+		foreground: (self palette at: 'text');
 		fontSize: 12).
-	pathTooltip ifNotNil: [ pathTooltip text: self documentFile fullName ]!
+	label constraintsDo: [ :c |
+		c horizontal fitContent.
+		c vertical fitContent ].
+	label padding: (BlInsets top: 7 right: 9 bottom: 7 left: 9).
+	label background: (self palette at: 'codeBg').
+	label geometry: (BlRoundedRectangleGeometry cornerRadius: 4).
+	label border: (BlBorder paint: (self palette at: 'tableBorder') width: 1).
+	^ label!
 
 openDocument: aFileReference
 	"Switch documents deliberately.  Unlike an edit within one document, a

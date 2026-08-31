@@ -30,6 +30,25 @@ activateLink: aLink
 imageElementFor: aLink
 	^ BlElement new size: 20 @ 20; yourself! !
 
+McRichEdit subclass: #McRichEditNavigationTestDouble
+	instanceVariableNames: 'openedFile statusMessage'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McRichEditNavigationTestDouble methodsFor: 'testing'!
+openedFile
+	^ openedFile!
+
+statusMessage
+	^ statusMessage! !
+
+!McRichEditNavigationTestDouble methodsFor: 'navigation'!
+openDocument: aFileReference
+	openedFile := aFileReference!
+
+showStatus: aString
+	statusMessage := aString! !
+
 TestCase subclass: #McMarkdownLinkTest
 	instanceVariableNames: 'tempDir'
 	classVariableNames: ''
@@ -224,3 +243,37 @@ testDocumentPathIsRelativeToTheProject
 		instVarNamed: 'documentFile'
 		put: instance projectRoot / 'samples/demo.md'.
 	self assert: instance relativeDocumentPath equals: 'samples/demo.md'! !
+
+!McMarkdownLinkTest methodsFor: 'tests - navigation'!
+testCurrentDocumentSpellingsDoNotReopenTheFile
+	| current instance targets |
+	current := self write: '# current' to: 'current.md'.
+	targets := {
+		'current.md'.
+		current asAbsolute pathString.
+		'file://' , current asAbsolute pathString }.
+	targets do: [ :target |
+		instance := McRichEditNavigationTestDouble new.
+		instance instVarNamed: 'documentFile' put: current.
+		instance activateLink: (self linkTarget: target).
+		self assert: instance openedFile isNil description: target.
+		self assert: (instance statusMessage beginsWith: 'Already open:') description: target ]!
+
+testCurrentDocumentFragmentIsRetainedWithoutReopening
+	| current instance |
+	current := self write: '# current' to: 'current.md'.
+	instance := McRichEditNavigationTestDouble new.
+	instance instVarNamed: 'documentFile' put: current.
+	instance activateLink: (self linkTarget: 'current.md#section-one').
+	self assert: instance openedFile isNil.
+	self assert: instance statusMessage equals:
+		'Already open; anchor navigation pending: #section-one'!
+
+testDifferentLocalDocumentStillOpens
+	| current next instance |
+	current := self write: '# current' to: 'current.md'.
+	next := self write: '# next' to: 'next.md'.
+	instance := McRichEditNavigationTestDouble new.
+	instance instVarNamed: 'documentFile' put: current.
+	instance activateLink: (self linkTarget: 'next.md').
+	self assert: instance openedFile equals: next! !
