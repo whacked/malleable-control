@@ -17,6 +17,18 @@ Two rules govern the range stamping, applied after each line:
 Together those cover every block Microdown builds, including multi-line ones
 (paragraphs, tables, code blocks, lists) that grow a line at a time.
 
+Rule 1 turns on knowing what did not exist before, and the obvious way to decide
+that is to collect the whole tree before the line and again after it.  That is
+quadratic: every line walks every block parsed so far, so a document twice as
+long costs four times as much, and a few hundred lines is already seconds.
+Microdown only grows the tree in two places, though -- a line's node is appended
+to the node that consumed it or to one of that node's ancestors, and closing a
+node rebuilds its children out of its inline elements -- and both places are
+open before the line or after it.  So the search is confined to those nodes,
+and within each of them to the children not looked at yet, which makes a line
+cost what it added rather than what the document already holds.  #probeCount
+counts exactly that work, so the scaling can be asserted on without a clock.
+
 Inline nodes are a different matter: MicBoldFormatBlock and friends DO carry
 start/end, but relative to the string Microdown inline-parsed, which for a
 multi-line paragraph is the lines concatenated with the newlines dropped.
@@ -27,7 +39,7 @@ Chunk format: load with fileIn.
 "!
 
 MicrodownParser subclass: #McMarkdownParser
-	instanceVariableNames: 'source ranges lineIntervals inlineSources'
+	instanceVariableNames: 'source ranges lineIntervals inlineSources knownBlocks scannedChildren probeCount'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -50,6 +62,14 @@ ranges
 lineIntervals
 	^ lineIntervals!
 
+probeCount
+	"How many candidate slots the parser has had to look at: one per child of
+	 an open node considered for being new, and one per line interval visited
+	 while answering #lineIntervalsWithin:.  Both loops were once proportional
+	 to the whole document and are now proportional to what is actually being
+	 asked about, and this counter is what lets a test say so without a clock."
+	^ probeCount!
+
 rangeOf: aBlock
 	"The 1-based source character range of aBlock, or nil when unknown."
 	^ ranges at: aBlock ifAbsent: [ nil ]!
@@ -65,20 +85,27 @@ sourceOf: aBlock
 parseSource: aString
 	"Parse aString, recording a source range for every node.  This mirrors
 	 MicrodownParser>>parse:, but drives the line loop from precomputed line
-	 intervals so that each line's offsets are known while it is handled."
+	 intervals so that each line's offsets are known while it is handled.
+
+	 The nodes a line created are found by looking only at the nodes that were
+	 open across it, never by walking the whole tree; see
+	 #discoverBlocksOpenBefore:stampingWith:."
 	source := aString.
 	ranges := IdentityDictionary new.
 	inlineSources := IdentityDictionary new.
+	knownBlocks := IdentitySet new.
+	scannedChildren := IdentityDictionary new.
+	probeCount := 0.
 	lineIntervals := self computeLineIntervals: aString.
 	current := root := self newRootBlock
 		setParser: self;
 		yourself.
+	knownBlocks add: root.
 	lineIntervals do: [ :each |
-		| seen |
-		seen := self allBlocks.
+		| openBefore |
+		openBefore := self openPath.
 		self handleLine: (self lineAt: each).
-		self allBlocks do: [ :block |
-			(seen includes: block) ifFalse: [ self stamp: block with: each ] ].
+		self discoverBlocksOpenBefore: openBefore stampingWith: each.
 		self openBlocksDo: [ :block | self stamp: block with: each ] ].
 	[ current == root ] whileFalse: [
 		current closeMe.
@@ -117,19 +144,83 @@ computeLineIntervals: aString
 	start <= size ifTrue: [ result add: (start to: size) ].
 	^ result asArray!
 
-allBlocks
-	"Every node currently in the tree, root included."
-	| set |
-	set := IdentitySet new.
-	self collectBlocksFrom: root into: set.
-	^ set!
+discoverBlocksOpenBefore: aPath stampingWith: anInterval
+	"Stamp every node the line just handled created, aPath being the nodes
+	 that were open before it ran, innermost first.
 
-collectBlocksFrom: aBlock into: aSet
-	aBlock ifNil: [ ^ self ].
-	aSet add: aBlock.
-	(aBlock respondsTo: #children) ifFalse: [ ^ self ].
-	(aBlock children ifNil: [ #() ]) do: [ :each |
-		self collectBlocksFrom: each into: aSet ]!
+	 Only nodes that were open before the line or are open after it can have
+	 gained a child.  Microdown appends a new node to the node that consumed
+	 the line or to one of its ancestors -- MicElement>>parent: is what does
+	 the appending -- and rebuilds a node's children from its inline elements
+	 in #closeMe, which the line loop only ever calls on the node it is
+	 closing and that node's ancestors.  Everything else in the tree was
+	 finished by an earlier line and cannot change again.
+
+	 The closed nodes are those open before the line and not after it.  For
+	 them the count of children already examined means nothing -- header,
+	 quote and paragraph blocks replace their children outright in #closeMe
+	 and a list item prepends to them -- so their child list is examined from
+	 the start again.  Nodes that stayed open only ever appended, so for those
+	 the examination resumes where it left off."
+	| openAfter stillOpen |
+	openAfter := self openPath.
+	stillOpen := IdentitySet new.
+	openAfter do: [ :node | stillOpen add: node ].
+	aPath do: [ :node |
+		(stillOpen includes: node)
+			ifFalse: [ scannedChildren removeKey: node ifAbsent: [ nil ] ] ].
+	aPath do: [ :node | self discoverChildrenOf: node stampingWith: anInterval ].
+	openAfter do: [ :node | self discoverChildrenOf: node stampingWith: anInterval ]!
+
+discoverChildrenOf: aBlock stampingWith: anInterval
+	"Examine the children of aBlock not examined yet, stamping the ones that
+	 are new to us."
+	| children size scanned |
+	children := self childBlocksOf: aBlock.
+	size := children size.
+	scanned := scannedChildren at: aBlock ifAbsent: [ 0 ].
+	scanned >= size ifTrue: [ ^ self ].
+	scanned + 1 to: size do: [ :index |
+		probeCount := probeCount + 1.
+		self discoverBlock: (children at: index) stampingWith: anInterval ].
+	scannedChildren at: aBlock put: size!
+
+discoverBlock: aBlock stampingWith: anInterval
+	"Record aBlock, and everything below it, as created by anInterval's line.
+	 A node we already know keeps the range it was first given: closing a
+	 block reorders and re-parents children without creating them."
+	| children |
+	(knownBlocks includes: aBlock) ifTrue: [ ^ self ].
+	knownBlocks add: aBlock.
+	self stamp: aBlock with: anInterval.
+	children := self childBlocksOf: aBlock.
+	children do: [ :each | self discoverBlock: each stampingWith: anInterval ].
+	scannedChildren at: aBlock put: children size!
+
+childBlocksOf: aBlock
+	"aBlock's children as a sequence, empty when it has none.
+
+	 MicHeaderBlock parks its raw text in `children' until #closeMe replaces
+	 it with the inline parse, so there the child list is a String.  Answering
+	 empty for that keeps single Characters out of the range table, where they
+	 could only ever be noise: Characters are shared image-wide, so one range
+	 per character is one range shared by every header that uses it."
+	| children |
+	(aBlock respondsTo: #children) ifFalse: [ ^ #() ].
+	children := aBlock children.
+	(children isNil or: [ children isString ]) ifTrue: [ ^ #() ].
+	^ children!
+
+openPath
+	"The nodes still open, from `current' up to and including the root."
+	| result node |
+	result := OrderedCollection new.
+	node := current.
+	[ node isNil ] whileFalse: [
+		result add: node.
+		node == root ifTrue: [ ^ result ].
+		node := node parent ].
+	^ result!
 
 openBlocksDo: aBlockClosure
 	"Evaluate aBlockClosure for each open node between current and the root,
@@ -157,10 +248,33 @@ stamp: aBlock with: anInterval
 !McMarkdownParser methodsFor: 'source mapping'!
 lineIntervalsWithin: aRange
 	"The line intervals belonging to aRange.  Ranges are always built out of
-	 whole lines, so a line is in when its start is."
+	 whole lines, so a line is in when its start is.
+
+	 #computeLineIntervals: emits the lines in order and each one starts after
+	 the previous one ends, so the starts strictly increase and the lines of a
+	 range are a contiguous run.  Finding it by binary search rather than by
+	 filtering the whole document matters because the styler asks this
+	 question once per block, and per line of a quote or a table on top of
+	 that: filtering made styling cost the document squared."
+	| low high mid first last size |
 	aRange ifNil: [ ^ #() ].
-	^ lineIntervals select: [ :each |
-		each first >= aRange first and: [ each first <= aRange last ] ]!
+	size := lineIntervals size.
+	low := 1.
+	high := size.
+	first := size + 1.
+	[ low <= high ] whileTrue: [
+		probeCount := probeCount + 1.
+		mid := low + high // 2.
+		((lineIntervals at: mid) first >= aRange first)
+			ifTrue: [ first := mid. high := mid - 1 ]
+			ifFalse: [ low := mid + 1 ] ].
+	last := first - 1.
+	[ last < size
+		and: [ (lineIntervals at: last + 1) first <= aRange last ] ]
+			whileTrue: [
+				probeCount := probeCount + 1.
+				last := last + 1 ].
+	^ lineIntervals copyFrom: first to: last!
 
 inlineSourceOf: aBlock
 	"The raw text Microdown inline-parsed for aBlock -- what its inline

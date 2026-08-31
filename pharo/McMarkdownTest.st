@@ -13,6 +13,16 @@ The styler tests assert on which attributes land where, for a cursor that is
 away from an element and again for a cursor on it.  That pair is the whole
 point of the projection: away renders, near reveals the source.
 
+A third kind came in with the incremental range tracking.  The parser no
+longer rediscovers the whole tree after every line, and the way to be sure
+that shortcut costs nothing is to keep the version it replaced --
+McMarkdownReferenceParser, at the foot of this file -- and assert the two
+agree node for node over a corpus that is mostly malformed markup, and over
+every prefix of a document besides.  The scaling is asserted the same way:
+McMarkdownParser>>probeCount counts the work the parser does, so a return to
+quadratic fails a test rather than a stopwatch, and fails it the same way on
+every machine.
+
 Chunk format: load with fileIn.
 "!
 
@@ -1129,3 +1139,392 @@ testEmphasisCollapsesInACellInsideABuiltGrid
 	  space pulse.
 	  self assert: gridCell extent x < comparator extent x ]
 		ensure: [ space close ]! !
+
+McMarkdownParser subclass: #McMarkdownReferenceParser
+	instanceVariableNames: ''
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McMarkdownReferenceParser commentStamp: '' prior: 0!
+The parser as it was before the incremental range tracking went in: it
+rediscovers the whole tree after every line, and filters every line interval of
+the document on every lookup.  Both are quadratic, which is the point -- this
+class exists so that the fast parser can be held against a definition of
+correct that is not itself, over documents nobody thought to write an
+assertion for.
+
+Only the two methods that changed are overridden, so everything downstream of
+them -- stamping, inline sources, markup stripping -- stays shared, and a
+parity failure can only mean the incremental discovery found a different set of
+nodes, or the binary search a different set of lines.
+
+Two deliberate differences are not defects and are documented at
+McMarkdownParser>>childBlocksOf:.  A header parks its raw text in `children'
+until it is closed, so this parser walks into a String and records a range
+against each of its Characters; Characters are shared image-wide, so those
+ranges say nothing about any header in particular.  The parity assertions
+compare AST nodes, which is what the styler ever asks about, so those entries
+are simply not compared.!
+
+!McMarkdownReferenceParser methodsFor: 'parsing'!
+parseSource: aString
+	"The original line loop: collect every node before the line and again
+	 after it, and stamp the difference."
+	source := aString.
+	ranges := IdentityDictionary new.
+	inlineSources := IdentityDictionary new.
+	lineIntervals := self computeLineIntervals: aString.
+	current := root := self newRootBlock
+		setParser: self;
+		yourself.
+	lineIntervals do: [ :each |
+		| seen |
+		seen := self allBlocks.
+		self handleLine: (self lineAt: each).
+		self allBlocks do: [ :block |
+			(seen includes: block) ifFalse: [ self stamp: block with: each ] ].
+		self openBlocksDo: [ :block | self stamp: block with: each ] ].
+	[ current == root ] whileFalse: [
+		current closeMe.
+		current := current parent ].
+	^ root! !
+
+!McMarkdownReferenceParser methodsFor: 'parsing - private'!
+allBlocks
+	"Every node currently in the tree, root included."
+	| set |
+	set := IdentitySet new.
+	self collectBlocksFrom: root into: set.
+	^ set!
+
+collectBlocksFrom: aBlock into: aSet
+	aBlock ifNil: [ ^ self ].
+	aSet add: aBlock.
+	(aBlock respondsTo: #children) ifFalse: [ ^ self ].
+	(aBlock children ifNil: [ #() ]) do: [ :each |
+		self collectBlocksFrom: each into: aSet ]! !
+
+!McMarkdownReferenceParser methodsFor: 'source mapping'!
+lineIntervalsWithin: aRange
+	"The original filter over every line of the document."
+	aRange ifNil: [ ^ #() ].
+	^ lineIntervals select: [ :each |
+		each first >= aRange first and: [ each first <= aRange last ] ]! !
+
+!McMarkdownTest methodsFor: 'helpers - parity'!
+parityDocuments
+	"The documents the two parsers are held against each other on.  Malformed
+	 and half-typed markup is over-represented on purpose: it is what a
+	 document being edited looks like most of the time, and it is where a
+	 shortcut in deciding which nodes a line created would show first."
+	^ self wellFormedDocuments
+		, self malformedDocuments
+		, self lineTerminatorDocuments
+		, (Array with: McRichEdit new demoContent)!
+
+wellFormedDocuments
+	^ {
+'' .
+'plain text with no markup in it at all' .
+'# Title
+body text
+
+## Second level
+more *body* text with `code` and **bold**' .
+'- one
+- two
+  - nested a
+  - nested b
+    - deeper
+- three
+
+1. first
+2. second
+   1. inner' .
+'> a quote
+> running over
+> three lines
+
+not the quote' .
+'```st
+1 + 2
+```
+
+```sql&db=/tmp/nowhere.db
+select 1
+```
+
+```
+unterminated fence' .
+'| a | b |
+|---|---|
+| 1 | 2 |
+| 3 | 4 |
+
+| header only |' .
+'***
+---
+___
+
+after the rules' .
+'# h1
+
+para one
+para one line two
+
+para two
+
+- item
+
+> quote
+
+```
+code
+```
+
+| t | u |
+|---|---|
+| 1 | 2 |
+
+end' }!
+
+malformedDocuments
+	"The fragments the robustness tests already cover for styling, plus the
+	 ones that specifically exercise a block being opened and closed by the
+	 same line, or never closed at all."
+	^ #( '**' '*' '_' '`' '#' '# ' '|' '| a' '| a |' '```' '```st' '- ' '1. '
+	     '> ' '---' '**bold' 'bold**' '``` ' '#### ' '>' '>>' '- - -' '1.'
+	     '10.' '     deeply indented' '#no space' '####### seven hashes' )
+		, { '| a |
+|--' .
+'```st
+never closed' .
+'- a
+    - b
+        - c' .
+'> q
+
+> q again' .
+'#
+
+##
+
+###' }!
+
+lineTerminatorDocuments
+	"The same document under each of the three terminators the parser copes
+	 with.  Built rather than written out, because a chunk reader is free to
+	 normalise the terminators inside a literal and then the CR cases would
+	 quietly stop being tested."
+	| lines |
+	lines := #( '# Title' '' 'a paragraph' 'onto two lines' '' '- one' '- two'
+		'' '> quoted' '' '| a | b |' '|---|---|' '| 1 | 2 |' '' 'tail' ).
+	^ { String with: Character lf.
+	    String with: Character cr.
+	    String with: Character cr with: Character lf }
+		collect: [ :terminator |
+			String streamContents: [ :stream |
+				lines do: [ :each | stream << each; << terminator ] ] ]!
+
+blocksInOrderOf: aParser
+	"Every node of a parsed tree, root first, each parent before its
+	 children.  Two parses of the same source build the same shape, so this
+	 order is what lets them be compared node against node."
+	| result visit |
+	result := OrderedCollection new.
+	visit := nil.
+	visit := [ :block |
+		result add: block.
+		(aParser childBlocksOf: block) do: [ :each | visit value: each ] ].
+	visit value: aParser root.
+	^ result!
+
+parityDescriptionOf: aBlock in: aParser
+	"What a node claims about itself: its class, the range it was stamped
+	 with, and the text that range picks out.  Asserting on the three
+	 together makes a parity failure name the node and show what it
+	 selected, rather than reporting that two numbers differ."
+	^ String streamContents: [ :stream |
+		stream
+			<< aBlock class name
+			<< ' '
+			<< (aParser rangeOf: aBlock) printString
+			<< ' -> '
+			<< (aParser sourceOf: aBlock) printString ]!
+
+assertParityFor: aString
+	"Parse aString both ways and assert the two agree about every node."
+	| fast slow fastBlocks slowBlocks |
+	fast := McMarkdownParser parseSource: aString.
+	slow := McMarkdownReferenceParser parseSource: aString.
+	fastBlocks := self blocksInOrderOf: fast.
+	slowBlocks := self blocksInOrderOf: slow.
+	self
+		assert: (fastBlocks collect: [ :each | each class name ]) asArray
+		equals: (slowBlocks collect: [ :each | each class name ]) asArray.
+	fastBlocks doWithIndex: [ :block :index |
+		| other |
+		other := slowBlocks at: index.
+		self
+			assert: (self parityDescriptionOf: block in: fast)
+			equals: (self parityDescriptionOf: other in: slow).
+		self
+			assert: (fast lineIntervalsWithin: (fast rangeOf: block)) asArray
+			equals: (slow lineIntervalsWithin: (slow rangeOf: other)) asArray.
+		self
+			assert: (fast inlineSourceOf: block)
+			equals: (slow inlineSourceOf: other).
+		self
+			assert: (fast inlineMapOf: block)
+			equals: (slow inlineMapOf: other) ]! !
+
+!McMarkdownTest methodsFor: 'tests - parser parity'!
+testEveryNodeGetsTheRangeTheWholeTreeDiffGaveIt
+	"The incremental discovery is only worth having if it stamps exactly what
+	 rediscovering the whole tree after every line stamped.  Rather than
+	 restate the expected offsets -- which would only pin down the documents
+	 someone thought to write out -- each corpus document is parsed both ways
+	 and the two trees are compared node by node, ranges, selected source,
+	 line intervals and inline maps alike."
+	self parityDocuments do: [ :each | self assertParityFor: each ]!
+
+testParityHoldsForEveryPrefixOfADocument
+	"A document is not only parsed whole: the editor reparses after every
+	 keystroke, so every prefix of a document is a document the parser sees,
+	 and a prefix is exactly where a block is left open and half-built."
+	| source |
+	source := '# Title
+
+para one
+para two
+
+- a
+- b
+
+> q
+
+| x | y |
+|---|---|
+| 1 | 2 |
+'.
+	1 to: source size do: [ :size |
+		self assertParityFor: (source copyFrom: 1 to: size) ]!
+
+testLineIntervalsWithinAgreesWithTheFilterForEveryInterval
+	"The styler asks about intervals it has widened and narrowed itself, not
+	 only about the ones the parser stamped, so the binary search is checked
+	 against the filter it replaced over every interval of a small document
+	 -- empty, inverted and out-of-bounds ones included."
+	| source fast slow |
+	source := '# t
+
+aa
+bbb
+
+cc'.
+	fast := McMarkdownParser parseSource: source.
+	slow := McMarkdownReferenceParser parseSource: source.
+	0 to: source size + 2 do: [ :first |
+		first - 2 to: source size + 2 do: [ :last |
+			self
+				assert: (fast lineIntervalsWithin: (first to: last)) asArray
+				equals: (slow lineIntervalsWithin: (first to: last)) asArray ] ].
+	self assert: (fast lineIntervalsWithin: nil) asArray equals: #()! !
+
+!McMarkdownTest methodsFor: 'helpers - scaling'!
+scalingDocumentOf: aNumber
+	"aNumber copies of a section holding one of every block kind, so that the
+	 document grows in lines and in nodes at a fixed rate and nothing else
+	 about it changes."
+	^ String streamContents: [ :stream |
+		1 to: aNumber do: [ :index |
+			stream
+				<< '# Header '; << index printString; cr; cr;
+				<< 'A paragraph with *emphasis* and `code` in it,'; cr;
+				<< 'running onto a second line.'; cr; cr;
+				<< '- item one'; cr;
+				<< '- item two'; cr; cr;
+				<< '> a quoted line'; cr; cr;
+				<< '| a | b |'; cr;
+				<< '|---|---|'; cr;
+				<< '| 1 | 2 |'; cr; cr ] ]!
+
+probesToParse: aNumber
+	^ (McMarkdownParser parseSource: (self scalingDocumentOf: aNumber)) probeCount!
+
+probesToStyle: aNumber
+	"Parse and style, and answer what both cost together.  Styling is where
+	 the line-interval lookups happen -- one per block, and one more per line
+	 of every quote and table -- so a lookup that walked the whole document
+	 would show up here rather than in the parse."
+	| source parser |
+	source := self scalingDocumentOf: aNumber.
+	parser := McMarkdownParser parseSource: source.
+	(McMarkdownStylerVisitor
+		parser: parser
+		text: source asRopedText
+		cursor: -1
+		palette: self palette
+		owner: nil) visit: parser root.
+	^ parser probeCount! !
+
+!McMarkdownTest methodsFor: 'tests - parser scaling'!
+testParsingWorkGrowsWithTheDocumentAndNotWithItsSquare
+	"The counter rather than the clock.  #probeCount is how many candidate
+	 slots the parser had to look at, so a linear parser roughly doubles it
+	 when the document doubles and the whole-tree diff this replaced roughly
+	 quadrupled it.  Asserting well inside the gap -- under 2.5x for a 2x
+	 document -- catches a return to quadratic without ever depending on how
+	 fast the machine is."
+	| small medium large |
+	small := self probesToParse: 20.
+	medium := self probesToParse: 40.
+	large := self probesToParse: 80.
+	self assert: small > 0.
+	self assert: medium * 2 < (small * 5).
+	self assert: large * 2 < (medium * 5)!
+
+testParsingWorkIsBoundedByTheNumberOfLines
+	"The ratio test says the growth is linear; this says what the line costs.
+	 A handful of probes per line is what looking at the children of the
+	 nodes open across it comes to, and it holds whatever the document is."
+	| parser |
+	parser := McMarkdownParser parseSource: (self scalingDocumentOf: 40).
+	self assert: parser lineIntervals size > 500.
+	self assert: parser probeCount < (parser lineIntervals size * 4)!
+
+testStylingWorkGrowsWithTheDocumentAndNotWithItsSquare
+	"Same claim for the styler, which is the caller that asks for line
+	 intervals over and over: once per block, and again per line for every
+	 quote and table."
+	| small medium large |
+	small := self probesToStyle: 20.
+	medium := self probesToStyle: 40.
+	large := self probesToStyle: 80.
+	self assert: small > 0.
+	self assert: medium * 2 < (small * 5).
+	self assert: large * 2 < (medium * 5)!
+
+testALineIntervalLookupDoesNotWalkTheDocument
+	"A three-line block in a thousand-line document costs a binary search and
+	 a short walk off its end, not a filter over the thousand lines.  The
+	 bound is generous -- a binary search over 1400 lines is eleven probes --
+	 and still an order of magnitude below what filtering would spend."
+	| parser table before after |
+	parser := McMarkdownParser parseSource: (self scalingDocumentOf: 100).
+	self assert: parser lineIntervals size > 1000.
+	table := parser root children last.
+	before := parser probeCount.
+	parser lineIntervalsWithin: (parser rangeOf: table).
+	after := parser probeCount.
+	self assert: after - before < 25!
+
+testProbeCountStartsFreshWithEachParse
+	"The counter belongs to one parse, not to the class: two parsers over the
+	 same source must report the same work, or the scaling assertions would
+	 drift with the order the tests happen to run in."
+	| source |
+	source := self scalingDocumentOf: 5.
+	self
+		assert: (McMarkdownParser parseSource: source) probeCount
+		equals: (McMarkdownParser parseSource: source) probeCount! !
