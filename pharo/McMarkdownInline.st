@@ -33,7 +33,7 @@ Chunk format: load with fileIn.
 "!
 
 Object subclass: #McMarkdownInlineStyler
-	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims producedAdornment'
+	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims producedAdornment links'
 	classVariableNames: 'RegexCache'
 	package: 'MalleableControl'!
 
@@ -104,9 +104,27 @@ mayHaveMarkup: aString
 	 holding a plain value -- which is nearly every cell of nearly every
 	 table -- answers false here and skips an inline parse and four regex
 	 passes it was only ever going to learn nothing from."
-	| markers |
+	| markers index char |
 	markers := self markupCharacters.
-	^ aString anySatisfy: [ :char | markers includes: char ]! !
+	index := 1.
+	[ index <= aString size ] whileTrue: [
+		char := aString at: index.
+		(markers includes: char) ifTrue: [ ^ true ].
+		char = $h ifTrue: [
+			((self token: 'http://' beginsIn: aString at: index)
+				or: [ self token: 'https://' beginsIn: aString at: index ])
+				ifTrue: [ ^ true ] ].
+		index := index + 1 ].
+	^ false!
+
+token: aToken beginsIn: aString at: anIndex
+	| last |
+	last := anIndex + aToken size - 1.
+	last > aString size ifTrue: [ ^ false ].
+	1 to: aToken size do: [ :offset |
+		(aString at: anIndex + offset - 1) = (aToken at: offset)
+			ifFalse: [ ^ false ] ].
+	^ true! !
 
 !McMarkdownInlineStyler methodsFor: 'initialization'!
 setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText cursor: anInteger palette: aPalette owner: anOwner
@@ -118,7 +136,8 @@ setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText c
 	palette := aPalette.
 	owner := anOwner.
 	claims := OrderedCollection new.
-	producedAdornment := false! !
+	producedAdornment := false.
+	links := nil! !
 
 !McMarkdownInlineStyler methodsFor: 'accessing'!
 paletteAt: aKey
@@ -145,10 +164,11 @@ producedAdornment
 
 !McMarkdownInlineStyler methodsFor: 'styling'!
 styleAll
-	"Emphasis first, then the tokens Microdown does not know about.  This
+	"Emphasis first, then links and the tokens Microdown does not know about.  This
 	 order is also the precedence when two tokens overlap: the first pass to
 	 claim a source range keeps it -- see claimFromSource:toSource:."
 	self styleEmphasis.
+	self styleLinks.
 	self styleCheckboxes.
 	self styleColours.
 	self styleButtons!
@@ -244,21 +264,26 @@ styleEmphasis
 	nodes do: [ :each | self styleEmphasisNode: each ]!
 
 maskedForEmphasis
-	"A copy of source with '[ ]'/'[x]' checkbox tokens blanked out to the
-	 same length, so styleEmphasis's parse does not choke on them; see
-	 styleEmphasis for why."
+	"A same-size copy with syntax that confuses Microdown blanked out.  Link
+	 labels remain so emphasis inside a label still renders; destinations and
+	 bare URLs are masked so underscores in a URL cannot become italics."
 	| masked |
 	masked := source copy.
 	((self class regexFor: '\[[ xX]\]') matchingRangesIn: source) do: [ :range |
 		range first to: range last do: [ :index | masked at: index put: $  ] ].
+	self linkSpans do: [ :link |
+		link start to: link stop do: [ :index | masked at: index put: $  ].
+		(link isImage not and: [ #(link wiki) includes: link kind ]) ifTrue: [
+			link labelStart to: link labelStop do: [ :index |
+				masked at: index put: (source at: index) ] ] ].
 	^ masked!
 
 styleEmphasisNode: aNode
 	"The width heuristic below only makes sense for symmetric delimiters --
 	 ** for bold, _ for italic, ` for monospace -- so anything else, notably
 	 MicLinkBlock and MicFigureBlock, is left alone before any of it runs.
-	 Link and image rendering is a later phase; all this owes them is to not
-	 mangle them."
+	 Links and images are handled by the tolerant source scanner after this
+	 emphasis pass; all this method owes them is to not mangle them."
 	| name start stop width inner |
 	name := aNode class name asString.
 	(#('MicBoldFormatBlock' 'MicItalicFormatBlock' 'MicMonospaceFormatBlock')
@@ -304,6 +329,78 @@ delimiterWidthOf: aNode from: start to: stop
 	^ (stop - start + 1 - innerSize) // 2! !
 
 !McMarkdownInlineStyler methodsFor: 'styling - tokens'!
+linkSpans
+	"Computed once because both emphasis masking and link projection need the
+	 exact same spans.  The scan is scoped to this inline block, never the flat
+	 document.  Dynamic lookup keeps an incremental reload of this file from
+	 disabling older widgets when McMarkdownLink has not been filed in yet."
+	| scannerClass |
+	links ifNotNil: [ ^ links ].
+	scannerClass := Smalltalk at: #McMarkdownLinkScanner ifAbsent: [ nil ].
+	^ links := scannerClass
+		ifNil: [ #() ]
+		ifNotNil: [ scannerClass scan: source ]!
+
+styleLinks
+	self linkSpans do: [ :link |
+		link isImage
+			ifTrue: [ self styleImage: link ]
+			ifFalse: [ self styleLink: link ] ]!
+
+styleLink: aLink
+	| state colour decoration click tooltip |
+	(self claimFromSource: aLink start toSource: aLink stop) ifFalse: [ ^ self ].
+	(self isNearSource: aLink start to: aLink stop) ifTrue: [
+		^ self highlightFromSource: aLink start toSource: aLink stop ].
+	aLink start < aLink labelStart ifTrue: [
+		self hideFromSource: aLink start toSource: aLink labelStart - 1 ].
+	aLink labelStop < aLink stop ifTrue: [
+		self hideFromSource: aLink labelStop + 1 toSource: aLink stop ].
+	state := owner
+		ifNil: [ #available ]
+		ifNotNil: [ [ owner linkStateFor: aLink ] on: Error do: [ :e | #dead ] ].
+	colour := self paletteAt: (state = #dead ifTrue: [ 'deadLink' ] ifFalse: [ 'link' ]).
+	self
+		apply: (BlTextForegroundAttribute new paint: colour)
+		fromSource: aLink labelStart
+		toSource: aLink labelStop.
+	decoration := BlTextDecorationAttribute new underline; color: colour; yourself.
+	state = #dead ifTrue: [ decoration dashed ].
+	self apply: decoration fromSource: aLink labelStart toSource: aLink labelStop.
+	click := BrTextClickAttribute new
+		action: [ :piece :element :editor :event |
+			owner ifNotNil: [ owner activateLink: aLink ] ];
+		yourself.
+	self apply: click fromSource: aLink labelStart toSource: aLink labelStop.
+	tooltip := BrTextTooltipAttribute new text: aLink target; yourself.
+	self apply: tooltip fromSource: aLink labelStart toSource: aLink labelStop!
+
+styleImage: aLink
+	(self isNearSource: aLink start to: aLink stop) ifTrue: [
+		(self claimFromSource: aLink start toSource: aLink stop) ifTrue: [
+			self highlightFromSource: aLink start toSource: aLink stop ].
+		^ self ].
+	self
+		replace: [ self imageElementFor: aLink ]
+		fromSource: aLink start
+		toSource: aLink stop!
+
+imageElementFor: aLink
+	owner ifNotNil: [
+		^ [ owner imageElementFor: aLink ] on: Error do: [ :e |
+			self imagePlaceholderFor: aLink ] ].
+	^ self imagePlaceholderFor: aLink!
+
+imagePlaceholderFor: aLink
+	| label |
+	label := BlTextElement new.
+	label text: (aLink caption asRopedText
+		foreground: (self paletteAt: 'status');
+		fontSize: 12).
+	label padding: (BlInsets top: 3 right: 6 bottom: 3 left: 6).
+	label border: (BlBorder paint: (self paletteAt: 'tableBorder') width: 1).
+	^ label!
+
 styleCheckboxes
 	"Replace [ ] and [x] with a live checkbox that writes back through the
 	 document map."

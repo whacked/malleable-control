@@ -22,11 +22,13 @@
     (user-error "Not connected — run M-x mc-emacs-start"))
   (let* ((cache-path (expand-file-name "pharo/McCache.st" mc-rich-edit-home))
          (relation-path (expand-file-name "pharo/McRelation.st" mc-rich-edit-home))
+         (link-path (expand-file-name "pharo/McMarkdownLink.st" mc-rich-edit-home))
          (inline-path (expand-file-name "pharo/McMarkdownInline.st" mc-rich-edit-home))
          (table-path (expand-file-name "pharo/McMarkdownTable.st" mc-rich-edit-home))
          (sqlite-path (expand-file-name "pharo/McSqlite.st" mc-rich-edit-home))
          (markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
          (st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
+         (links-path (expand-file-name "pharo/McRichEditLinks.st" mc-rich-edit-home))
          ;; Load order matters: McBoundedCache is used by McMarkdownInline,
          ;; McMarkdownTable and McSqlite, McMarkdownTable's cell reader
          ;; depends on McRelation, McSqlite depends on McRelation,
@@ -39,9 +41,11 @@
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
                                "(Smalltalk at: #McRichEdit) open. 'opened'")
-                       cache-path relation-path inline-path table-path
-                       sqlite-path markdown-path st-path))
+                       cache-path relation-path link-path inline-path table-path
+                       sqlite-path markdown-path st-path links-path))
          (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
                   (json-serialize `(:v 1 :args (:expression ,expr))))))
     (if reply

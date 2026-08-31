@@ -20,12 +20,13 @@ Button model: text is parsed for <<label>> tokens.  A handler table maps
 labels to actions.  The stencil block looks up the handler fresh on every
 restyle, so toggling between raw/widget never loses the association.
 
-Requires McRelation.st, McMarkdownInline.st, McMarkdownTable.st, McSqlite.st
-and McMarkdown.st to be filed in first, in that order.  McCache.st should be
-filed in before that chain to enable bounded caches; rendering remains correct
-without it so an incremental live-image reload cannot disable every widget.
-See test/run-pharo-tests.sh and elisp/mc-rich-edit.el, which both load the full
-optimized chain.
+Requires McRelation.st, McMarkdownLink.st, McMarkdownInline.st,
+McMarkdownTable.st, McSqlite.st and McMarkdown.st to be filed in first, in that
+order; McRichEditLinks.st extends this class after it is loaded.  McCache.st
+should be filed in before that chain to enable bounded caches; rendering
+remains correct without it so an incremental live-image reload cannot disable
+every widget.  See test/run-pharo-tests.sh and elisp/mc-rich-edit.el, which both
+load the full optimized chain.
 
 This file also holds McCursorProbe, the stand-in for the caret that lets a
 cursor move be answered out of the previous styling pass instead of provoking a
@@ -150,13 +151,22 @@ doesNotUnderstand: aMessage
 	^ aMessage sendTo: value! !
 
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries suspendCursorRestyle'
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries suspendCursorRestyle documentFile lastDocumentStamp watchProcess watchGeneration'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
 !McRichEdit class methodsFor: 'opening'!
 open
 	^ self new openView! !
+
+!McRichEdit class methodsFor: 'live reload'!
+restartAllFileWatchers
+	self allInstances do: [ :each |
+		[ each startWatchingDocument ] on: Error do: [ :e | nil ] ]!
+
+stopAllFileWatchers
+	self allInstances do: [ :each |
+		[ each stopWatchingDocument ] on: Error do: [ :e | nil ] ]! !
 
 !McRichEdit class methodsFor: 'rendering'!
 renderElement: anElement toFile: aPathString
@@ -224,6 +234,7 @@ initialize
 	darkMode := false.
 	paletteCache := nil.
 	suspendCursorRestyle := false.
+	watchGeneration := 0.
 	self invalidateStyleState.
 	buttonHandlers := Dictionary new! !
 
@@ -255,6 +266,8 @@ buildPalette
 			at: 'boldText' put: (Color fromHexString: '#fffffe');
 			at: 'dimDelimiter' put: (Color fromHexString: '#555555');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
+			at: 'link' put: (Color fromHexString: '#7fbdff');
+			at: 'deadLink' put: (Color fromHexString: '#ff6b6b');
 			at: 'status' put: (Color fromHexString: '#a7a9be');
 			at: 'codeBg' put: (Color fromHexString: '#24243a');
 			at: 'codeText' put: (Color fromHexString: '#c7c9d9');
@@ -274,6 +287,8 @@ buildPalette
 			at: 'boldText' put: (Color fromHexString: '#111111');
 			at: 'dimDelimiter' put: (Color fromHexString: '#bbbbbb');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
+			at: 'link' put: (Color fromHexString: '#315fbd');
+			at: 'deadLink' put: (Color fromHexString: '#b42318');
 			at: 'status' put: (Color fromHexString: '#888888');
 			at: 'codeBg' put: (Color fromHexString: '#e9ebf2');
 			at: 'codeText' put: (Color fromHexString: '#2d2d2d');
@@ -290,8 +305,11 @@ openView
 	"Create the editor with demo content, wire up the styler
 	 and cursor-driven restyling, and open in a new window."
 	| editorModel styler headerRow toggleButton scrollbar |
+	self stopWatchingDocument.
 	darkMode := false.
 	paletteCache := nil.
+	documentFile := self demoFile.
+	lastDocumentStamp := self documentStamp.
 	self invalidateStyleState.
 
 	space := BlSpace new.
@@ -312,6 +330,20 @@ openView
 	titleLabel := BrLabel new.
 	titleLabel constraintsDo: [:c | c horizontal matchParent].
 
+	"The path is boxed so it reads as inspectable UI rather than header copy."
+	pathLabel := BrLabel new.
+	pathLabel aptitude: BrGlamorousLabelAptitude new.
+	pathLabel padding: (BlInsets top: 4 right: 8 bottom: 4 left: 8).
+	pathLabel margin: (BlInsets right: 14).
+	pathLabel geometry: (BlRoundedRectangleGeometry cornerRadius: 4).
+	pathLabel constraintsDo: [ :c |
+		c horizontal fitContent.
+		c vertical fitContent.
+		c linear vertical alignCenter ].
+	pathTooltip := BrGlamorousWithExplicitTooltipAptitude new.
+	pathLabel addAptitude: pathTooltip.
+	self updatePathComponent.
+
 	toggleLabel := BrLabel new.
 	toggleLabel aptitude: BrGlamorousLabelAptitude new.
 	toggleLabel text: ('Dark Mode' asRopedText fontSize: 13).
@@ -329,6 +361,7 @@ openView
 		self darkMode: false. self applyPalette].
 
 	headerRow addChild: titleLabel.
+	headerRow addChild: pathLabel.
 	headerRow addChild: toggleLabel.
 	headerRow addChild: toggleButton.
 
@@ -344,7 +377,7 @@ openView
 		foreground: (self palette at: 'text');
 		fontSize: 16;
 		background: (self palette at: 'editorBg')).
-	editorElement text: self demoContent asRopedText.
+	editorElement text: self documentContent asRopedText.
 	editorElement constraintsDo: [:c |
 		c horizontal matchParent.
 		c vertical matchParent].
@@ -397,6 +430,7 @@ openView
 	space root addChild: container.
 	self applyPalette.
 	space show.
+	self startWatchingDocument.
 	^ self!
 
 applyPalette
@@ -416,6 +450,12 @@ applyPalette
 		toggleLabel text: ('Dark Mode' asRopedText
 			foreground: (p at: 'status');
 			fontSize: 13).
+		pathLabel
+			background: (p at: 'codeBg');
+			border: (BlBorder paint: (p at: 'tableBorder') width: 1).
+		pathLabel text: (self relativeDocumentPath asRopedText
+			foreground: (p at: 'link');
+			fontSize: 12).
 		statusLabel text: (statusLabel text asString asRopedText
 			foreground: (p at: 'status');
 			fontSize: 13).
@@ -498,6 +538,18 @@ demoFile
 	^ ref! !
 
 !McRichEdit methodsFor: 'content'!
+documentFile
+	^ documentFile ifNil: [ documentFile := self demoFile ]!
+
+documentContent
+	| ref |
+	ref := self documentFile.
+	ref exists ifTrue: [ ^ ref contents ].
+	^ '# Rich Edit
+
+_No document found.  Expected: ' , ref pathString , '_
+'!
+
 demoContent
 	"Load the demo document from the configured file.  Falls back to a
 	 minimal placeholder if the file does not exist."
@@ -508,6 +560,94 @@ demoContent
 
 _No demo file found.  Expected: ' , ref pathString , '_
 '! !
+
+!McRichEdit methodsFor: 'document path'!
+relativeDocumentPath
+	^ [ (self documentFile relativeTo: self projectRoot) pathString ]
+		on: Error
+		do: [ :e | self documentFile basename ]!
+
+updatePathComponent
+	pathLabel ifNil: [ ^ self ].
+	pathLabel text: (self relativeDocumentPath asRopedText
+		foreground: (self palette at: 'link');
+		fontSize: 12).
+	pathTooltip ifNotNil: [ pathTooltip text: self documentFile fullName ]!
+
+openDocument: aFileReference
+	"Switch documents deliberately.  Unlike an edit within one document, a
+	 document switch should replace the rope and its undo history."
+	| ref contents |
+	ref := aFileReference asFileReference asAbsolute.
+	(ref exists and: [ ref isFile ]) ifFalse: [
+		^ self showStatus: 'File not found: ' , ref pathString ].
+	contents := [ ref contents ] on: Error do: [ :e |
+		^ self showStatus: 'Cannot read ' , ref pathString , ': ' , e messageText ].
+	self stopWatchingDocument.
+	documentFile := ref.
+	lastDocumentStamp := self documentStamp.
+	cachedSource := nil.
+	cachedParser := nil.
+	self invalidateStyleState.
+	editorElement text: contents asRopedText.
+	self updatePathComponent.
+	editorElement editor styleText.
+	self showStatus: 'Opened ' , self relativeDocumentPath.
+	self startWatchingDocument! !
+
+!McRichEdit methodsFor: 'file watching'!
+watchDelay
+	^ Delay forMilliseconds: 500!
+
+documentStamp
+	| ref |
+	ref := self documentFile.
+	^ [ ref exists
+		ifFalse: [ 'missing' ]
+		ifTrue: [ ref modificationTime printString , '|' , ref size printString ] ]
+		on: Error
+		do: [ :e | 'unstampable' ]!
+
+startWatchingDocument
+	| generation |
+	self stopWatchingDocument.
+	watchGeneration := watchGeneration + 1.
+	generation := watchGeneration.
+	lastDocumentStamp := self documentStamp.
+	watchProcess := [
+		[ generation = watchGeneration
+			and: [ space notNil and: [ space isOpened ] ] ] whileTrue: [
+			self watchDelay wait.
+			generation = watchGeneration ifTrue: [
+				[ self checkDocumentForChanges ] on: Error do: [ :e | nil ] ] ] ]
+		forkAt: Processor userBackgroundPriority!
+
+stopWatchingDocument
+	watchGeneration := (watchGeneration ifNil: [ 0 ]) + 1.
+	watchProcess ifNotNil: [
+		watchProcess terminate.
+		watchProcess := nil ]!
+
+checkDocumentForChanges
+	| stamp expectedFile |
+	stamp := self documentStamp.
+	stamp = lastDocumentStamp ifTrue: [ ^ self ].
+	lastDocumentStamp := stamp.
+	expectedFile := self documentFile.
+	space ifNotNil: [
+		space enqueueTask: (BlTaskAction new action: [
+			documentFile = expectedFile ifTrue: [ self reloadDocumentFromDisk ] ]) ]!
+
+reloadDocumentFromDisk
+	| contents size |
+	self documentFile exists ifFalse: [
+		^ self showStatus: 'File removed: ' , self documentFile pathString ].
+	contents := [ self documentFile contents ] on: Error do: [ :e |
+		^ self showStatus: 'Cannot reload ' , self documentFile pathString ].
+	contents = editorElement editor text asString ifTrue: [ ^ self ].
+	size := editorElement editor text size.
+	self replaceFrom: 1 to: size with: contents.
+	self showStatus: 'Reloaded ' , self relativeDocumentPath! !
 
 !McRichEdit methodsFor: 'accessing'!
 editorElement

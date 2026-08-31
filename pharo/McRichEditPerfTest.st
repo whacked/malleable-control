@@ -46,6 +46,8 @@ sampleDocument
 
 Some **bold** and _italic_ with #ff8800 and <<hello>> here.
 
+A [link](note.md) and !![image](missing.png "caption").
+
 - [ ] first
 - second
 
@@ -147,6 +149,7 @@ instanceOn: aString
 	instance := McRichEdit new.
 	instance instVarNamed: 'editorElement' put: editor.
 	instance instVarNamed: 'space' put: editor space.
+	instance instVarNamed: 'statusLabel' put: BlTextElement new.
 	^ instance!
 
 spliceOf: aString from: start to: stop with: aReplacement
@@ -365,7 +368,7 @@ testPaletteHoldsTheKeysTheStylerAsks
 	palette := McRichEdit new palette.
 	#( 'text' 'title' 'boldText' 'dimDelimiter' 'highlight' 'editorBg' 'codeBg'
 	   'codeText' 'rule' 'tableBorder' 'tableHeaderBg' 'quoteBar' 'quoteText'
-	   'listMarker' ) do: [ :key |
+	   'listMarker' 'link' 'deadLink' ) do: [ :key |
 		self assert: (palette includesKey: key) description: 'missing ' , key ]! !
 
 !McRichEditPerfTest methodsFor: 'tests - text mutation'!
@@ -429,6 +432,24 @@ testReplaceClampsARangePastTheEnd
 	instance := self instanceOn: 'abc'.
 	instance replaceFrom: 2 to: 99 with: 'Z'.
 	self assert: instance editorElement editor text asString equals: 'aZ'! !
+
+!McRichEditPerfTest methodsFor: 'tests - file watching'!
+testAChangedDocumentStampReloadsThroughTheEditor
+	"Drive one watcher tick deterministically: no Delay and no background
+	 process.  The queued UI task must update the existing editor rope."
+	| ref instance text |
+	ref := FileLocator temp / ('mc-rich-watch-' , UUID new asString , '.md').
+	[ ref writeStreamDo: [ :stream | stream nextPutAll: 'old' ].
+	  instance := self instanceOn: 'old'.
+	  text := instance editorElement editor text.
+	  instance instVarNamed: 'documentFile' put: ref.
+	  instance instVarNamed: 'lastDocumentStamp' put: instance documentStamp.
+	  ref writeStreamDo: [ :stream | stream nextPutAll: 'new and longer' ].
+	  instance checkDocumentForChanges.
+	  instance editorElement space pulse.
+	  self assert: instance editorElement editor text == text.
+	  self assert: instance editorElement editor text asString equals: 'new and longer' ]
+		ensure: [ ref exists ifTrue: [ ref delete ] ]! !
 
 !McRichEditPerfTest methodsFor: 'tests - restyle gating'!
 gatingFixture

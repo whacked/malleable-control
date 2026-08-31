@@ -521,6 +521,14 @@ testReaderTreatsEscapedPipeAsContent
 	self assert: relation columnCount equals: 2.
 	self assert: (relation at: 1 column: 1) text equals: 'x \| y'!
 
+testReaderTreatsWikiAliasPipeAsContent
+	| relation |
+	relation := (self readerFor: '| page | state |
+|---|---|
+| [[notes/today|Today]] | open |') relation.
+	self assert: relation columnCount equals: 2.
+	self assert: (relation at: 1 column: 1) text equals: '[[notes/today|Today]]'!
+
 testReaderPadsRaggedRows
 	| relation |
 	relation := (self readerFor: '| a | b | c |
@@ -649,19 +657,16 @@ testFragmentRendersAButton
 	text := self styleFragmentAway: 'press <<Go>> now'.
 	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 7)!
 
-testFragmentLeavesLinksAlone
-	"The emphasis width heuristic is only valid for symmetric delimiters.
-	 Applied to a link it would hide the wrong halves of the source."
+testFragmentProjectsLinksWithoutUsingTheEmphasisHeuristic
 	| text |
 	text := self styleFragmentAway: 'see [label](http://x) end'.
-	1 to: text size do: [ :index |
-		self deny: (self in: text hasAttribute: BrTextHideAttribute at: index) ]!
+	self assert: (self in: text hasAttribute: BrTextHideAttribute at: 5).
+	self assert: (self in: text hasAttribute: BrTextClickAttribute at: 6)!
 
-testFragmentLeavesImagesAlone
+testFragmentProjectsImagesAsOneWidget
 	| text |
 	text := self styleFragmentAway: 'a !![alt](u.png) b'.
-	1 to: text size do: [ :index |
-		self deny: (self in: text hasAttribute: BrTextHideAttribute at: index) ]! !
+	self assert: (self in: text hasAttribute: BrTextAdornmentDynamicAttribute at: 3)! !
 
 !McMarkdownTest methodsFor: 'tests - inline scoping'!
 testCustomTokensDoNotApplyInsideACodeFence
@@ -1681,7 +1686,8 @@ testEveryMarkupCharacterStillReachesTheStyler
 	"mayHaveMarkup: is the fast path's whole safety argument -- a character
 	 it does not know about is a decoration silently lost.  Each of the four
 	 passes is checked through it here, with the token that fires it."
-	#('**figs**' '_figs_' '`figs`' '[ ] figs' '#7f5af0' '<<go>>') do: [ :each |
+	#('**figs**' '_figs_' '`figs`' '[ ] figs' '#7f5af0' '<<go>>'
+	   '[link](note.md)' 'https://example.com') do: [ :each |
 		self assert: (McMarkdownInlineStyler mayHaveMarkup: each)
 			description: each , ' should reach the styler' ].
 	self deny: (McMarkdownInlineStyler mayHaveMarkup: 'pears 11')!

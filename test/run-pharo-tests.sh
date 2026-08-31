@@ -18,19 +18,22 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McGtPatches.st' asFileReference fileIn.
   '$MC_HOME/pharo/McCache.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRelation.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McMarkdownLink.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownInline.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownTable.st' asFileReference fileIn.
   '$MC_HOME/pharo/McSqlite.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdown.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRichEdit.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McRichEditLinks.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRelationTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McCacheTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRichEditPerfTest.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McMarkdownLinkTest.st' asFileReference fileIn.
   (Smalltalk at: #McGtPatches) apply.
   failed := false.
   suites := OrderedCollection new.
-  #( #NatsClientTest #McRelationTest #McCacheTest #McMarkdownTest #McRichEditPerfTest ) do: [ :each |
+  #( #NatsClientTest #McRelationTest #McCacheTest #McMarkdownTest #McRichEditPerfTest #McMarkdownLinkTest ) do: [ :each |
     result := (Smalltalk at: each) suite run.
     (result hasFailures or: [ result hasErrors ]) ifTrue: [ failed := true ].
     suites add: each -> result ].

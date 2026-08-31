@@ -118,22 +118,34 @@ readRelation
 
 cellsInLine: anInterval
 	"Answer the line's cells as McRelationCells with document intervals.  A
-	 pipe preceded by a backslash is content, not a delimiter -- GFM's only
-	 escape inside a table."
-	| cells start index stop |
+	 pipe preceded by a backslash is content, not a delimiter.  A pipe inside
+	 double-bracket wiki syntax is also content, so [[target|label]] works in
+	 a table without requiring the user to escape its alias separator."
+	| cells start index stop wikiDepth |
 	cells := OrderedCollection new.
 	start := nil.
 	index := anInterval first.
 	stop := anInterval last.
+	wikiDepth := 0.
 	[ index <= stop ] whileTrue: [
-		((source at: index) = $| and: [ index = anInterval first or: [ (source at: index - 1) ~= $\ ] ])
-			ifTrue: [
-				start ifNotNil: [
-					cells add: (McRelationCell
-						source: (source copyFrom: start to: index - 1)
-						interval: (start to: index - 1)) ].
-				start := index + 1 ].
-		index := index + 1 ].
+		(index < stop and: [
+			(source at: index) = $[ and: [ (source at: index + 1) = $[ ] ])
+			ifTrue: [ wikiDepth := wikiDepth + 1. index := index + 2 ]
+			ifFalse: [
+				(index < stop and: [
+					(source at: index) = $] and: [ (source at: index + 1) = $] ] ])
+					ifTrue: [ wikiDepth := (wikiDepth - 1) max: 0. index := index + 2 ]
+					ifFalse: [
+						((source at: index) = $|
+							and: [ wikiDepth = 0
+							and: [ index = anInterval first or: [ (source at: index - 1) ~= $\ ] ] ])
+							ifTrue: [
+								start ifNotNil: [
+									cells add: (McRelationCell
+										source: (source copyFrom: start to: index - 1)
+										interval: (start to: index - 1)) ].
+								start := index + 1 ].
+						index := index + 1 ] ] ].
 	"Trailing content after the last pipe belongs to no cell in GFM."
 	^ cells asArray!
 
