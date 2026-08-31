@@ -30,6 +30,29 @@ activateLink: aLink
 imageElementFor: aLink
 	^ BlElement new size: 20 @ 20; yourself! !
 
+Object subclass: #McMarkdownImageCacheTestOwner
+	instanceVariableNames: 'pool calls'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McMarkdownImageCacheTestOwner methodsFor: 'accessing'!
+calls
+	"How many elements were actually built.  The point of the pool is that this
+	 stays at one per occurrence however many restyles run over it."
+	^ calls ifNil: [ 0 ]! !
+
+!McMarkdownImageCacheTestOwner methodsFor: 'images - adornment pool'!
+imageAdornmentCache
+	^ pool ifNil: [ pool := Dictionary new ]! !
+
+!McMarkdownImageCacheTestOwner methodsFor: 'links'!
+linkStateFor: aLink
+	^ #available!
+
+imageElementFor: aLink
+	calls := self calls + 1.
+	^ BlElement new size: 20 @ 20; yourself! !
+
 McRichEdit subclass: #McRichEditNavigationTestDouble
 	instanceVariableNames: 'openedFile statusMessage'
 	classVariableNames: ''
@@ -89,21 +112,45 @@ linkTarget: aString
 		caption: ''!
 
 style: aString cursor: anInteger owner: anOwner
-	| text map |
+	| text |
 	text := aString asRopedText.
-	map := McMarkdownInlineStyler identityMapOfSize: aString size.
+	self styleText: text cursor: anInteger owner: anOwner.
+	^ text!
+
+styleText: aText cursor: anInteger owner: anOwner
+	| source map |
+	source := aText asString.
+	map := McMarkdownInlineStyler identityMapOfSize: source size.
 	(McMarkdownInlineStyler
-		source: aString
+		source: source
 		targetMap: map
 		documentMap: map
-		text: text
+		text: aText
 		cursor: anInteger
 		palette: McRichEdit new palette
 		owner: anOwner) styleAll.
-	^ text!
+	^ aText!
 
 hasAttribute: aClass in: aText at: anIndex
-	^ (aText attributesAt: anIndex) anySatisfy: [ :each | each isKindOf: aClass ]! !
+	^ (aText attributesAt: anIndex) anySatisfy: [ :each | each isKindOf: aClass ]!
+
+adornmentsIn: aText
+	"The dynamic adornment attributes on aText, one entry per attribute rather
+	 than one per character it spans, in document order."
+	| result |
+	result := OrderedCollection new.
+	1 to: aText size do: [ :index |
+		(aText attributesAt: index) do: [ :each |
+			((each isKindOf: BrTextAdornmentDynamicAttribute)
+				and: [ (result identityIncludes: each) not ])
+					ifTrue: [ result add: each ] ] ].
+	^ result asArray!
+
+buildAdornment: anAttribute
+	"Build through the attribute, not its raw stencil, so Brick's pooled cache
+	 participates exactly as it does in an editor.  These stencils take no
+	 segment or editor arguments, so nil context is sufficient here."
+	^ (anAttribute affect: nil in: nil) first! !
 
 !McMarkdownLinkTest methodsFor: 'tests - scanner'!
 testScansAStandardMarkdownLink
@@ -194,6 +241,108 @@ testImageUsesOneReplacementAdornment
 	owner := McMarkdownLinkTestOwner new.
 	text := self style: '!![alt](image.png)' cursor: -1 owner: owner.
 	self assert: (self hasAttribute: BrTextAdornmentDynamicAttribute in: text at: 1)! !
+
+!McMarkdownLinkTest methodsFor: 'tests - image pooling'!
+testImageElementIsPooledAcrossCursorOnlyRestyles
+	"A caret step restyles the whole rope.  The same occurrence of the same
+	 image must come back from the pool rather than be rebuilt."
+	| owner source first second |
+	owner := McMarkdownImageCacheTestOwner new.
+	source := 'see !![alt](image.png) here'.
+	first := self adornmentsIn: (self style: source cursor: -1 owner: owner).
+	second := self adornmentsIn: (self style: source cursor: 25 owner: owner).
+	self assert: first size equals: 1.
+	self assert: second size equals: 1.
+	self assert: first first cache == second first cache.
+	self assert: (self buildAdornment: first first) == (self buildAdornment: second first).
+	self assert: owner calls equals: 1!
+
+testAttachedEditorReusesImageAfterRevealAndHide
+	"Exercise Brick's real adornment lifecycle: render the image, reveal its
+	 source by moving the synthetic caret onto it, then render it again."
+	| owner cursor source editor model space styler |
+	owner := McMarkdownImageCacheTestOwner new.
+	cursor := ValueHolder new contents: -1; yourself.
+	source := 'see !![alt](image.png) here'.
+	editor := BrEditor new.
+	editor aptitude: BrGlamorousRegularEditorAptitude new.
+	editor text: source asRopedText.
+	editor constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ].
+	model := editor editor.
+	model useSyncStylerStrategy.
+	styler := BlPluggableStyler new block: [ :text |
+		self styleText: text cursor: cursor contents owner: owner ].
+	editor styler: styler.
+	space := BlSpace new.
+	space extent: 500 @ 200.
+	space root addChild: editor.
+	[
+		model styleText.
+		space pulse; pulse.
+		self assert: owner calls equals: 1.
+		cursor contents: 5.
+		model styleText.
+		space pulse; pulse.
+		self assert: owner calls equals: 1.
+		cursor contents: -1.
+		model styleText.
+		space pulse; pulse.
+		self assert: owner calls equals: 1 ]
+		ensure: [ space close ]!
+
+testTwoOccurrencesOfOneImageGetDistinctElements
+	"A BlElement has one parent, so sharing one between two positions would let
+	 the second occurrence steal it from the first."
+	| owner adornments left right |
+	owner := McMarkdownImageCacheTestOwner new.
+	adornments := self
+		adornmentsIn: (self style: '!![a](x.png) and !![a](x.png)' cursor: -1 owner: owner).
+	self assert: adornments size equals: 2.
+	self deny: adornments first cache == adornments second cache.
+	left := self buildAdornment: adornments first.
+	right := self buildAdornment: adornments second.
+	self deny: left == right.
+	self assert: owner calls equals: 2.
+	self assert: owner imageAdornmentCache size equals: 2!
+
+testImageAdornmentIsGivenTheOwnersPoolWhenBrickSupportsIt
+	"withCache:key: stores one Brick pooled-cache object per occurrence in the
+	 owner's dictionary; newly styled attributes recover those same objects."
+	| owner adornments |
+	owner := McMarkdownImageCacheTestOwner new.
+	adornments := self
+		adornmentsIn: (self style: '!![a](x.png) and !![b](y.png)' cursor: -1 owner: owner).
+	self assert: adornments size equals: 2.
+	self assert: owner imageAdornmentCache size equals: 2.
+	adornments do: [ :each |
+		self assert: (owner imageAdornmentCache values identityIncludes: each cache) ].
+	adornments do: [ :each | self buildAdornment: each ].
+	self assert: owner calls equals: 2!
+
+testImageWithoutAnOwnerKeepsBuildingFreshElements
+	"No owner means no pool, which is how this worked before pooling existed."
+	| adornments |
+	adornments := self adornmentsIn: (self style: '!![alt](image.png)' cursor: -1 owner: nil).
+	self assert: adornments size equals: 1.
+	self
+		deny: (self buildAdornment: adornments first)
+			== (self buildAdornment: adornments first)!
+
+testEditorRotatesTheImagePoolOnSourceThemeAndExplicitReset
+	| instance pool |
+	instance := McRichEdit new.
+	instance noteImageCacheSource: 'one'.
+	pool := instance imageAdornmentCache.
+	instance noteImageCacheSource: 'one'.
+	self assert: instance imageAdornmentCache == pool.
+	instance noteImageCacheSource: 'two'.
+	self deny: instance imageAdornmentCache == pool.
+	pool := instance imageAdornmentCache.
+	instance darkMode: true.
+	self deny: instance imageAdornmentCache == pool.
+	pool := instance imageAdornmentCache.
+	instance resetImageAdornmentCache.
+	self deny: instance imageAdornmentCache == pool! !
 
 !McMarkdownLinkTest methodsFor: 'tests - resolution'!
 testRelativeFileResolvesBesideTheCurrentDocument

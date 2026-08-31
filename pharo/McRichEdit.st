@@ -151,7 +151,7 @@ doesNotUnderstand: aMessage
 	^ aMessage sendTo: value! !
 
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries suspendCursorRestyle documentFile lastDocumentStamp watchProcess watchGeneration'
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries suspendCursorRestyle documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -236,7 +236,43 @@ initialize
 	suspendCursorRestyle := false.
 	watchGeneration := 0.
 	self invalidateStyleState.
+	self resetImageAdornmentCache.
 	buttonHandlers := Dictionary new! !
+
+!McRichEdit methodsFor: 'images - adornment pool'!
+imageAdornmentCache
+	"Brick's pooled caches for image elements in the current document, keyed
+	 per image occurrence by McMarkdownInlineStyler>>imageCacheKeyFor:.
+
+	 It lives here rather than in the styler because a styler is built and
+	 discarded once per block per restyle; only the editor is around long
+	 enough for a caret step to find the previous pass's elements still there.
+	 Nothing in it is shared between occurrences -- the key carries the
+	 document position -- so no BlElement is ever asked for two parents."
+	^ imageAdornmentCache ifNil: [ imageAdornmentCache := Dictionary new ]!
+
+resetImageAdornmentCache
+	"Drop every pooled element.
+
+	 A fresh dictionary rather than removeAll:, because an adornment attribute
+	 from the previous pass may still hold the old one through Brick's
+	 withCache:key:.  Rotating leaves that attribute reading its own dead pool
+	 until it is replaced, which is harmless; emptying in place would let it
+	 refill the live pool with elements the reset was meant to retire."
+	imageAdornmentCache := Dictionary new.
+	imageCacheSource := nil!
+
+noteImageCacheSource: aString
+	"Rotate the pool when the document text has changed.
+
+	 An edit moves every image after it, and a key carries the position, so
+	 stale entries would simply never be hit again -- rotating is what keeps
+	 the pool the size of the document's images rather than the size of the
+	 edit history.  A cursor-only restyle passes the same source and keeps the
+	 pool, which is the case the pool exists for."
+	(imageCacheSource notNil and: [ imageCacheSource = aString ]) ifTrue: [ ^ self ].
+	imageAdornmentCache := Dictionary new.
+	imageCacheSource := aString! !
 
 !McRichEdit methodsFor: 'palette'!
 palette
@@ -252,7 +288,11 @@ darkMode: aBoolean
 	"Switch modes, dropping the palette that was built for the old one."
 	darkMode = aBoolean ifTrue: [ ^ self ].
 	darkMode := aBoolean.
-	paletteCache := nil!
+	paletteCache := nil.
+	"A pooled image element carries the old mode's frame and caption colours
+	 baked in, and the switch does not touch the source, so nothing else would
+	 retire them."
+	self resetImageAdornmentCache!
 
 buildPalette
 	"Return a dictionary of named colors for the current mode."
@@ -311,6 +351,7 @@ openView
 	documentFile := self demoFile.
 	lastDocumentStamp := self documentStamp.
 	self invalidateStyleState.
+	self resetImageAdornmentCache.
 
 	space := BlSpace new.
 	space title: 'Rich Edit — Prototype'.
@@ -608,6 +649,9 @@ openDocument: aFileReference
 	cachedSource := nil.
 	cachedParser := nil.
 	self invalidateStyleState.
+	"Relative image targets resolve against the document's directory, so the
+	 same key can mean a different file once the document changes."
+	self resetImageAdornmentCache.
 	editorElement text: contents asRopedText.
 	self updatePathComponent.
 	editorElement editor styleText.
@@ -723,6 +767,10 @@ parserFor: aString
 	 on the previous source rather than pairing a stale parser with a new key."
 	(cachedSource notNil and: [ cachedSource == aString or: [ cachedSource = aString ] ])
 		ifTrue: [ ^ cachedParser ].
+	"This is also the exact point at which image occurrence keys may have
+	 changed.  Sharing the cache-miss decision avoids another whole-document
+	 string comparison on cursor-only restyles."
+	self noteImageCacheSource: aString.
 	cachedParser := McMarkdownParser parseSource: aString.
 	cachedSource := aString.
 	^ cachedParser!

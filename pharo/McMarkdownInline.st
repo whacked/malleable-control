@@ -29,6 +29,13 @@ claims nothing, being plain attributes), then checkboxes, then colour
 swatches, then buttons.  A checkbox inside a button therefore renders as a
 checkbox, and the button's angle brackets stay literal.
 
+One widget is not rebuilt per pass: an image.  A checkbox or a swatch is a
+handful of BlElements, but an image element wraps a BrAsyncFileWidget, and a
+new one per restyle means decoding the file again on every caret step.  So
+image adornments draw their element from a pool the owner keeps, keyed by
+occurrence -- see imageCacheKeyFor: for what an occurrence is and why the key
+is what it is.
+
 Chunk format: load with fileIn.
 "!
 
@@ -221,11 +228,23 @@ claimFromSource: start toSource: stop
 	^ true!
 
 replace: aStencil fromSource: start toSource: stop
+	self replace: aStencil cache: nil key: nil fromSource: start toSource: stop!
+
+replace: aStencil cache: aCacheOrNil key: aKeyOrNil fromSource: start toSource: stop
+	"A replacement adornment that may draw its element from a pool.
+
+	 Brick's own hook is withCache:key:, which lets the attribute answer a
+	 previously built element without evaluating the stencil at all -- GT's
+	 LeSnippetStylerVisitor attaches external images that way."
+	| attribute |
 	(self claimFromSource: start toSource: stop) ifFalse: [ ^ self ].
-	self
-		apply: (BrTextAdornmentDynamicAttribute new beReplace; stencil: aStencil)
-		fromSource: start
-		toSource: stop!
+	attribute := BrTextAdornmentDynamicAttribute new
+		beReplace;
+		stencil: aStencil;
+		yourself.
+	(aCacheOrNil notNil and: [ aKeyOrNil notNil ])
+			ifTrue: [ attribute withCache: aCacheOrNil key: aKeyOrNil ].
+	self apply: attribute fromSource: start toSource: stop!
 
 append: aStencil fromSource: start toSource: stop
 	(self claimFromSource: start toSource: stop) ifFalse: [ ^ self ].
@@ -376,14 +395,51 @@ styleLink: aLink
 	self apply: tooltip fromSource: aLink labelStart toSource: aLink labelStop!
 
 styleImage: aLink
+	| key |
 	(self isNearSource: aLink start to: aLink stop) ifTrue: [
 		(self claimFromSource: aLink start toSource: aLink stop) ifTrue: [
 			self highlightFromSource: aLink start toSource: aLink stop ].
 		^ self ].
+	key := self imageCacheKeyFor: aLink.
 	self
 		replace: [ self imageElementFor: aLink ]
+		cache: self imageAdornmentCache
+		key: key
 		fromSource: aLink start
 		toSource: aLink stop!
+
+imageAdornmentCache
+	"The owner's pool of already-built image elements, or nil.
+
+	 Owned by the editor rather than by the styler because a styler lives for
+	 exactly one pass over one range: a new one is built for every block of
+	 every restyle, so anything it holds is thrown away before the next
+	 restyle could reuse it.  Looked up defensively so an owner that predates
+	 the pool -- and the no-owner case below -- keeps rendering images the way
+	 it always did, one fresh element per pass."
+	owner ifNil: [ ^ nil ].
+	(owner respondsTo: #imageAdornmentCache) ifFalse: [ ^ nil ].
+	^ owner imageAdornmentCache!
+
+imageCacheKeyFor: aLink
+	"What distinguishes one image occurrence from another, for pooling.
+
+	 The document position of the token's first character, and not the target,
+	 is what makes the key an occurrence: two `!![a](x.png)' in one document
+	 must render as two elements, because a BlElement has one parent and
+	 sharing one between two positions would make the second occurrence steal
+	 the first.  Position is also stable under a cursor move, which is the
+	 whole point -- a caret step restyles the entire rope, and every image on
+	 it should come back rather than be rebuilt.
+
+	 Target and caption ride along for an explicit identity.  The owner rotates
+	 the pool on source, palette and document changes, so an edit cannot leave
+	 an element under a stale occurrence key."
+	| documentStart |
+	owner ifNil: [ ^ nil ].
+	documentStart := self documentAt: aLink start.
+	documentStart ifNil: [ ^ nil ].
+	^ Array with: documentStart with: aLink target with: aLink caption!
 
 imageElementFor: aLink
 	owner ifNotNil: [
