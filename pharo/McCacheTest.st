@@ -446,7 +446,63 @@ testClearCacheAbandonsPendingJobs
 	key := source cacheKeyFor: 'SELECT 1'.
 	source queryAsync: 'SELECT 1' token: self onComplete: [ :r | nil ].
 	McSqliteSource clearCache.
-	self deny: (McSqliteSource isPendingFor: key)! !
+	self deny: (McSqliteSource isPendingFor: key)!
+
+testClearCacheNotifiesAnAbandonedListenerAndRejectsItsResult
+	| db source calls delivered oldJob |
+	db := self dbFileWith: 'one'.
+	self answering: (self asciiRowsOf: #(#('n') #('1'))).
+	self deferJobs.
+	source := McSqliteSource on: db fullName.
+	calls := 0.
+	source queryAsync: 'SELECT 1' token: self onComplete: [ :result |
+		calls := calls + 1.
+		delivered := result ].
+	oldJob := deferredJobs first.
+	McSqliteSource clearCache.
+	self assert: calls equals: 1.
+	self assert: delivered isPending.
+	oldJob value.
+	self assert: calls equals: 1.
+	self assert: McSqliteSource queryCache isEmpty!
+
+testConditionalUncacheDoesNotDeleteANewerEntry
+	| key old fresh |
+	key := 'db|query'.
+	old := McSqliteResult pending.
+	fresh := McSqliteResult pending.
+	McSqliteSource cacheAt: key put: old.
+	McSqliteSource cacheAt: key put: fresh.
+	McSqliteSource uncacheKey: key ifIdentical: old.
+	self assert: (McSqliteSource cachedAt: key) == fresh!
+
+testClearedJobCannotConsumeAReplacementJobsListeners
+	"An old job may finish after clearCache and after a replacement job for
+	 the same key has registered.  It must neither publish into the fresh
+	 cache nor remove or notify the replacement job's listeners."
+	| db source key oldCalls newCalls oldJob newJob |
+	db := self dbFileWith: 'one'.
+	self answering: (self asciiRowsOf: #(#('n') #('1'))).
+	self deferJobs.
+	source := McSqliteSource on: db fullName.
+	key := source cacheKeyFor: 'SELECT 1'.
+	oldCalls := 0.
+	newCalls := 0.
+	source queryAsync: 'SELECT 1' token: self onComplete: [ :r | oldCalls := oldCalls + 1 ].
+	oldJob := deferredJobs first.
+	McSqliteSource clearCache.
+	self assert: oldCalls equals: 1.
+	source queryAsync: 'SELECT 1' token: self onComplete: [ :r | newCalls := newCalls + 1 ].
+	newJob := deferredJobs second.
+	oldJob value.
+	self assert: oldCalls equals: 1.
+	self assert: newCalls equals: 0.
+	self assert: (McSqliteSource isPendingFor: key).
+	self assert: McSqliteSource queryCache isEmpty.
+	newJob value.
+	self assert: newCalls equals: 1.
+	self deny: (McSqliteSource isPendingFor: key).
+	self assert: (source queryAsync: 'SELECT 1' token: self onComplete: nil) isReady! !
 
 !McCacheTest methodsFor: 'tests - ascii parsing'!
 testAsciiOutputBecomesColumnsAndRows

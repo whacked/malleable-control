@@ -49,10 +49,10 @@ forSource: aString range: aRange lineIntervals: aCollection
 
 !McMarkdownTableReader class methodsFor: 'cache'!
 cacheLimit
-	"A cached reader holds the whole document string it was read from, so
-	 this is bounded tightly: enough for every table of a document plus the
-	 shapes one passes through while it is being typed, not enough to
-	 retain documents nobody is looking at."
+	"A cached reader retains the whole document string because its cell
+	 intervals are absolute.  Sixteen is an explicit memory/performance
+	 tradeoff: enough to avoid thrashing documents with several tables while
+	 bounding the historical document versions retained during editing."
 	^ 16!
 
 readerCache

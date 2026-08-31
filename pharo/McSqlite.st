@@ -51,7 +51,7 @@ Object subclass: #McSqliteResult
 
 Object subclass: #McSqliteSource
 	instanceVariableNames: 'dbPath'
-	classVariableNames: 'QueryCache PendingQueries ExecutionCount Executor JobRunner AccessLock'
+	classVariableNames: 'QueryCache PendingQueries CacheGeneration ExecutionCount Executor JobRunner AccessLock'
 	package: 'MalleableControl'!
 
 !McSqliteResult class methodsFor: 'instance creation'!
@@ -135,17 +135,43 @@ cachedAt: aKey
 cacheAt: aKey put: aResult
 	^ self accessLock critical: [ self queryCache at: aKey put: aResult ]!
 
-uncacheKey: aKey
-	^ self accessLock critical: [ self queryCache removeKey: aKey ifAbsent: [ nil ] ]!
+uncacheKey: aKey ifIdentical: anEntry
+	"Remove only the stale entry the caller inspected.  A background query may
+	 have replaced it while the caller was checking the file stamp."
+	^ self accessLock critical: [
+		(self queryCache at: aKey ifAbsent: [ nil ]) == anEntry
+			ifTrue: [ self queryCache removeKey: aKey ifAbsent: [ nil ] ] ]!
 
 clearCache
-	"Drop every result and abandon the listeners of every job in flight.  A
-	 job already running still finishes and still writes its result into the
-	 fresh cache; it simply has nobody left to notify, and the next restyle
-	 picks the result up.  This is what the error box's Retry button calls."
-	self accessLock critical: [
+	"Drop every result and invalidate every job in flight.  Incrementing the
+	 generation prevents an older job from populating the fresh cache or from
+	 consuming listeners registered by a replacement job for the same key.
+	 Abandoned listeners are notified after releasing the lock so callers that
+	 currently show a pending placeholder get a chance to request a restyle."
+	| abandoned pending |
+	abandoned := self accessLock critical: [
+		| listeners |
+		listeners := PendingQueries
+			ifNil: [ #() ]
+			ifNotNil: [ PendingQueries values asArray ].
 		QueryCache := nil.
-		PendingQueries := nil ]! !
+		PendingQueries := nil.
+		CacheGeneration := self cacheGeneration + 1.
+		listeners ].
+	pending := McSqliteResult pending.
+	abandoned do: [ :listeners |
+		listeners valuesDo: [ :each |
+			[ each value: pending ] on: Error do: [ :e | nil ] ] ]!
+
+cacheGeneration
+	^ CacheGeneration ifNil: [ CacheGeneration := 0 ]!
+
+cacheAt: aKey put: aResult ifGeneration: aGeneration
+	"Store aResult only if no clear happened while it was being computed."
+	^ self accessLock critical: [
+		self cacheGeneration = aGeneration
+			ifTrue: [ self queryCache at: aKey put: aResult ]
+			ifFalse: [ aResult ] ]! !
 
 !McSqliteSource class methodsFor: 'pending jobs'!
 pendingQueries
@@ -167,9 +193,8 @@ schedule: aKey source: aSource sql: aSqlString token: aTokenOrNil onComplete: aB
 	 subprocess for the same query.  Starting the job is outside it: a job
 	 runner that runs the job in hand -- a test -- would otherwise finish
 	 the whole query while the lock was held."
-	| started |
+	| started listeners generation |
 	started := self accessLock critical: [
-		| listeners |
 		listeners := self pendingQueries at: aKey ifAbsent: [ nil ].
 		listeners
 			ifNotNil: [
@@ -179,31 +204,43 @@ schedule: aKey source: aSource sql: aSqlString token: aTokenOrNil onComplete: aB
 				listeners := IdentityDictionary new.
 				self register: aBlockOrNil for: aTokenOrNil in: listeners.
 				self pendingQueries at: aKey put: listeners.
+				generation := self cacheGeneration.
 				true ] ].
 	started ifFalse: [ ^ self ].
 	self runJob: [
 		[ | result |
-		  result := [ aSource runAndCache: aSqlString ]
+		  result := [ aSource runAndCache: aSqlString ifGeneration: generation ]
 			on: Error
 			do: [ :e | McSqliteResult failed: (self messageOf: e) ].
-		  self finish: aKey with: result ]
+		  self finish: aKey listeners: listeners generation: generation with: result ]
 			ensure: [
-				self accessLock critical: [
-					self pendingQueries removeKey: aKey ifAbsent: [ nil ] ] ] ]!
+				self abandon: aKey listeners: listeners generation: generation ] ]!
 
 register: aBlockOrNil for: aTokenOrNil in: aDictionary
 	(aTokenOrNil isNil or: [ aBlockOrNil isNil ]) ifTrue: [ ^ self ].
 	aDictionary at: aTokenOrNil put: aBlockOrNil!
 
-finish: aKey with: aResult
-	"Notify the job's listeners.  One failing listener must not cost the
-	 others their callback, so each is guarded."
-	| listeners |
-	listeners := self accessLock critical: [
-		self pendingQueries removeKey: aKey ifAbsent: [ nil ] ].
-	listeners ifNil: [ ^ self ].
-	listeners valuesDo: [ :each |
+finish: aKey listeners: expectedListeners generation: aGeneration with: aResult
+	"Notify only the listeners belonging to this exact job generation.  One
+	 failing listener must not cost the others their callback."
+	| listenersToNotify |
+	listenersToNotify := self accessLock critical: [
+		| current |
+		current := self pendingQueries at: aKey ifAbsent: [ nil ].
+		(self cacheGeneration = aGeneration and: [ current == expectedListeners ])
+			ifTrue: [ self pendingQueries removeKey: aKey. expectedListeners ]
+			ifFalse: [ nil ] ].
+	listenersToNotify ifNil: [ ^ self ].
+	listenersToNotify valuesDo: [ :each |
 		[ each value: aResult ] on: Error do: [ :e | nil ] ]!
+
+abandon: aKey listeners: expectedListeners generation: aGeneration
+	"Remove a failed job's slot without disturbing a newer job for the key."
+	self accessLock critical: [
+		| current |
+		current := self pendingQueries at: aKey ifAbsent: [ nil ].
+		(self cacheGeneration = aGeneration and: [ current == expectedListeners ])
+			ifTrue: [ self pendingQueries removeKey: aKey ] ]!
 
 messageOf: anError
 	^ (anError messageText ifNil: [ anError class name ]) asString! !
@@ -296,7 +333,7 @@ cachedResultFor: aSqlString
 	entry ifNil: [ ^ nil ].
 	"Stamping touches the filesystem, so it is done outside the lock."
 	entry stamp = self stamp ifTrue: [ ^ entry ].
-	self class uncacheKey: key.
+	self class uncacheKey: key ifIdentical: entry.
 	^ nil! !
 
 !McSqliteSource methodsFor: 'querying'!
@@ -351,13 +388,22 @@ runAndCache: aSqlString
 	 first is the conservative order: a database written while the query ran
 	 leaves an entry stamped with the older state, which the next lookup
 	 sees as stale and re-runs."
+	| generation |
+	generation := self class accessLock critical: [ self class cacheGeneration ].
+	^ self runAndCache: aSqlString ifGeneration: generation!
+
+runAndCache: aSqlString ifGeneration: aGeneration
+	"Run the query, but publish it only if its cache generation is current."
 	| stamp result |
 	stamp := self stamp.
 	result := [ McSqliteResult ready: (self execute: aSqlString) ]
 		on: Error
 		do: [ :e | McSqliteResult failed: (self class messageOf: e) ].
 	result stamp: stamp.
-	self class cacheAt: (self cacheKeyFor: aSqlString) put: result.
+	self class
+		cacheAt: (self cacheKeyFor: aSqlString)
+		put: result
+		ifGeneration: aGeneration.
 	^ result!
 
 execute: aSqlString

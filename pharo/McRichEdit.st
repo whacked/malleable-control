@@ -550,9 +550,10 @@ parserFor: aString
 	 modification, one from the cursor move it causes -- and a cursor move on
 	 its own restyles too, so the same string is parsed over and over.
 
-	 Reuse is safe because nothing in the styling pass writes to the parser or
-	 to the AST: the visitor only reads ranges, line intervals and inline
-	 maps, and the only thing it mutates is the rope it decorates.  Holding on
+	 Reuse is safe because styling changes no parsing result or AST node.  The
+	 visitor reads ranges, line intervals and inline maps; line-interval lookup
+	 increments only the parser's probeCount diagnostic.  The rope it decorates
+	 is the only rendering state it mutates.  Holding on
 	 to the parser also keeps its memoised inline sources and index maps,
 	 which is the larger half of the saving.
 

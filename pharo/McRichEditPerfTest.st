@@ -288,7 +288,32 @@ testBoundariesAreRecordedForAnAwayCursor
 	| probe |
 	probe := McCursorProbe on: -1.
 	self style: self sampleDocument cursor: probe.
-	self assert: probe boundaries notEmpty! !
+	self assert: probe boundaries notEmpty!
+
+testBoundarySetCoversDatabaseViewProjectionChanges
+	"The database fence takes a cursor-dependent branch before choosing raw
+	 source or a result widget.  A missing, unique path keeps the test free of
+	 sqlite while still exercising that branch and its error projection."
+	| path source previous |
+	path := (FileLocator temp / ('mc-rich-edit-missing-' , UUID new asString , '.sqlite')) fullName.
+	source := 'before
+
+```sql&db=' , path , '
+SELECT 1
+```
+
+after'.
+	[ McSqliteSource clearCache.
+	  previous := self signatureOf: source cursor: 0.
+	  1 to: source size do: [ :cursor |
+		| current |
+		current := self signatureOf: source cursor: cursor.
+		(previous second includes: cursor) ifFalse: [
+			self
+				assert: current first = previous first
+				description: 'database-view projection changed without a recorded boundary' ].
+		previous := current ] ]
+		ensure: [ McSqliteSource clearCache ]! !
 
 !McRichEditPerfTest methodsFor: 'tests - parser reuse'!
 testParserIsReusedForUnchangedSource
