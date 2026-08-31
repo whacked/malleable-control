@@ -597,7 +597,8 @@ visitTable: aTable
 	range ifNil: [ ^ self ].
 	(self isNear: range) ifTrue: [ ^ self styleTableSourceIn: range ].
 	reader := McMarkdownTableReader
-		source: parser source
+		forSource: parser source
+		range: range
 		lineIntervals: (parser lineIntervalsWithin: range).
 	"columnCount, not rowCount: a header and separator with no data rows yet
 	 is the state every table passes through while it is being typed, and it
@@ -725,40 +726,108 @@ quoteBarElement
 
 !McMarkdownStylerVisitor methodsFor: 'visiting - database views'!
 visitDatabaseView: aCodeBlock range: aRange info: anInfoString
-	"Replace the whole fence with a table widget when the query succeeds, or
-	 an error box with a retry button when it fails.  Moving the cursor into
-	 the fence reveals the raw source and also triggers a fresh attempt on
-	 the next cursor move away.
+	"Replace the whole fence with a table widget when the query has
+	 succeeded, an error box with a retry button when it has failed, and a
+	 placeholder while it is still running.
 
-	 The query runs during styling (with caching) so the stencil block only
-	 builds a cheap element from an already-available result.  Before this,
-	 the stencil ran the query at layout time -- on every cursor move."
-	| dbPath sql relation errorMessage pal ownr |
+	 The styler is asked for the result rather than for the query: it takes
+	 whatever McSqliteSource already knows and never waits.  A cold query
+	 answers `pending' and starts a job on a background process, and this
+	 pass draws the placeholder and returns.  When the job lands it does not
+	 touch this rope -- which by then may be several keystrokes out of date,
+	 or gone -- it asks the editor to restyle, and the restyle reparses
+	 whatever the document has become and finds the result waiting in the
+	 cache.  That is the whole of the version safety: nothing computed
+	 against the old document is ever applied to the new one.
+
+	 With no owner -- a headless render, a test -- there is nowhere to send
+	 a restyle request to, so the query is resolved on this process instead
+	 and the fence renders its result in one pass."
+	| dbPath sql source result pal |
 	dbPath := anInfoString copyFrom: 'sql&db=' size + 1 to: anInfoString size.
 	sql := aCodeBlock body ifNil: [ '' ].
 	sql := sql trimBoth.
-	"Run the query now (cached), capturing either the relation or the error."
-	[ relation := (McSqliteSource on: dbPath) query: sql ]
-		on: Error do: [ :e | errorMessage := e messageText asString ].
-	"Capture palette and owner for the stencil closure."
+	source := McSqliteSource on: dbPath.
+	result := owner
+		ifNil: [ source resolveNow: sql ]
+		ifNotNil: [ :anOwner |
+			source
+				queryAsync: sql
+				token: anOwner
+				onComplete: (self restyleRequestFor: anOwner) ].
+	"Captured for the stencil closure, which Bloc evaluates at render time."
 	pal := palette.
-	ownr := owner.
 	self
-		replace: [
-			errorMessage
-				ifNotNil: [ self dbErrorElementFor: errorMessage dbPath: dbPath sql: sql ]
-				ifNil: [
-					(McMarkdownTableElement
-						relation: relation palette: pal owner: nil) build ] ]
+		replace: [ self dbElementFor: result dbPath: dbPath sql: sql palette: pal ]
 		from: aRange first
 		to: aRange first.
 	aRange first + 1 <= aRange last ifTrue: [
 		self hideFrom: aRange first + 1 to: aRange last ]!
 
+restyleRequestFor: anOwner
+	"A one-argument block for McSqliteSource to call when a query finishes.
+
+	 It runs on the background query process, so it does two things and no
+	 more: it hops to the UI process through the editor's task queue, and
+	 there it asks for a restyle.  It never reads or writes the rope, so
+	 there is no stale document to get wrong -- if the fence has been edited
+	 or deleted in the meantime the restyle simply does not ask for that
+	 query again.
+
+	 Closed over anOwner alone, deliberately: capturing the visitor would
+	 hold its rope and its parser alive for as long as the query ran."
+	^ [ :ignoredResult |
+		| element |
+		element := [ anOwner editorElement ] on: Error do: [ :e | nil ].
+		element ifNotNil: [
+			element enqueueTask: (BlTaskAction new action: [
+				[ element editor styleText ] on: Error do: [ :e | nil ] ]) ] ]!
+
+dbElementFor: aResult dbPath: aDbPath sql: aSql palette: aPalette
+	aResult isReady ifTrue: [
+		^ (McMarkdownTableElement
+			relation: aResult relation palette: aPalette owner: nil) build ].
+	aResult isFailed ifTrue: [
+		^ self dbErrorElementFor: aResult message dbPath: aDbPath sql: aSql ].
+	^ self dbPendingElementFor: aDbPath sql: aSql!
+
+dbPendingElementFor: aDbPath sql: aSql
+	"What stands in for the table while the query runs.
+
+	 Sized and bordered like the error box so that the fence does not jump
+	 when the real answer arrives, and worded so that a query which never
+	 answers is visibly a query that never answered rather than a blank."
+	| container label detail |
+	container := BlElement new.
+	container layout: BlLinearLayout vertical.
+	container constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	container padding: (BlInsets all: 10).
+	container margin: (BlInsets top: 2 bottom: 2).
+	container border: (BlBorder paint: (self paletteAt: 'tableBorder') width: 1).
+	container background: (self paletteAt: 'codeBg').
+	label := BlTextElement new.
+	label text: ('Running query...' asRopedText
+		foreground: (self paletteAt: 'status');
+		fontSize: 13).
+	label margin: (BlInsets bottom: 4).
+	detail := BlTextElement new.
+	detail text: (('db=' , aDbPath , '  sql=' , aSql) asRopedText
+		foreground: (self paletteAt: 'dimDelimiter');
+		fontSize: 12).
+	container addChild: label.
+	container addChild: detail.
+	^ container!
+
 dbErrorElementFor: aMessage dbPath: aDbPath sql: aSql
 	"A bordered box showing the error, the query that caused it, and a retry
-	 button.  Retry re-runs the query in place; if the database has appeared
-	 in the meantime, the next restyle replaces this box with a table."
+	 button.  Retry drops every cached answer and restyles, which asks for
+	 the query afresh; if it succeeds this time -- because the database has
+	 appeared, or been fixed -- the box is replaced by the table.
+
+	 A cached failure does not normally need the button: it is stamped with
+	 the state of the database file, so it invalidates itself the moment the
+	 file appears or changes.  The button is for the failure that stamping
+	 cannot see, such as a database that is there and readable but was busy."
 	| container label detail button |
 	container := BlElement new.
 	container layout: BlLinearLayout vertical.

@@ -33,8 +33,8 @@ Chunk format: load with fileIn.
 "!
 
 Object subclass: #McMarkdownInlineStyler
-	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims'
-	classVariableNames: ''
+	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims producedAdornment'
+	classVariableNames: 'RegexCache'
 	package: 'MalleableControl'!
 
 !McMarkdownInlineStyler class methodsFor: 'instance creation'!
@@ -54,6 +54,49 @@ identityMapOfSize: anInteger
 mapForInterval: anInterval
 	^ (anInterval first to: anInterval last) asArray! !
 
+!McMarkdownInlineStyler class methodsFor: 'patterns'!
+regexFor: aPatternString
+	"A compiled matcher for aPatternString, kept.
+
+	 String>>asRegex compiles the pattern afresh every time it is sent, and
+	 the four passes below send it four times for every cell of every table
+	 on every restyle.  Measured in this image at about five microseconds a
+	 compile against roughly a hundred and forty microseconds for a whole
+	 cell -- so a seventh of the cost of building a table was recompiling
+	 four constant patterns.
+
+	 A matcher carries the state of its last match, so a shared one is safe
+	 only while its users run one at a time on one process.  They do:
+	 everything that reaches here is styling, and styling -- the document
+	 styler and a table cell's stencil alike -- runs on the UI process.  The
+	 background query process in McSqlite never gets here."
+	^ self regexCache at: aPatternString ifAbsentPut: [ aPatternString asRegex ]!
+
+regexCache
+	^ RegexCache ifNil: [ RegexCache := McBoundedCache limit: 32 ]!
+
+clearRegexCache
+	RegexCache := nil!
+
+markupCharacters
+	"Every character that can begin something styleAll would decorate: the
+	 three emphasis delimiters Microdown recognises here, the bracket that
+	 opens a checkbox or a link, the hash that opens a colour, and the angle
+	 that opens a button."
+	^ '*_`[#<'!
+
+mayHaveMarkup: aString
+	"Whether styleAll could put a single attribute on aString.
+
+	 Conservative and cheap: one scan for the characters the four passes can
+	 act on, and none of them produces an attribute without one.  A cell
+	 holding a plain value -- which is nearly every cell of nearly every
+	 table -- answers false here and skips an inline parse and four regex
+	 passes it was only ever going to learn nothing from."
+	| markers |
+	markers := self markupCharacters.
+	^ aString anySatisfy: [ :char | markers includes: char ]! !
+
 !McMarkdownInlineStyler methodsFor: 'initialization'!
 setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText cursor: anInteger palette: aPalette owner: anOwner
 	source := aString.
@@ -63,7 +106,8 @@ setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText c
 	cursor := anInteger.
 	palette := aPalette.
 	owner := anOwner.
-	claims := OrderedCollection new! !
+	claims := OrderedCollection new.
+	producedAdornment := false! !
 
 !McMarkdownInlineStyler methodsFor: 'accessing'!
 paletteAt: aKey
@@ -73,7 +117,20 @@ targetAt: anIndex
 	^ targetMap at: anIndex ifAbsent: [ nil ]!
 
 documentAt: anIndex
-	^ documentMap at: anIndex ifAbsent: [ nil ]! !
+	^ documentMap at: anIndex ifAbsent: [ nil ]!
+
+producedAdornment
+	"Whether styleAll actually put an adornment -- a widget, or a collapsed
+	 delimiter -- on the rope.
+
+	 Answered by the styler because it is the styler that applies them.  The
+	 alternative, and what the table used to do, is to walk every character
+	 of the finished rope asking it for its attributes; this is the same
+	 fact for no work.  It is exact rather than approximate:
+	 apply:fromSource:toSource: sets it only once an attribute has survived
+	 the bounds checks and reached the rope, so a range that fell outside
+	 the text does not count."
+	^ producedAdornment! !
 
 !McMarkdownInlineStyler methodsFor: 'styling'!
 styleAll
@@ -97,7 +154,9 @@ apply: anAttribute fromSource: start toSource: stop
 	(targetStart isNil or: [ targetStop isNil ]) ifTrue: [ ^ self ].
 	(targetStart < 1 or: [ targetStop > text size ]) ifTrue: [ ^ self ].
 	targetStart > targetStop ifTrue: [ ^ self ].
-	text attribute: anAttribute from: targetStart to: targetStop!
+	text attribute: anAttribute from: targetStart to: targetStop.
+	(anAttribute isKindOf: BrTextAdornmentAttribute)
+		ifTrue: [ producedAdornment := true ]!
 
 hideFromSource: start toSource: stop
 	self apply: BrTextHideAttribute new fromSource: start toSource: stop!
@@ -179,7 +238,7 @@ maskedForEmphasis
 	 styleEmphasis for why."
 	| masked |
 	masked := source copy.
-	('\[[ xX]\]' asRegex matchingRangesIn: source) do: [ :range |
+	((self class regexFor: '\[[ xX]\]') matchingRangesIn: source) do: [ :range |
 		range first to: range last do: [ :index | masked at: index put: $  ] ].
 	^ masked!
 
@@ -237,7 +296,7 @@ delimiterWidthOf: aNode from: start to: stop
 styleCheckboxes
 	"Replace [ ] and [x] with a live checkbox that writes back through the
 	 document map."
-	('\[[ xX]\]' asRegex matchingRangesIn: source) do: [ :range |
+	((self class regexFor: '\[[ xX]\]') matchingRangesIn: source) do: [ :range |
 		| start stop checked documentIndex |
 		start := range first.
 		stop := range last.
@@ -261,7 +320,7 @@ styleCheckboxes
 					toSource: stop ] ]!
 
 styleColours
-	('#[0-9A-Fa-f]{6}' asRegex matchingRangesIn: source) do: [ :range |
+	((self class regexFor: '#[0-9A-Fa-f]{6}') matchingRangesIn: source) do: [ :range |
 		| start stop hex |
 		start := range first.
 		stop := range last.
@@ -285,7 +344,7 @@ styleButtons
 	"The handler is looked up fresh on every restyle, so toggling between raw
 	 text and the widget never loses the binding: it is by name, not by
 	 reference."
-	('<<[^>]+>>' asRegex matchingRangesIn: source) do: [ :range |
+	((self class regexFor: '<<[^>]+>>') matchingRangesIn: source) do: [ :range |
 		| start stop label |
 		start := range first.
 		stop := range last.

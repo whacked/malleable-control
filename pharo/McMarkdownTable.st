@@ -15,12 +15,51 @@ Chunk format: load with fileIn.
 
 Object subclass: #McMarkdownTableReader
 	instanceVariableNames: 'source lineIntervals relation separatorIndex'
-	classVariableNames: ''
+	classVariableNames: 'ReaderCache'
 	package: 'MalleableControl'!
 
 !McMarkdownTableReader class methodsFor: 'instance creation'!
 source: aString lineIntervals: aCollection
-	^ self new setSource: aString lineIntervals: aCollection! !
+	^ self new setSource: aString lineIntervals: aCollection!
+
+forSource: aString range: aRange lineIntervals: aCollection
+	"A reader for the table at aRange, reusing the one already built for it
+	 when the table has not changed.
+
+	 The styler runs on every keystroke and on every cursor move -- an arrow
+	 key restyles the whole document -- and each run split every line of
+	 every table into cells again to answer questions it had already
+	 answered.  Nothing about a table the user is not typing in changes
+	 between two of those runs.
+
+	 The key is the table's text together with where it starts, and both
+	 halves are load-bearing.  The text, because the cells are read from
+	 those characters.  The offset, because the intervals a cell writes back
+	 through are absolute document positions: the same table moved down a
+	 line is a different reader, or a checkbox in it would write to the
+	 characters the table used to occupy.  Together they make the key exact
+	 rather than a guess -- two documents agreeing on both agree on every
+	 cell and every interval this reader can produce."
+	| key |
+	aRange ifNil: [ ^ self source: aString lineIntervals: aCollection ].
+	key := aRange first printString , '|'
+		, (aString copyFrom: aRange first to: aRange last).
+	^ self readerCache at: key ifAbsentPut: [
+		(self source: aString lineIntervals: aCollection) relation; yourself ]! !
+
+!McMarkdownTableReader class methodsFor: 'cache'!
+cacheLimit
+	"A cached reader holds the whole document string it was read from, so
+	 this is bounded tightly: enough for every table of a document plus the
+	 shapes one passes through while it is being typed, not enough to
+	 retain documents nobody is looking at."
+	^ 16!
+
+readerCache
+	^ ReaderCache ifNil: [ ReaderCache := McBoundedCache limit: self cacheLimit ]!
+
+clearCache
+	ReaderCache := nil! !
 
 !McMarkdownTableReader methodsFor: 'initialization'!
 setSource: aString lineIntervals: aCollection
@@ -176,8 +215,21 @@ lineSeparator
 
 BlElement subclass: #McMarkdownTableElement
 	instanceVariableNames: 'relation palette owner sortAction'
-	classVariableNames: ''
+	classVariableNames: 'InlineStylerRuns'
 	package: 'MalleableControl'!
+
+!McMarkdownTableElement class methodsFor: 'statistics'!
+inlineStylerRuns
+	"How many cells have been handed to the inline styler.  The fast path in
+	 renderingFor:isHeader: is only worth having if this stays at zero for a
+	 table of plain values, and that is testable without a clock."
+	^ InlineStylerRuns ifNil: [ 0 ]!
+
+countInlineStylerRun
+	InlineStylerRuns := self inlineStylerRuns + 1!
+
+resetStatistics
+	InlineStylerRuns := 0! !
 
 !McMarkdownTableElement class methodsFor: 'instance creation'!
 relation: aRelation palette: aPalette owner: anOwner
@@ -206,6 +258,11 @@ cellTextFor: aCell
 	^ self cellTextFor: aCell isHeader: false!
 
 cellTextFor: aCell isHeader: aBoolean
+	"Just the rope.  renderingFor:isHeader: answers it together with the one
+	 other thing the caller needs to know about it."
+	^ (self renderingFor: aCell isHeader: aBoolean) first!
+
+renderingFor: aCell isHeader: aBoolean
 	"A cell is a smaller document: its source goes through the same inline
 	 styler, with the cursor forced away so it always renders, and with the
 	 document map set from the cell's interval so a widget inside it writes
@@ -218,6 +275,18 @@ cellTextFor: aCell isHeader: aBoolean
 	 Base styling is applied first: a whole-range foreground added afterwards
 	 would override the colours the styler puts on individual runs.
 
+	 Two facts come back rather than one -- the rope, and whether it holds
+	 an adornment -- because the caller needs both and only the styler can
+	 answer the second cheaply.  See hasAdornment: for what an adornment
+	 costs the caller, and producedAdornment for why asking the styler is
+	 exact rather than approximate.
+
+	 A cell whose source holds none of the characters the four passes can
+	 act on is not styled at all: it cannot come back decorated, so the
+	 inline parse and the four regex passes are skipped for it.  That is
+	 nearly every cell of nearly every table, and it is where the cost of
+	 rebuilding one goes.
+
 	 styleAll has no rescue of its own.  The visitor's calls to it are
 	 covered by McRichEdit>>styleMarkdown:source:cursor:'s on: Error do:, but
 	 a cell's text is built inside the table widget's stencil block, which
@@ -225,11 +294,13 @@ cellTextFor: aCell isHeader: aBoolean
 	 a rescue here, a styling failure would escape into Bloc's render loop
 	 instead of degrading, so this cell gets its own: on failure it falls
 	 back to its literal, base-styled source rope."
-	| text |
+	| text styler |
 	relation directives cellsAreMarkdown
-		ifFalse: [ ^ self baseTextFor: aCell isHeader: aBoolean ].
+		ifFalse: [ ^ { self baseTextFor: aCell isHeader: aBoolean. false } ].
+	(McMarkdownInlineStyler mayHaveMarkup: aCell source)
+		ifFalse: [ ^ { self baseTextFor: aCell isHeader: aBoolean. false } ].
 	text := self baseTextFor: aCell isHeader: aBoolean.
-	[ (McMarkdownInlineStyler
+	styler := McMarkdownInlineStyler
 		source: aCell source
 		targetMap: (McMarkdownInlineStyler identityMapOfSize: aCell source size)
 		documentMap: (aCell interval
@@ -238,9 +309,11 @@ cellTextFor: aCell isHeader: aBoolean
 		text: text
 		cursor: -1
 		palette: palette
-		owner: (aCell interval ifNil: [ nil ] ifNotNil: [ :ignored | owner ])) styleAll ]
-		on: Error do: [ :e | ^ self baseTextFor: aCell isHeader: aBoolean ].
-	^ text!
+		owner: (aCell interval ifNil: [ nil ] ifNotNil: [ :ignored | owner ]).
+	self class countInlineStylerRun.
+	[ styler styleAll ]
+		on: Error do: [ :e | ^ { self baseTextFor: aCell isHeader: aBoolean. false } ].
+	^ { text. styler producedAdornment }!
 
 baseTextFor: aCell isHeader: aBoolean
 	| text |
@@ -259,7 +332,14 @@ hasAdornment: aText
 	 stayed visible in a BlTextElement (37.07 -> 36.07 wide) but collapsed in
 	 an embedded BrEditorElement (58.80 -> 25.20 wide).  So any cell holding
 	 an adornment of either kind -- hide included -- needs the editor, and
-	 only a cell with none at all may take the cheap element."
+	 only a cell with none at all may take the cheap element.
+
+	 Off the build path since renderingFor:isHeader: started answering the
+	 same fact from the styler that applied the attributes -- this walks
+	 every character of every cell to learn it.  Kept because it derives
+	 the answer from the finished rope rather than from the styler's own
+	 bookkeeping, which makes it the independent check the tests hold that
+	 bookkeeping to."
 	1 to: aText size do: [ :index |
 		((aText attributesAt: index) anySatisfy: [ :each |
 			each isKindOf: BrTextAdornmentAttribute ]) ifTrue: [ ^ true ] ].
@@ -270,9 +350,10 @@ cellElementFor: aCell alignment: aSymbol isHeader: aBoolean
 	 a plain text painter, so a cell holding a widget needs an embedded
 	 editor.  Everything else -- the overwhelming majority -- gets the cheap
 	 element and costs what a cell costs today."
-	| content element |
-	content := self cellTextFor: aCell isHeader: aBoolean.
-	element := (self hasAdornment: content)
+	| rendering content element |
+	rendering := self renderingFor: aCell isHeader: aBoolean.
+	content := rendering first.
+	element := rendering second
 		ifTrue: [ self editorElementFor: content ]
 		ifFalse: [ BlTextElement new text: content; yourself ].
 	element padding: (BlInsets top: 3 right: 10 bottom: 3 left: 10).

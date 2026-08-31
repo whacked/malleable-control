@@ -27,9 +27,34 @@ Chunk format: load with fileIn.
 "!
 
 TestCase subclass: #McMarkdownTest
-	instanceVariableNames: ''
+	instanceVariableNames: 'savedExecutor savedJobRunner deferredJobs tempDir'
 	classVariableNames: ''
 	package: 'MalleableControl'!
+
+!McMarkdownTest methodsFor: 'running'!
+setUp
+	"Three caches and two hooks are class-side, shared with the live editor
+	 and with every other test in this suite.  They are reset here and put
+	 back in tearDown, because a suite is run repeatedly against one image
+	 and a cached reader from the last run is not a fresh start."
+	super setUp.
+	savedExecutor := McSqliteSource executor.
+	savedJobRunner := McSqliteSource jobRunner.
+	deferredJobs := OrderedCollection new.
+	McMarkdownTableReader clearCache.
+	McMarkdownTableElement resetStatistics.
+	McSqliteSource clearCache.
+	McSqliteSource resetStatistics!
+
+tearDown
+	McSqliteSource executor: savedExecutor.
+	McSqliteSource jobRunner: savedJobRunner.
+	McSqliteSource clearCache.
+	McMarkdownTableReader clearCache.
+	tempDir ifNotNil: [
+		[ tempDir ensureDeleteAll ] on: Error do: [ :e | nil ].
+		tempDir := nil ].
+	super tearDown! !
 
 !McMarkdownTest methodsFor: 'helpers'!
 palette
@@ -66,6 +91,21 @@ style: aString cursor: anInteger
 		cursor: anInteger
 		palette: self palette
 		owner: nil) visit: parser root.
+	^ text!
+
+style: aString cursor: anInteger owner: anOwner
+	"As style:cursor:, with an owner -- which is what puts the visitor on
+	 its live-editor path: widgets get somewhere to write back to, and a
+	 database view is resolved in the background rather than in place."
+	| text parser |
+	text := aString asRopedText.
+	parser := McMarkdownParser parseSource: aString.
+	(McMarkdownStylerVisitor
+		parser: parser
+		text: text
+		cursor: anInteger
+		palette: self palette
+		owner: anOwner) visit: parser root.
 	^ text!
 
 styleAway: aString
@@ -913,6 +953,13 @@ performButtonNamed: aLabel
 	buttonCalls add: aLabel! !
 
 !McRecordingOwner methodsFor: 'accessing'!
+editorElement
+	"There is no editor behind this owner.  Answered rather than not
+	 understood, because the visitor's restyle request asks for one and has
+	 to cope with an owner that cannot give it one -- which is exactly the
+	 case under test."
+	^ nil!
+
 replaceCalls
 	^ replaceCalls!
 
@@ -1139,7 +1186,6 @@ testEmphasisCollapsesInACellInsideABuiltGrid
 	  space pulse.
 	  self assert: gridCell extent x < comparator extent x ]
 		ensure: [ space close ]! !
-
 McMarkdownParser subclass: #McMarkdownReferenceParser
 	instanceVariableNames: ''
 	classVariableNames: ''
@@ -1528,3 +1574,343 @@ testProbeCountStartsFreshWithEachParse
 	self
 		assert: (McMarkdownParser parseSource: source) probeCount
 		equals: (McMarkdownParser parseSource: source) probeCount! !
+!McMarkdownTest methodsFor: 'helpers - fast paths'!
+tempDir
+	^ tempDir ifNil: [
+		tempDir := (FileLocator temp / ('mc-view-test-' , UUID new asString)) asFileReference.
+		tempDir ensureCreateDirectory.
+		tempDir ]!
+
+dbFile
+	"A file for the database path to point at.  Nothing opens it -- the
+	 executor hook takes sqlite3's place -- but McSqliteSource refuses to
+	 run against a path that is not there."
+	| ref |
+	ref := self tempDir / 'tasks.sqlite'.
+	ref exists ifFalse: [ ref writeStreamDo: [ :stream | stream nextPutAll: 'db' ] ].
+	^ ref!
+
+asciiRowsOf: aCollectionOfRows
+	| unit record |
+	unit := Character value: 16r1F.
+	record := Character value: 16r1E.
+	^ String streamContents: [ :stream |
+		aCollectionOfRows do: [ :row |
+			row do: [ :field | stream nextPutAll: field ]
+				separatedBy: [ stream nextPut: unit ].
+			stream nextPut: record ] ]!
+
+deferJobs
+	McSqliteSource jobRunner: [ :job | deferredJobs add: job ]!
+
+runDeferredJobs
+	| jobs |
+	jobs := deferredJobs.
+	deferredJobs := OrderedCollection new.
+	jobs do: [ :each | each value ].
+	^ jobs size!
+
+databaseViewSource
+	"A document whose fence names an absolute database path, so that it does
+	 not depend on where the image thinks the project root is."
+	^ '# Report
+
+```sql&db=' , self dbFile fullName , '
+SELECT name FROM tasks
+```
+'!
+
+firstAdornmentIn: aText
+	"The first BrTextAdornmentDynamicAttribute on aText, or nil."
+	1 to: aText size do: [ :index |
+		| found |
+		found := (aText attributesAt: index)
+			detect: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ]
+			ifNone: [ nil ].
+		found ifNotNil: [ ^ found ] ].
+	^ nil!
+
+adornmentElementIn: aText
+	^ self firstAdornmentIn: aText ifNotNil: [ :each | each stencil asElement ]!
+
+firstAdornmentIn: aText ifNotNil: aBlock
+	^ (self firstAdornmentIn: aText) ifNotNil: aBlock!
+
+textOf: anElement
+	"Whatever anElement and its children have to say, as one string."
+	^ String streamContents: [ :stream |
+		self collectTextOf: anElement into: stream ]!
+
+collectTextOf: anElement into: aStream
+	([ anElement text ] on: Error do: [ :e | nil ])
+		ifNotNil: [ :each | aStream nextPutAll: each asString; nextPut: $  ].
+	anElement children do: [ :each | self collectTextOf: each into: aStream ]! !
+
+!McMarkdownTest methodsFor: 'tests - cell fast path'!
+testAPlainCellIsNeverHandedToTheInlineStyler
+	"The fast path, asserted by counting rather than by timing: a table of
+	 plain values must not reach the inline parse or the four regex passes
+	 at all."
+	McMarkdownTableElement resetStatistics.
+	(self elementForTable: '| name | qty |
+|------|-----|
+| pears | 11 |
+| figs | 3 |') build.
+	self assert: McMarkdownTableElement inlineStylerRuns equals: 0!
+
+testACellHoldingMarkupIsStillHandedToTheInlineStyler
+	McMarkdownTableElement resetStatistics.
+	(self elementForTable: '| name |
+|------|
+| **figs** |') build.
+	self assert: McMarkdownTableElement inlineStylerRuns equals: 1!
+
+testTheFastPathLeavesAPlainCellExactlyAsBeforeIt
+	"Skipping the styler must be invisible: the same rope, the same absence
+	 of decoration, the same cheap element."
+	| element text |
+	element := self elementForTable: '| name |
+|------|
+| pears |'.
+	text := element cellTextFor: (element relation at: 1 column: 1).
+	self assert: text asString equals: ' pears '.
+	self deny: (element hasAdornment: text).
+	self deny: (self in: text hasAttribute: BlFontWeightAttribute at: 3)!
+
+testEveryMarkupCharacterStillReachesTheStyler
+	"mayHaveMarkup: is the fast path's whole safety argument -- a character
+	 it does not know about is a decoration silently lost.  Each of the four
+	 passes is checked through it here, with the token that fires it."
+	#('**figs**' '_figs_' '`figs`' '[ ] figs' '#7f5af0' '<<go>>') do: [ :each |
+		self assert: (McMarkdownInlineStyler mayHaveMarkup: each)
+			description: each , ' should reach the styler' ].
+	self deny: (McMarkdownInlineStyler mayHaveMarkup: 'pears 11')!
+
+testTheStylersAdornmentReportAgreesWithScanningTheRope
+	"renderingFor:isHeader: replaced a walk over every character of the
+	 finished rope with a flag the styler sets as it applies attributes.
+	 The two must not be allowed to drift, so the walk is kept and the flag
+	 is checked against it."
+	#('pears' '**figs**' '[ ] todo' '#7f5af0' '<<go>>' '5*3' 'a_b' '_it_') do: [ :each |
+		| element rendering |
+		element := self elementForTable: '| name |
+|------|
+| ' , each , ' |'.
+		rendering := element renderingFor: (element relation at: 1 column: 1) isHeader: false.
+		self
+			assert: rendering second = (element hasAdornment: rendering first)
+			description: each ]!
+
+testACellWhoseSourceLooksLikeMarkupButIsNotStaysCheap
+	"'5*3' holds a markup character and so reaches the styler, but nothing
+	 in it closes, so it must come back undecorated and take the cheap
+	 element -- the fast path is an optimisation, not the only route to a
+	 BlTextElement."
+	| element cell |
+	element := self elementForTable: '| n |
+|---|
+| 5*3 |'.
+	cell := element
+		cellElementFor: (element relation at: 1 column: 1)
+		alignment: #left
+		isHeader: false.
+	self assert: cell class equals: BlTextElement! !
+
+!McMarkdownTest methodsFor: 'tests - reader cache'!
+readerVia: aString
+	"A reader taken the way the visitor takes one, through the cache."
+	| parser range |
+	parser := McMarkdownParser parseSource: aString.
+	range := parser rangeOf: (parser root children
+		detect: [ :each | each class name asString = 'MicTableBlock' ]).
+	^ McMarkdownTableReader
+		forSource: parser source
+		range: range
+		lineIntervals: (parser lineIntervalsWithin: range)!
+
+testTheReaderForAnUnchangedTableIsReused
+	| source |
+	source := '| a | b |
+|---|---|
+| 1 | 2 |'.
+	self assert: (self readerVia: source) == (self readerVia: source)!
+
+testTheReaderIsNotReusedWhenTheTableTextChanges
+	self
+		deny: (self readerVia: '| a |
+|---|
+| 1 |') == (self readerVia: '| a |
+|---|
+| 2 |')!
+
+testTheReaderIsNotReusedWhenTheTableMoves
+	"Same characters, different offsets.  The intervals a cell writes back
+	 through are absolute, so a reader read at one offset is the wrong
+	 reader at another -- a checkbox in it would write to the characters the
+	 table used to occupy."
+	| table |
+	table := '| a |
+|---|
+| [ ] go |'.
+	self
+		deny: (self readerVia: table) == (self readerVia: 'preamble
+
+' , table)!
+
+testTheReaderCacheIsBounded
+	1 to: McMarkdownTableReader cacheLimit + 10 do: [ :index |
+		self readerVia: '| a |
+|---|
+| ' , index printString , ' |' ].
+	self
+		assert: McMarkdownTableReader readerCache size
+		equals: McMarkdownTableReader cacheLimit!
+
+testACachedReaderStillSortsAgainstItsOwnCharacters
+	"Sorting reads the document back out of the reader's own source string.
+	 A reader answered from the cache carries the source it was built from,
+	 so the edit it emits has to be checked, not assumed."
+	| source edit |
+	source := '| n |
+|---|
+| 2 |
+| 1 |'.
+	self readerVia: source.
+	edit := (self readerVia: source) sortEditBy: 1 ascending: true.
+	self assert: (source copyReplaceFrom: edit key first to: edit key last with: edit value)
+		equals: '| n |
+|---|
+| 1 |
+| 2 |'!
+
+testWriteBackThroughACachedReaderLandsOnTheRightCharacters
+	"The reader cache's one real hazard, checked at the point it would
+	 show: a checkbox in a table that is not at the top of the document
+	 must write to the document index it actually occupies."
+	| source owner element cell text attribute call result |
+	source := 'preamble
+
+| task |
+|------|
+| [ ] go |'.
+	self readerVia: source.
+	owner := self recordingOwner.
+	element := McMarkdownTableElement
+		relation: (self readerVia: source) relation
+		palette: self palette
+		owner: owner.
+	cell := element relation at: 1 column: 1.
+	text := element cellTextFor: cell.
+	attribute := self firstAdornmentIn: text.
+	attribute stencil build check.
+	self assert: owner replaceCalls size equals: 1.
+	call := owner replaceCalls first.
+	result := source
+		copyReplaceFrom: (call at: 1)
+		to: (call at: 2)
+		with: (call at: 3).
+	self assert: result equals: 'preamble
+
+| task |
+|------|
+| [x] go |'! !
+
+!McMarkdownTest methodsFor: 'tests - database views'!
+testStylingADatabaseViewNeverRunsTheQueryOnTheStylingProcess
+	"The thesis of the whole change.  The job runner keeps the job in hand,
+	 so an execution count of zero after styling is proof that the query did
+	 not happen on the process that styled -- not a race that happened to
+	 come out this way."
+	McSqliteSource executor: [ :path :sql | self asciiRowsOf: #(#('name') #('write')) ].
+	self deferJobs.
+	self style: self databaseViewSource cursor: -1 owner: self recordingOwner.
+	self assert: McSqliteSource executionCount equals: 0.
+	self assert: deferredJobs size equals: 1!
+
+testADatabaseViewRendersAPlaceholderWhileItsQueryRuns
+	| text element |
+	McSqliteSource executor: [ :path :sql | self asciiRowsOf: #(#('name') #('write')) ].
+	self deferJobs.
+	text := self style: self databaseViewSource cursor: -1 owner: self recordingOwner.
+	element := self adornmentElementIn: text.
+	self deny: element class equals: McMarkdownTableElement.
+	self assert: ((self textOf: element) includesSubstring: 'Running query')!
+
+testADatabaseViewRendersItsTableOnceTheQueryHasLanded
+	| owner element |
+	McSqliteSource executor: [ :path :sql | self asciiRowsOf: #(#('name') #('write')) ].
+	self deferJobs.
+	owner := self recordingOwner.
+	self style: self databaseViewSource cursor: -1 owner: owner.
+	self runDeferredJobs.
+	element := self adornmentElementIn:
+		(self style: self databaseViewSource cursor: -1 owner: owner).
+	self assert: element class equals: McMarkdownTableElement.
+	self assert: element relation rowCount equals: 1!
+
+testARestyleWhileTheQueryRunsDoesNotStartASecondOne
+	"A styler runs on every keystroke, and every one of them asks for the
+	 query again."
+	| owner |
+	McSqliteSource executor: [ :path :sql | self asciiRowsOf: #(#('name') #('write')) ].
+	self deferJobs.
+	owner := self recordingOwner.
+	5 timesRepeat: [ self style: self databaseViewSource cursor: -1 owner: owner ].
+	self assert: deferredJobs size equals: 1.
+	self runDeferredJobs.
+	self assert: McSqliteSource executionCount equals: 1!
+
+testADatabaseViewRendersAnErrorBoxWhenTheQueryFails
+	| owner element |
+	McSqliteSource executor: [ :path :sql | Error signal: 'no such table: tasks' ].
+	self deferJobs.
+	owner := self recordingOwner.
+	self style: self databaseViewSource cursor: -1 owner: owner.
+	self runDeferredJobs.
+	element := self adornmentElementIn:
+		(self style: self databaseViewSource cursor: -1 owner: owner).
+	self assert: ((self textOf: element) includesSubstring: 'no such table')!
+
+testADatabaseViewWithoutAnOwnerResolvesItsQueryInOnePass
+	"A headless render has nowhere to send a restyle request, so it takes
+	 the synchronous path and must come out with the table, not a
+	 placeholder that will never be replaced."
+	| element |
+	McSqliteSource executor: [ :path :sql | self asciiRowsOf: #(#('name') #('write')) ].
+	element := self adornmentElementIn: (self styleAway: self databaseViewSource).
+	self assert: element class equals: McMarkdownTableElement.
+	self assert: McSqliteSource executionCount equals: 1!
+
+testACachedQueryIsRenderedWithoutSchedulingAnythingAtAll
+	| owner element |
+	McSqliteSource executor: [ :path :sql | self asciiRowsOf: #(#('name') #('write')) ].
+	owner := self recordingOwner.
+	self styleAway: self databaseViewSource.
+	self deferJobs.
+	element := self adornmentElementIn:
+		(self style: self databaseViewSource cursor: -1 owner: owner).
+	self assert: element class equals: McMarkdownTableElement.
+	self assert: deferredJobs isEmpty.
+	self assert: McSqliteSource executionCount equals: 1!
+
+testTheRestyleRequestCopesWithAnOwnerThatHasNoEditor
+	"It runs on the background process, where a raise is a walkback in a
+	 window nobody asked for.  An owner whose editor has gone -- a closed
+	 window, a test -- must simply cost it nothing."
+	| parser visitor |
+	parser := McMarkdownParser parseSource: 'x'.
+	visitor := McMarkdownStylerVisitor
+		parser: parser
+		text: 'x' asRopedText
+		cursor: -1
+		palette: self palette
+		owner: nil.
+	(visitor restyleRequestFor: self recordingOwner) value: McSqliteResult pending!
+
+testACursorInsideADatabaseFenceShowsItsSourceAndAsksNothing
+	"The fence is only a view when the cursor is away from it."
+	McSqliteSource executor: [ :path :sql | self asciiRowsOf: #(#('name') #('write')) ].
+	self deferJobs.
+	self style: self databaseViewSource cursor: 20 owner: self recordingOwner.
+	self assert: deferredJobs isEmpty.
+	self assert: McSqliteSource executionCount equals: 0! !
