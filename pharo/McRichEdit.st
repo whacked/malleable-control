@@ -24,11 +24,130 @@ Requires McRelation.st, McMarkdownInline.st, McMarkdownTable.st and
 McMarkdown.st to be filed in first, in that order -- see test/run-pharo-tests.sh
 and elisp/mc-rich-edit.el, which both file in that chain.
 
+This file also holds McCursorProbe, the stand-in for the caret that lets a
+cursor move be answered out of the previous styling pass instead of provoking a
+new one.  It is defined first because McRichEdit names it.
+
 Chunk format: load with fileIn.
 "!
 
+"
+McCursorProbe -- an integer that remembers what was asked of it.
+
+The projection McRichEdit draws is a function of two things: the document
+source and the caret position.  It depends on the caret only through tests of
+the form `is the cursor near this range' -- McMarkdownStylerVisitor>>isNear:
+and McMarkdownInlineStyler>>isNearSource:to: are the whole of it, and both are
+built from >=, <= and < against document positions.
+
+A probe stands in for the cursor during a styling pass and answers each of
+those comparisons exactly as the integer would, while recording the position at
+which the answer would have flipped: `cursor >= k' changes between k - 1 and k,
+so k is a boundary; `cursor <= m' changes between m and m + 1, so m + 1 is.
+
+Two caret positions with no recorded boundary strictly between them therefore
+give every comparison on the path the pass actually took the same answer -- and
+since the path is chosen by those same comparisons, the pass takes the same
+path and produces the same attributes.  That is what lets McRichEdit skip a
+restyle rather than guess at one.
+
+Anything outside the comparison protocol reaches doesNotUnderstand:, which
+forwards to the wrapped integer and marks the record untrustworthy, so a future
+change to the styling pipeline costs the optimisation rather than correctness.
+
+Chunk format: load with fileIn.
+"!
+
+Object subclass: #McCursorProbe
+	instanceVariableNames: 'value boundaries trusted'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McCursorProbe class methodsFor: 'instance creation'!
+on: anInteger
+	^ self new setValue: anInteger! !
+
+!McCursorProbe methodsFor: 'initialization'!
+setValue: anInteger
+	value := anInteger.
+	boundaries := Set new.
+	trusted := true! !
+
+!McCursorProbe methodsFor: 'accessing'!
+value
+	"The cursor position being stood in for."
+	^ value!
+
+isTrusted
+	^ trusted!
+
+boundaries
+	"The positions at which some comparison made during the pass changes its
+	 answer, or nil when the record cannot be trusted."
+	^ trusted ifTrue: [ boundaries ] ifFalse: [ nil ]! !
+
+!McCursorProbe methodsFor: 'comparing'!
+< aNumber
+	"True below aNumber, so the answer changes on reaching it."
+	boundaries add: aNumber.
+	^ value < aNumber!
+
+<= aNumber
+	"True up to and including aNumber, so the answer changes one past it."
+	boundaries add: aNumber + 1.
+	^ value <= aNumber!
+
+> aNumber
+	boundaries add: aNumber + 1.
+	^ value > aNumber!
+
+>= aNumber
+	boundaries add: aNumber.
+	^ value >= aNumber!
+
+between: min and: max
+	"Written out rather than inherited so both bounds are recorded."
+	^ (self >= min) and: [ self <= max ]!
+
+= anObject
+	"Equality against a position is true at exactly one point, so it changes
+	 on reaching that point and again on leaving it.  Anything else falls back
+	 to identity, which is what an unwrapped comparison would have meant."
+	anObject isNumber ifFalse: [ ^ super = anObject ].
+	boundaries add: anObject.
+	boundaries add: anObject + 1.
+	^ value = anObject!
+
+hash
+	^ value hash! !
+
+!McCursorProbe methodsFor: 'printing'!
+printOn: aStream
+	aStream nextPutAll: 'McCursorProbe on: '.
+	value printOn: aStream! !
+
+!McCursorProbe methodsFor: 'forwarding'!
+adaptToNumber: aNumber andSend: aSelector
+	"A comparison written the other way round -- `position <= cursor' -- or
+	 any arithmetic mixing a number with the probe.  Pharo funnels every such
+	 case through the adaptTo* family, which Object already answers, so it
+	 would never reach doesNotUnderstand:; this is the one hook that catches
+	 them all.  Where the answer would flip is not something the recording
+	 protocol above covers, so the record is given up and the number is sent
+	 the message against the plain position."
+	trusted := false.
+	^ aNumber perform: aSelector with: value!
+
+doesNotUnderstand: aMessage
+	"Something outside the comparison protocol is something the boundary
+	 record cannot account for.  Forward it so behaviour is unchanged, and
+	 give up the record so the editor restyles on every cursor move, as it did
+	 before this class existed -- slower, never wrong."
+	trusted := false.
+	^ aMessage sendTo: value! !
+
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel darkMode buttonHandlers'
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries suspendCursorRestyle'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -100,10 +219,28 @@ initialize
 	 branches on darkMode, and a nil there is not a boolean."
 	super initialize.
 	darkMode := false.
+	paletteCache := nil.
+	suspendCursorRestyle := false.
+	self invalidateStyleState.
 	buttonHandlers := Dictionary new! !
 
 !McRichEdit methodsFor: 'palette'!
 palette
+	"The named colours of the current mode, built once and then handed out
+	 unchanged.  The styler asks for the palette on every restyle, and
+	 rebuilding eighteen Colors from hex strings per keystroke is pure
+	 waste.  Sharing one instance is safe because nothing writes to it:
+	 every consumer reads it through a paletteAt: that answers a default
+	 for a missing key."
+	^ paletteCache ifNil: [ paletteCache := self buildPalette ]!
+
+darkMode: aBoolean
+	"Switch modes, dropping the palette that was built for the old one."
+	darkMode = aBoolean ifTrue: [ ^ self ].
+	darkMode := aBoolean.
+	paletteCache := nil!
+
+buildPalette
 	"Return a dictionary of named colors for the current mode."
 	^ darkMode
 		ifTrue: [Dictionary new
@@ -151,6 +288,8 @@ openView
 	 and cursor-driven restyling, and open in a new window."
 	| editorModel styler headerRow toggleButton scrollbar |
 	darkMode := false.
+	paletteCache := nil.
+	self invalidateStyleState.
 
 	space := BlSpace new.
 	space title: 'Rich Edit — Prototype'.
@@ -182,9 +321,9 @@ openView
 	toggleButton checked: false.
 	toggleButton constraintsDo: [:c | c linear vertical alignCenter].
 	toggleButton whenCheckedDo: [
-		darkMode := true. self applyPalette].
+		self darkMode: true. self applyPalette].
 	toggleButton whenUncheckedDo: [
-		darkMode := false. self applyPalette].
+		self darkMode: false. self applyPalette].
 
 	headerRow addChild: titleLabel.
 	headerRow addChild: toggleLabel.
@@ -229,9 +368,10 @@ openView
 	editorModel := editorElement editor.
 	editorModel useSyncStylerStrategy.
 
-	"Cursor-driven restyling."
+	"Cursor-driven restyling.  The handler does not restyle unconditionally:
+	 see onCursorMoved for which moves can be answered from the last pass."
 	editorModel when: BrTextEditorCursorMovedEvent do: [:e |
-		editorModel styleText].
+		self onCursorMoved].
 
 	"Projection styler."
 	styler := BlPluggableStyler new block: [:aText |
@@ -382,18 +522,47 @@ styleText: aText
 styleMarkdown: aText source: str cursor: cursorPos
 	"Parse and project the standard markdown elements.  A styler runs on
 	 every keystroke, so a parse failure must degrade to unstyled text rather
-	 than take the editor down with it."
-	| parser |
-	[ parser := McMarkdownParser parseSource: str.
+	 than take the editor down with it.
+
+	 The cursor is handed to the visitor wrapped in an McCursorProbe, which
+	 answers every comparison exactly as the plain integer would while
+	 recording the positions at which the answer would have flipped.  That
+	 record is what onCursorMoved later consults to decide whether a move
+	 can change the projection at all."
+	| parser probe |
+	probe := McCursorProbe on: cursorPos.
+	[ parser := self parserFor: str.
 	  (McMarkdownStylerVisitor
 		parser: parser
 		text: aText
-		cursor: cursorPos
+		cursor: probe
 		palette: self palette
-		owner: self) visit: parser root ]
+		owner: self) visit: parser root.
+	  self noteStyledSource: str cursor: cursorPos boundaries: probe boundaries ]
 		on: Error
 		do: [ :e |
+			self invalidateStyleState.
 			self showStatus: 'markdown: ' , e messageText asString ]!
+
+parserFor: aString
+	"The parser for aString, reusing the last one when the source has not
+	 changed.  Two full restyles run for every keystroke -- one from the text
+	 modification, one from the cursor move it causes -- and a cursor move on
+	 its own restyles too, so the same string is parsed over and over.
+
+	 Reuse is safe because nothing in the styling pass writes to the parser or
+	 to the AST: the visitor only reads ranges, line intervals and inline
+	 maps, and the only thing it mutates is the rope it decorates.  Holding on
+	 to the parser also keeps its memoised inline sources and index maps,
+	 which is the larger half of the saving.
+
+	 The assignment order matters: a parse that raises leaves both variables
+	 on the previous source rather than pairing a stale parser with a new key."
+	(cachedSource notNil and: [ cachedSource == aString or: [ cachedSource = aString ] ])
+		ifTrue: [ ^ cachedParser ].
+	cachedParser := McMarkdownParser parseSource: aString.
+	cachedSource := aString.
+	^ cachedParser!
 
 cursorPosition
 	"Return the 0-based cursor position, or -1 if no cursor."
@@ -402,15 +571,99 @@ cursorPosition
 	editorElement editor cursors do: [:c | pos := c position].
 	^ pos! !
 
+!McRichEdit methodsFor: 'styling - restyle gating'!
+onCursorMoved
+	"A cursor move restyles only when it can change what is drawn.
+
+	 Every projection decision in the pipeline is one of `cursor is near this
+	 range' -- McMarkdownStylerVisitor>>isNear: and
+	 McMarkdownInlineStyler>>isNearSource:to: are the only places the cursor
+	 is read at all.  Each such test flips its answer at one or two known
+	 positions, and McCursorProbe collected exactly those positions during the
+	 last pass.  If the cursor has moved without crossing one of them, every
+	 test on the path taken last time answers the same way, so the same path
+	 is taken and the same attributes are produced -- the restyle would be a
+	 full reparse and a full relayout for an identical result.
+
+	 This is what removes the second restyle per keystroke.  Typing runs the
+	 styler once from the text modification and once from the cursor move that
+	 follows it; the second one is dropped here unless the caret has just
+	 crossed a delimiter boundary."
+	self cursorRestyleNeeded ifFalse: [ ^ self ].
+	editorElement editor styleText!
+
+cursorRestyleNeeded
+	"Whether the cursor's current position needs a fresh styling pass; see
+	 onCursorMoved for why the boundary set answers this exactly."
+	| position currentText low high |
+	suspendCursorRestyle ifTrue: [ ^ false ].
+	lastStyledSource ifNil: [ ^ true ].
+	lastStyledCursor ifNil: [ ^ true ].
+	lastStyledBoundaries ifNil: [ ^ true ].
+	position := self cursorPosition.
+	position = lastStyledCursor ifTrue: [ ^ false ].
+	"A cursor event can arrive before the modification that caused it has been
+	 applied -- a backspace moves the caret first and deletes afterwards -- so
+	 the source is compared, not assumed.  The size check keeps the common
+	 navigation case off the string comparison."
+	currentText := editorElement editor text.
+	lastStyledSource size = currentText size ifFalse: [ ^ true ].
+	lastStyledSource = currentText asString ifFalse: [ ^ true ].
+	low := position min: lastStyledCursor.
+	high := position max: lastStyledCursor.
+	^ lastStyledBoundaries anySatisfy: [ :each | each > low and: [ each <= high ] ]!
+
+noteStyledSource: aString cursor: anInteger boundaries: aSetOrNil
+	"Record what the last completed pass was a projection of.  A nil boundary
+	 set means the probe saw something it could not account for, and every
+	 later cursor move restyles."
+	lastStyledSource := aString.
+	lastStyledCursor := anInteger.
+	lastStyledBoundaries := aSetOrNil!
+
+invalidateStyleState
+	"Forget the last pass, so the next cursor move restyles unconditionally."
+	lastStyledSource := nil.
+	lastStyledCursor := nil.
+	lastStyledBoundaries := nil! !
+
 !McRichEdit methodsFor: 'text mutation'!
 replaceFrom: start to: stop with: aString
-	"Replace a range of the underlying editor text.
-	 This triggers re-styling automatically."
-	| text str newStr |
-	text := editorElement editor text.
-	str := text asString.
-	newStr := (str copyFrom: 1 to: start - 1) , aString , (str copyFrom: stop + 1 to: str size).
-	editorElement editor text: newStr asRopedText!
+	"Replace the 1-based, inclusive document range start..stop with aString.
+
+	 The range is mutated in place through the editor's own deleter and
+	 inserter rather than by handing the editor a whole new rope.  Assigning
+	 through text: reaches restoreText:, which throws the segment collector
+	 away and rebuilds every segment of the document -- for a checkbox toggle
+	 that is one character of edit paid for with a full reconstruction, and it
+	 takes the undo history and the caret's relationship to the text with it.
+	 The deleter and inserter edit the rope, move the cursors that sit after
+	 the edit by the right amount, and leave the rest of the model standing.
+
+	 Both operations are cursor coordinates: index n means `after n
+	 characters', so the 1-based range start..stop is start - 1 to stop.
+
+	 The two halves run with styling suspended so the intermediate state --
+	 the document with the old text gone and the new text not yet in -- is
+	 never parsed, and the cursor moves they cause are not answered either.
+	 One restyle at the end covers the whole edit."
+	| editor size from to |
+	editor := editorElement editor.
+	size := editor text size.
+	from := ((start - 1) max: 0) min: size.
+	to := (stop max: from) min: size.
+	suspendCursorRestyle := true.
+	[ editor disableStyleTextWhenModifiedDuring: [
+		to > from ifTrue: [ editor deleter from: from to: to; delete ].
+		aString isEmpty ifFalse: [
+			editor inserter
+				withoutSelectionDelete;
+				at: from;
+				string: aString;
+				insert ] ] ]
+		ensure: [ suspendCursorRestyle := false ].
+	self invalidateStyleState.
+	editor styleText!
 
 performButtonNamed: aLabel
 	| handler |
