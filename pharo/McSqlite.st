@@ -121,7 +121,16 @@ cacheLimit
 queryCache
 	"The cache itself.  Callers that are not this class should read it but
 	 not write it -- every write here goes through accessLock."
-	^ QueryCache ifNil: [ QueryCache := McBoundedCache limit: self cacheLimit ]!
+	^ QueryCache ifNil: [ QueryCache := self newCacheWithLimit: self cacheLimit ]!
+
+newCacheWithLimit: anInteger
+	"Query caching is optional infrastructure.  A partial live-image reload
+	 must still render markdown, even when McCache has not been filed in yet."
+	| cacheClass |
+	cacheClass := Smalltalk at: #McBoundedCache ifAbsent: [ nil ].
+	^ cacheClass
+		ifNil: [ Dictionary new ]
+		ifNotNil: [ cacheClass limit: anInteger ]!
 
 accessLock
 	"One lock over the query cache and the pending-job table, because the
@@ -274,7 +283,8 @@ countExecution
 
 resetStatistics
 	ExecutionCount := 0.
-	self queryCache resetStatistics! !
+	(self queryCache respondsTo: #resetStatistics) ifTrue: [
+		self queryCache resetStatistics ]! !
 
 !McSqliteSource class methodsFor: 'testing support'!
 executor

@@ -20,9 +20,12 @@ Button model: text is parsed for <<label>> tokens.  A handler table maps
 labels to actions.  The stencil block looks up the handler fresh on every
 restyle, so toggling between raw/widget never loses the association.
 
-Requires McRelation.st, McMarkdownInline.st, McMarkdownTable.st and
-McMarkdown.st to be filed in first, in that order -- see test/run-pharo-tests.sh
-and elisp/mc-rich-edit.el, which both file in that chain.
+Requires McRelation.st, McMarkdownInline.st, McMarkdownTable.st, McSqlite.st
+and McMarkdown.st to be filed in first, in that order.  McCache.st should be
+filed in before that chain to enable bounded caches; rendering remains correct
+without it so an incremental live-image reload cannot disable every widget.
+See test/run-pharo-tests.sh and elisp/mc-rich-edit.el, which both load the full
+optimized chain.
 
 This file also holds McCursorProbe, the stand-in for the caret that lets a
 cursor move be answered out of the previous styling pass instead of provoking a

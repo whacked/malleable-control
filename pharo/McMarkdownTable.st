@@ -56,7 +56,16 @@ cacheLimit
 	^ 16!
 
 readerCache
-	^ ReaderCache ifNil: [ ReaderCache := McBoundedCache limit: self cacheLimit ]!
+	^ ReaderCache ifNil: [ ReaderCache := self newCacheWithLimit: self cacheLimit ]!
+
+newCacheWithLimit: anInteger
+	"The reader cache accelerates restyling but must not be required for the
+	 table widget to render when files are incrementally loaded into an image."
+	| cacheClass |
+	cacheClass := Smalltalk at: #McBoundedCache ifAbsent: [ nil ].
+	^ cacheClass
+		ifNil: [ Dictionary new ]
+		ifNotNil: [ cacheClass limit: anInteger ]!
 
 clearCache
 	ReaderCache := nil! !

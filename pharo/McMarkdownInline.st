@@ -73,7 +73,18 @@ regexFor: aPatternString
 	^ self regexCache at: aPatternString ifAbsentPut: [ aPatternString asRegex ]!
 
 regexCache
-	^ RegexCache ifNil: [ RegexCache := McBoundedCache limit: 32 ]!
+	^ RegexCache ifNil: [ RegexCache := self newCacheWithLimit: 32 ]!
+
+newCacheWithLimit: anInteger
+	"The cache is a performance aid, not a rendering dependency.  In a live
+	 image these files are often re-filed independently; if McCache has not
+	 been loaded yet, keep styling with an ordinary dictionary instead of
+	 aborting the whole projection with an undeclared-global error."
+	| cacheClass |
+	cacheClass := Smalltalk at: #McBoundedCache ifAbsent: [ nil ].
+	^ cacheClass
+		ifNil: [ Dictionary new ]
+		ifNotNil: [ cacheClass limit: anInteger ]!
 
 clearRegexCache
 	RegexCache := nil!

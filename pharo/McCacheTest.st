@@ -93,6 +93,26 @@ runDeferredJobs
 	^ jobs size! !
 
 !McCacheTest methodsFor: 'tests - bounded cache'!
+testCacheConsumersFallBackWhenTheBoundedCacheIsUnavailable
+	"Caches added for responsiveness must never become load-time rendering
+	 dependencies.  A plain Dictionary supports the protocol each consumer
+	 needs and is the correctness-preserving fallback in a partially loaded
+	 live image."
+	| cacheClass |
+	cacheClass := Smalltalk at: #McBoundedCache.
+	[ Smalltalk at: #McBoundedCache put: nil.
+	  McMarkdownInlineStyler clearRegexCache.
+	  McMarkdownTableReader clearCache.
+	  McSqliteSource clearCache.
+	  self assert: McMarkdownInlineStyler regexCache class equals: Dictionary.
+	  self assert: McMarkdownTableReader readerCache class equals: Dictionary.
+	  self assert: McSqliteSource queryCache class equals: Dictionary ]
+		ensure: [
+			Smalltalk at: #McBoundedCache put: cacheClass.
+			McMarkdownInlineStyler clearRegexCache.
+			McMarkdownTableReader clearCache.
+			McSqliteSource clearCache ]!
+
 testAbsentKeyAnswersTheDefaultAndCountsAMiss
 	| cache |
 	cache := McBoundedCache limit: 4.
