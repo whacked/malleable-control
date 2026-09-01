@@ -5,6 +5,7 @@
 ;;; Code:
 
 (require 'mc-emacs-service)
+(require 'mc-smalltalk)
 
 (defvar mc-rich-edit-home
   (file-name-directory
@@ -69,6 +70,41 @@ global `mc-rich-edit-home', the override lasts for one invocation only."
   (interactive "DRich Edit project/worktree root: ")
   (let ((mc-rich-edit-home (file-name-as-directory (expand-file-name root))))
     (mc-rich-edit-open)))
+
+(defun mc-rich-edit--unquote-smalltalk-string (printed)
+  "Decode the printString representation of a Smalltalk String."
+  (if (and (stringp printed)
+           (> (length printed) 1)
+           (string-prefix-p "'" printed)
+           (string-suffix-p "'" printed))
+      (replace-regexp-in-string "''" "'" (substring printed 1 -1) t t)
+    printed))
+
+;;;###autoload
+(defun mc-rich-edit-search (query)
+  "Search the active Rich Edit for QUERY and return structured result data.
+Interactively, prompt for QUERY and report the active/count summary.  The
+returned plist includes :document, :ranges, :activeRange, :activeIndex,
+:matchCount, :highlightAll, and :wrapAround."
+  (interactive "sSearch Rich Edit: ")
+  (let* ((escaped (replace-regexp-in-string "'" "''" query t t))
+         (printed
+          (mc-st-eval-sync
+           (format
+            (concat "| instance | instance := (Smalltalk at: #McRichEdit) activeInstance. "
+                    "instance ifNil: [ self error: 'No open Rich Edit' ]. "
+                    "NeoJSONWriter toString: (instance searchFor: '%s')")
+            escaped)))
+         (result
+          (json-parse-string
+           (mc-rich-edit--unquote-smalltalk-string printed)
+           :object-type 'plist :array-type 'list
+           :null-object nil :false-object nil)))
+    (when (called-interactively-p 'interactive)
+      (message "Rich Edit search: %s/%s"
+               (or (plist-get result :activeIndex) 0)
+               (or (plist-get result :matchCount) 0)))
+    result))
 
 ;;;###autoload
 (defun mc-rich-edit-render (markdown)

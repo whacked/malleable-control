@@ -151,22 +151,31 @@ doesNotUnderstand: aMessage
 	^ aMessage sendTo: value! !
 
 Object subclass: #McRichEdit
-instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
-	classVariableNames: ''
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
+	classVariableNames: 'CurrentInstance'
 	package: 'MalleableControl'!
 
 !McRichEdit class methodsFor: 'opening'!
+activeInstance
+	CurrentInstance ifNotNil: [ ^ CurrentInstance ].
+	^ CurrentInstance := self allInstances
+		detect: [ :each | (each instVarNamed: 'space') notNil and: [
+			(each instVarNamed: 'space') isOpened ] ]
+		ifNone: [ nil ]!
+
+currentInstance: anInstance
+	CurrentInstance := anInstance!
+
 open
 	"A remote caller (notably Emacs over NATS) can successfully create a Bloc
 	 space while another GT window retains native focus.  Reuse and foreground
 	 the live editor so the command has an observable result instead of quietly
 	 stacking invisible prototype windows behind the current space."
 	| existing |
-	existing := self allInstances
-		detect: [ :each | (each instVarNamed: 'space') notNil and: [
-			(each instVarNamed: 'space') isOpened ] ]
-		ifNone: [ nil ].
-	existing ifNotNil: [
+	existing := self activeInstance.
+	(existing notNil and: [
+		(existing instVarNamed: 'space') notNil and: [
+			(existing instVarNamed: 'space') isOpened ] ]) ifTrue: [
 		(existing instVarNamed: 'space') toFront.
 		^ existing ].
 	^ self new openView; yourself! !
@@ -379,6 +388,7 @@ openView
 	 and cursor-driven restyling, and open in a new window."
 	| editorModel styler headerRow toggleButton scrollbar |
 	self stopWatchingDocument.
+	self class currentInstance: self.
 	darkMode := false.
 	paletteCache := nil.
 	documentFile := self demoFile.
