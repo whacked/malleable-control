@@ -1927,3 +1927,116 @@ testACursorInsideADatabaseFenceShowsItsSourceAndAsksNothing
 	self style: self databaseViewSource cursor: 20 owner: self recordingOwner.
 	self assert: deferredJobs isEmpty.
 	self assert: McSqliteSource executionCount equals: 0! !
+
+"
+McRecordingScrollTarget -- stands in for the BlInfiniteElement a wheel handler
+scrolls, and records which of the two scroll messages it was sent.  The
+distinction is the whole subject of the tests below: `scrollBy:' moves the
+content in the same frame, `smoothScrollBy:' hands the delta to
+BlScrollFlinger, which animates it over a few hundred milliseconds and so
+produces the glide.
+"!
+
+Object subclass: #McRecordingScrollTarget
+	instanceVariableNames: 'messages'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McRecordingScrollTarget methodsFor: 'initialization'!
+initialize
+	super initialize.
+	messages := OrderedCollection new! !
+
+!McRecordingScrollTarget methodsFor: 'scrolling'!
+canScrollDown
+	^ true!
+
+canScrollUp
+	^ true!
+
+isNestedScrollingEnabled
+	"No parent to negotiate with, so the handler takes the whole delta."
+	^ false!
+
+scrollBy: aPoint
+	messages add: #scrollBy: -> aPoint!
+
+smoothScrollBy: aPoint
+	messages add: #smoothScrollBy: -> aPoint! !
+
+!McRecordingScrollTarget methodsFor: 'accessing'!
+messages
+	^ messages!
+
+selectors
+	^ (messages collect: [ :each | each key ]) asArray! !
+
+!McMarkdownTest methodsFor: 'helpers - scrolling'!
+wheelEventDownBy: anAmount
+	"A wheel notch scrolling down.  BlMouseWheelEvent reads the direction off
+	 the vector: a negative y is a downward scroll."
+	^ BlMouseWheelEvent new
+		vector: (BlVector x: 0 y: anAmount negated);
+		currentTarget: McRecordingScrollTarget new;
+		yourself!
+
+targetOf: anEvent
+	^ anEvent currentTarget! !
+
+!McMarkdownTest methodsFor: 'tests - scroll inertia'!
+testStockWheelHandlerAnimatesTheScroll
+	"Pins the reason McInstantScrollListener exists.  If a future GT drops the
+	 animation from the stock handler, this fails and the subclass can go."
+	| event target |
+	event := self wheelEventDownBy: 3.
+	target := self targetOf: event.
+	BlInfiniteMouseScrollListener new mouseWheelEvent: event.
+	self assert: target selectors equals: #(#smoothScrollBy:)!
+
+testInstantWheelHandlerScrollsInTheSameFrame
+	| event target |
+	event := self wheelEventDownBy: 3.
+	target := self targetOf: event.
+	McInstantScrollListener new mouseWheelEvent: event.
+	self assert: target selectors equals: #(#scrollBy:)!
+
+testInstantWheelHandlerKeepsTheStockDelta
+	"Same distance as the stock handler moves, just applied at once."
+	| instant stock |
+	instant := self wheelEventDownBy: 3.
+	stock := self wheelEventDownBy: 3.
+	McInstantScrollListener new mouseWheelEvent: instant.
+	BlInfiniteMouseScrollListener new mouseWheelEvent: stock.
+	self
+		assert: (self targetOf: instant) messages first value
+		equals: (self targetOf: stock) messages first value!
+
+testInstantWheelHandlerIgnoresAZeroVector
+	| event target |
+	event := BlMouseWheelEvent new
+		vector: (BlVector x: 0 y: 0);
+		currentTarget: McRecordingScrollTarget new;
+		yourself.
+	target := self targetOf: event.
+	McInstantScrollListener new mouseWheelEvent: event.
+	self assert: target selectors equals: #()!
+
+testAttachToReplacesTheStockHandler
+	| element handlers |
+	element := BrEditor new.
+	McInstantScrollListener attachTo: element.
+	handlers := element eventDispatcher handlers
+		select: [ :each | each isKindOf: BlInfiniteMouseScrollListener ].
+	self assert: (handlers collect: [ :each | each class ]) asArray
+		equals: (Array with: McInstantScrollListener)!
+
+testAttachToIsIdempotent
+	"The live editor is rebuilt in place on reload; attaching twice must not
+	 stack two handlers and double every scroll."
+	| element handlers |
+	element := BrEditor new.
+	McInstantScrollListener attachTo: element.
+	McInstantScrollListener attachTo: element.
+	handlers := element eventDispatcher handlers
+		select: [ :each | each isKindOf: BlInfiniteMouseScrollListener ].
+	self assert: handlers size equals: 1! !

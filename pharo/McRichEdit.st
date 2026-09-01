@@ -150,6 +150,68 @@ doesNotUnderstand: aMessage
 	trusted := false.
 	^ aMessage sendTo: value! !
 
+"
+McInstantScrollListener -- mouse-wheel scrolling without the glide.
+
+BrEditor is a BlInfiniteElement, and every BlInfiniteElement installs a
+BlInfiniteMouseScrollListener whose last act on a wheel event is
+`smoothScrollBy:'.  That routes through BlScrollFlinger, which turns the
+notch into an animation: with no drag velocity the duration is
+((|delta| / height) + 1) * 300 ms, eased by a BlQuinticInterpolator and
+capped at two seconds.  A second notch arriving mid-animation restarts the
+task from wherever the first had reached, so a run of notches reads as
+momentum that keeps travelling after the fingers stop.  The effect is
+hardcoded in that handler -- there is no preference behind it.
+
+This subclass keeps the wheel arithmetic and the nested-scrolling
+negotiation of its superclass, which is where the interesting behaviour
+lives, and changes only the final move to `scrollBy:' so the delta is
+applied in the same frame.
+"!
+
+BlInfiniteMouseScrollListener subclass: #McInstantScrollListener
+	instanceVariableNames: ''
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McInstantScrollListener class methodsFor: 'installing'!
+attachTo: anElement
+	"Swap the inertial wheel handler BlInfiniteElement installs for this one.
+	 Removal is by kind, so re-running this on an element already converted
+	 replaces rather than stacks."
+	anElement removeEventHandlersSuchThat: [ :each |
+		each isKindOf: BlInfiniteMouseScrollListener ].
+	anElement addEventHandler: self new.
+	^ anElement! !
+
+!McInstantScrollListener methodsFor: 'event handling'!
+mouseWheelEvent: anEvent
+	"As BlInfiniteMouseScrollListener>>mouseWheelEvent:, but applied at once.
+	 doScrollUp:/doScrollDown: are the superclass's: they may rewrite the
+	 event vector to hand a parent its share of the scroll, and they mark the
+	 event consumed, so both must run before the delta is read."
+	| dX dY element isVertical scrollDeltaX scrollDeltaY |
+	anEvent vector isZero ifTrue: [ ^ self ].
+	element := anEvent currentTarget.
+	isVertical := anEvent isPrimarilyHorizontal not.
+	dX := isVertical
+		ifTrue: [ 0 ]
+		ifFalse: [ anEvent vector length * anEvent vector x sign ].
+	dY := isVertical
+		ifTrue: [ (anEvent isScrollDown and: [ element canScrollDown ])
+				ifTrue: [ self doScrollDown: anEvent ]
+				ifFalse: [ (anEvent isScrollUp and: [ element canScrollUp ])
+						ifTrue: [ self doScrollUp: anEvent ]
+						ifFalse: [ 0 ] ] ]
+		ifFalse: [ 0 ].
+	scrollDeltaX := anEvent isPixelBased
+		ifTrue: [ dX * 10 ]
+		ifFalse: [ anEvent modifiers isShift
+				ifTrue: [ dX * self class shiftWheelScrollSpeed ]
+				ifFalse: [ dX ] ].
+	scrollDeltaY := dY * 10.
+	element scrollBy: scrollDeltaX @ scrollDeltaY! !
+
 Object subclass: #McRichEdit
 instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'
 	classVariableNames: ''
@@ -452,6 +514,7 @@ openView
 		c horizontal matchParent.
 		c vertical matchParent].
 	editorElement padding: (BlInsets all: 16).
+	McInstantScrollListener attachTo: editorElement.
 
 	scrollbar := BlVerticalScrollbarElement new beAlwaysVisible.
 	scrollbar thumb: (BlElement new
