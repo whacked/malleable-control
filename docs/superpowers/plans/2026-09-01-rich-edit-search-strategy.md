@@ -98,3 +98,20 @@ not on literal-search implementation details.
   source size per query revision.
 - Preserve unrelated user changes and keep work isolated in a dedicated
   worktree until integration review.
+
+## Implemented interaction contract
+
+- `Cmd-F`/`Ctrl-F` opens and focuses a compact search bar.
+- Query edits recompute and repaint immediately.
+- Enter moves to the next match; Shift-Enter moves to the previous match;
+  both wrap by default. Escape or the Close button cancels and removes the
+  overlay.
+- All matches are highlighted by default, with a distinct active-match color;
+  the **All** checkbox changes that policy without changing the query.
+- `searchFor:`, `nextSearch`, and `previousSearch` answer a structured
+  dictionary carrying document identity, source size, query, ordered source
+  ranges, active range/index, match count, and presentation/navigation policy.
+- `McCommandKeymap` separates named commands from context bindings. Bindings
+  are held in memory, can be remapped, and can be reinstalled on a live
+  element; persistence/preferences can be connected later without changing
+  Rich Edit commands.

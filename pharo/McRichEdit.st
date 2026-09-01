@@ -419,22 +419,31 @@ computeVerticalScrollRange
 	^ self totalContentHeight max: self computeVerticalScrollExtent! !
 
 Object subclass: #McRichEdit
-instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'
-	classVariableNames: ''
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
+	classVariableNames: 'CurrentInstance'
 	package: 'MalleableControl'!
 
 !McRichEdit class methodsFor: 'opening'!
+activeInstance
+	CurrentInstance ifNotNil: [ ^ CurrentInstance ].
+	^ CurrentInstance := self allInstances
+		detect: [ :each | (each instVarNamed: 'space') notNil and: [
+			(each instVarNamed: 'space') isOpened ] ]
+		ifNone: [ nil ]!
+
+currentInstance: anInstance
+	CurrentInstance := anInstance!
+
 open
 	"A remote caller (notably Emacs over NATS) can successfully create a Bloc
 	 space while another GT window retains native focus.  Reuse and foreground
 	 the live editor so the command has an observable result instead of quietly
 	 stacking invisible prototype windows behind the current space."
 	| existing |
-	existing := self allInstances
-		detect: [ :each | (each instVarNamed: 'space') notNil and: [
-			(each instVarNamed: 'space') isOpened ] ]
-		ifNone: [ nil ].
-	existing ifNotNil: [
+	existing := self activeInstance.
+	(existing notNil and: [
+		(existing instVarNamed: 'space') notNil and: [
+			(existing instVarNamed: 'space') isOpened ] ]) ifTrue: [
 		(existing instVarNamed: 'space') toFront.
 		^ existing ].
 	^ self new openView; yourself! !
@@ -521,6 +530,8 @@ initialize
 	watchGeneration := 0.
 	self invalidateStyleState.
 	self resetImageAdornmentCache.
+	searchSession := nil.
+	commandKeymap := McCommandKeymap richEditDefaults.
 	buttonHandlers := Dictionary new! !
 
 !McRichEdit methodsFor: 'images - adornment pool'!
@@ -601,6 +612,8 @@ buildPalette
 			at: 'boldText' put: (Color fromHexString: '#fffffe');
 			at: 'dimDelimiter' put: (Color fromHexString: '#555555');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
+			at: 'searchMatch' put: ((Color fromHexString: '#f9c74f') alpha: 0.35);
+			at: 'searchActiveMatch' put: (Color fromHexString: '#f9c74f');
 			at: 'link' put: (Color fromHexString: '#7fbdff');
 			at: 'deadLink' put: (Color fromHexString: '#ff6b6b');
 			at: 'status' put: (Color fromHexString: '#a7a9be');
@@ -622,6 +635,8 @@ buildPalette
 			at: 'boldText' put: (Color fromHexString: '#111111');
 			at: 'dimDelimiter' put: (Color fromHexString: '#bbbbbb');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
+			at: 'searchMatch' put: ((Color fromHexString: '#f9c74f') alpha: 0.35);
+			at: 'searchActiveMatch' put: (Color fromHexString: '#f9c74f');
 			at: 'link' put: (Color fromHexString: '#315fbd');
 			at: 'deadLink' put: (Color fromHexString: '#b42318');
 			at: 'status' put: (Color fromHexString: '#888888');
@@ -641,6 +656,7 @@ openView
 	 and cursor-driven restyling, and open in a new window."
 	| editorModel styler headerRow toggleButton scrollbar |
 	self stopWatchingDocument.
+	self class currentInstance: self.
 	darkMode := false.
 	paletteCache := nil.
 	documentFile := self demoFile.
@@ -752,6 +768,8 @@ openView
 	styler := BlPluggableStyler new block: [:aText |
 		self styleText: aText].
 	editorElement styler: styler.
+	commandKeymap installContext: #editor on: editorElement owner: self.
+	searchBar := self buildSearchBar.
 
 	"Status bar for button feedback."
 	statusLabel := BlTextElement new.
@@ -763,6 +781,7 @@ openView
 	self registerDefaultButtons.
 
 	container addChild: headerRow.
+	container addChild: searchBar.
 	container addChild: editorFrame.
 	container addChild: statusLabel.
 
@@ -771,6 +790,78 @@ openView
 	space show.
 	self startWatchingDocument.
 	^ self!
+
+buildSearchBar
+	| bar previous next close highlightLabel wrapLabel |
+	bar := BlElement new.
+	bar layout: BlLinearLayout horizontal.
+	bar visibility: BlVisibility gone.
+	bar margin: (BlInsets bottom: 10).
+	bar padding: (BlInsets all: 6).
+	bar background: (self palette at: 'codeBg').
+	bar border: (BlBorder paint: (self palette at: 'tableBorder') width: 1).
+	bar geometry: (BlRoundedRectangleGeometry cornerRadius: 5).
+	bar constraintsDo: [ :c | c horizontal matchParent. c vertical exact: 42 ].
+
+	searchInput := BrEditor new.
+	searchInput aptitude: BrGlamorousRegularEditorAptitude new.
+	searchInput constraintsDo: [ :c | c horizontal matchParent. c vertical exact: 30 ].
+	searchInput editor when: BrTextEditorModifiedEvent do: [ :event |
+		self searchFor: searchInput text asString ].
+	commandKeymap installContext: #searchInput on: searchInput owner: self.
+
+	searchCountLabel := BrLabel new.
+	searchCountLabel constraintsDo: [ :c | c horizontal exact: 72. c linear vertical alignCenter ].
+	previous := BrButton new
+		label: 'Previous';
+		aptitude: BrGlamorousButtonWithLabelAptitude new;
+		action: [ self previousSearch ];
+		yourself.
+	next := BrButton new
+		label: 'Next';
+		aptitude: BrGlamorousButtonWithLabelAptitude new;
+		action: [ self nextSearch ];
+		yourself.
+	searchHighlightCheckbox := BrCheckbox new.
+	searchHighlightCheckbox aptitude: BrGlamorousCheckboxAptitude new.
+	searchHighlightCheckbox checked: true.
+	searchHighlightCheckbox whenCheckedDo: [ self highlightAllSearchMatches: true ].
+	searchHighlightCheckbox whenUncheckedDo: [ self highlightAllSearchMatches: false ].
+
+  highlightLabel := BrLabel new
+      aptitude: BrGlamorousLabelAptitude new;
+      text: ('highlight' asRopedText fontSize: 13);
+      margin: (BlInsets right: 8);
+      constraintsDo: [ :c | c linear vertical alignCenter ];
+      yourself.
+
+	searchWrapCheckbox := BrCheckbox new.
+	searchWrapCheckbox aptitude: BrGlamorousCheckboxAptitude new.
+	searchWrapCheckbox checked: true.
+	searchWrapCheckbox whenCheckedDo: [ self wrapSearch: true ].
+	searchWrapCheckbox whenUncheckedDo: [ self wrapSearch: false ].
+	wrapLabel := BrLabel new
+      aptitude: BrGlamorousLabelAptitude new;
+      text: ('wrap' asRopedText fontSize: 13);
+      margin: (BlInsets right: 8);
+      constraintsDo: [ :c | c linear vertical alignCenter ];
+      yourself.
+
+	close := BrButton new
+		label: 'Close';
+		aptitude: BrGlamorousButtonWithLabelAptitude new;
+		action: [ self closeSearch ];
+		yourself.
+	bar addChild: searchInput.
+	bar addChild: searchCountLabel.
+	bar addChild: previous.
+	bar addChild: next.
+	bar addChild: searchHighlightCheckbox.
+	bar addChild: highlightLabel.
+	bar addChild: searchWrapCheckbox.
+	bar addChild: wrapLabel.
+	bar addChild: close.
+	^ bar!
 
 applyPalette
 	"Update all chrome from the current palette, then restyle editor text."
@@ -795,6 +886,10 @@ applyPalette
 		pathLabel text: (self relativeDocumentPath asRopedText
 			foreground: (p at: 'link');
 			fontSize: 12).
+		searchBar ifNotNil: [
+			searchBar
+				background: (p at: 'codeBg');
+				border: (BlBorder paint: (p at: 'tableBorder') width: 1) ].
 		statusLabel text: (statusLabel text asString asRopedText
 			foreground: (p at: 'status');
 			fontSize: 13).
@@ -1043,7 +1138,8 @@ styleMarkdown: aText source: str cursor: cursorPos
 	 can change the projection at all."
 	| parser probe snapshot reconciliation |
 	probe := McCursorProbe on: cursorPos.
-	[ parser := self parserFor: str.
+	[ searchSession ifNotNil: [ searchSession source: str ].
+	  parser := self parserFor: str.
 	  "Cursor-only passes retain the established full visitor and its complete
 	 boundary proof.  Source changes take the reconciler path below."
 	  (renderSnapshot notNil and: [ renderSnapshot source = str ]) ifTrue: [
@@ -1074,8 +1170,105 @@ styleWholeText: aText parser: aParser cursor: aCursor
 		text: aText
 		cursor: aCursor
 		palette: self palette
-		owner: self) visit: aParser root!
+		owner: self) visit: aParser root.
+	McSearchPresentation applyTo: aText session: searchSession palette: self palette! !
 
+!McRichEdit methodsFor: 'search'!
+beginSearch
+	searchSession ifNil: [ searchSession := McSearchSession on: editorElement editor text asString ].
+	^ searchSession!
+
+searchFor: aString
+	self beginSearch queryText: aString.
+	editorElement editor styleText.
+	self updateSearchStatus.
+	^ self searchResult asDictionary!
+
+openSearch
+	self beginSearch.
+	searchBar ifNotNil: [ searchBar visibility: BlVisibility visible ].
+	searchInput ifNotNil: [
+		searchInput requestFocus.
+		searchInput text asString isEmpty ifFalse: [ self searchFor: searchInput text asString ] ].
+	self updateSearchStatus.
+	^ self searchResult asDictionary!
+
+nextSearch
+	self beginSearch next.
+	self presentActiveSearchMatch.
+	^ self searchResult asDictionary!
+
+previousSearch
+	self beginSearch previous.
+	self presentActiveSearchMatch.
+	^ self searchResult asDictionary!
+
+presentActiveSearchMatch
+	| range source lineIndex scroller |
+	range := searchSession activeMatch.
+	editorElement editor styleText.
+	range ifNil: [ ^ self updateSearchStatus ].
+	editorElement editor navigator moveTo: range first - 1; apply.
+	source := editorElement editor text asString.
+	lineIndex := range first = 1
+		ifTrue: [ 1 ]
+		ifFalse: [ 1 + ((source copyFrom: 1 to: range first - 1) occurrencesOf: Character lf) ].
+	scroller := BrEditorSearchTextScroller new
+		editorElement: editorElement;
+		lineIndex: lineIndex;
+		characterStartPosition: range first;
+		characterStopPosition: range last;
+		yourself.
+	scroller scroll.
+	self updateSearchStatus!
+
+highlightAllSearchMatches: aBoolean
+	self beginSearch highlightAll: aBoolean.
+	editorElement editor styleText.
+	self updateSearchStatus!
+
+wrapSearch: aBoolean
+	self beginSearch wrapAround: aBoolean.
+	self updateSearchStatus!
+
+searchResult
+	| identifier session |
+	identifier := documentFile
+		ifNil: [ '<memory>' ]
+		ifNotNil: [ documentFile fullName ].
+	session := searchSession ifNil: [ McSearchSession on: editorElement editor text asString ].
+	^ McSearchResult
+		document: identifier
+		sourceSize: editorElement editor text size
+		session: session!
+
+cancelSearch
+	searchSession := nil.
+	editorElement editor styleText.
+	self updateSearchStatus!
+
+closeSearch
+	self cancelSearch.
+	searchBar ifNotNil: [ searchBar visibility: BlVisibility gone ].
+	editorElement ifNotNil: [ editorElement requestFocus ].
+	^ self searchResult asDictionary!
+
+updateSearchStatus
+	searchCountLabel ifNil: [ ^ self ].
+	searchSession
+		ifNil: [ searchCountLabel text: 'No search' ]
+		ifNotNil: [
+			searchCountLabel text: (searchSession hasMatches
+				ifTrue: [ searchSession activeIndex printString , '/' , searchSession matchCount printString ]
+				ifFalse: [ '0/0' ]) ]!
+
+searchSession
+	^ searchSession!
+
+commandKeymap
+	^ commandKeymap! !
+
+!McRichEdit methodsFor: 'styling'!
 parserFor: aString
 	"The parser for aString, reusing the last one when the source has not
 	 changed.  Two full restyles run for every keystroke -- one from the text
