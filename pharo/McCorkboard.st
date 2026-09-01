@@ -23,6 +23,13 @@ exampleModel
 
 !McCorkboard methodsFor: 'opening'!
 openView
+	self buildView.
+	space show.
+	^ self!
+
+buildView
+	"Build without showing. Tests use this seam to exercise the controller and
+	 its real Bloc children without a window-manager dependency."
 	model := self class exampleModel.
 	panelViews := Dictionary new.
 	space := BlSpace new.
@@ -40,7 +47,6 @@ openView
 		event key isEscape ifTrue: [ self discardAllDrafts. event consumed: true ] ]).
 	space root addChild: canvas.
 	model panels do: [ :each | self addPanelViewFor: each ].
-	space show.
 	^ self!
 
 model
@@ -48,6 +54,13 @@ model
 
 canvas
 	^ canvas! !
+
+!McCorkboard methodsFor: 'testing'!
+panelViewFor: anId
+	^ (panelViews at: anId) first!
+
+panelControlsFor: anId
+	^ panelViews at: anId! !
 
 !McCorkboard methodsFor: 'projection'!
 addPanelViewFor: aPanelModel
@@ -60,7 +73,9 @@ addPanelViewFor: aPanelModel
 	panel border: (BlBorder paint: (Color fromHexString: '#6c7280') width: 1).
 	panel geometry: (BlRoundedRectangleGeometry cornerRadius: 6).
 	panel constraintsDo: [ :c | c ignoreByLayout ].
-	panel addEventHandler: (BlPullHandler new allowOutOfBounds).
+	"The pull listener must be on the header, not the card. targetElement:
+	 makes that header gesture relocate the card while body drags remain text
+	 selection inside the editor."
 	panel when: BlPullEvent do: [ :event | self commitDraggedPanel: aPanelModel view: panel ].
 
 	header := BlElement new layout: BlLinearLayout horizontal.
@@ -69,6 +84,9 @@ addPanelViewFor: aPanelModel
 	title text: (aPanelModel id asString asRopedText fontSize: 14; bold).
 	title constraintsDo: [ :c | c horizontal matchParent ].
 	header addChild: title.
+	header addEventHandler: (BlPullHandler new
+		targetElement: panel;
+		allowOutOfBounds).
 	"Only the header receives pull gestures: the body retains normal editor
 	 selection semantics. The pull handler lives on the card, so it relocates
 	 the card in canvas coordinates."
@@ -138,7 +156,7 @@ updatePanel: aPanelModel view: panel xEditor: xEditor yEditor: yEditor dirty: di
 commitDraggedPanel: aPanelModel view: aPanelElement
 	"BlCanvassableElement keeps position in child/document coordinates even
 	 when zoomed. Drag therefore shares the exact model commit path as Apply."
-	aPanelModel moveToX: aPanelElement position x rounded y: aPanelElement position y rounded.
+	aPanelModel moveToX: aPanelElement constraints position x rounded y: aPanelElement constraints position y rounded.
 	self updatePanel: aPanelModel
 		view: aPanelElement
 		xEditor: (panelViews at: aPanelModel id) second

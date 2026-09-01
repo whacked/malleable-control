@@ -23,7 +23,8 @@ coordinate placement and interaction, not rich-edit throughput.
   input leaves the placement unchanged.
 - **Escape** discards pending drafts. It is installed as a canvas event filter
   because focused `BrEditor` instances consume normal Escape shortcuts.
-- A header-only `BlPullHandler` moves cards. Its final Bloc document position
+- A header-only `BlPullHandler` (attached to the header with the card as its
+  `targetElement:`) moves cards. Its final Bloc document position
   is committed to the same model path as Apply, which resets both displayed
   coordinate values to the committed result.
 - Positive and negative coordinates are first-class. `disableAutoScale` is

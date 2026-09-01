@@ -55,7 +55,16 @@ isDirty
 	^ draftX ~= x printString or: [ draftY ~= y printString ]!
 
 coordinateFrom: aString
-	| trimmed |
-	trimmed := aString trimBoth.
-	trimmed isEmpty ifTrue: [ ^ nil ].
-	^ [ trimmed asInteger ] on: Error do: [ :error | nil ]! !
+	(self isStrictSignedInteger: aString) ifFalse: [ ^ nil ].
+	^ aString asInteger!
+
+isStrictSignedInteger: aString
+	| first digitStart |
+	aString isEmpty ifTrue: [ ^ false ].
+	"Use indexed characters: String enumeration in this GT image exposes
+	 codepoints, whereas indexed access exposes Character and its #isDigit
+	 predicate."
+	first := aString first.
+	digitStart := ((first = $-) or: [ first = $+ ]) ifTrue: [ 2 ] ifFalse: [ 1 ].
+	digitStart > aString size ifTrue: [ ^ false ].
+	^ (digitStart to: aString size) allSatisfy: [ :index | (aString at: index) isDigit ]! !
