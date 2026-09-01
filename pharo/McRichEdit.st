@@ -558,13 +558,26 @@ buildSearchBar
 	searchHighlightCheckbox checked: true.
 	searchHighlightCheckbox whenCheckedDo: [ self highlightAllSearchMatches: true ].
 	searchHighlightCheckbox whenUncheckedDo: [ self highlightAllSearchMatches: false ].
-	highlightLabel := BrLabel new text: 'All'.
+
+  highlightLabel := BrLabel new
+      aptitude: BrGlamorousLabelAptitude new;
+      text: ('highlight' asRopedText fontSize: 13);
+      margin: (BlInsets right: 8);
+      constraintsDo: [ :c | c linear vertical alignCenter ];
+      yourself.
+
 	searchWrapCheckbox := BrCheckbox new.
 	searchWrapCheckbox aptitude: BrGlamorousCheckboxAptitude new.
 	searchWrapCheckbox checked: true.
 	searchWrapCheckbox whenCheckedDo: [ self wrapSearch: true ].
 	searchWrapCheckbox whenUncheckedDo: [ self wrapSearch: false ].
-	wrapLabel := BrLabel new text: 'Wrap'.
+	wrapLabel := BrLabel new
+      aptitude: BrGlamorousLabelAptitude new;
+      text: ('wrap' asRopedText fontSize: 13);
+      margin: (BlInsets right: 8);
+      constraintsDo: [ :c | c linear vertical alignCenter ];
+      yourself.
+
 	close := BrButton new
 		label: 'Close';
 		aptitude: BrGlamorousButtonWithLabelAptitude new;
