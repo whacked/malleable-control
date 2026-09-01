@@ -40,8 +40,8 @@ Chunk format: load with fileIn.
 "!
 
 Object subclass: #McMarkdownInlineStyler
-	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims producedAdornment links'
-	classVariableNames: 'RegexCache'
+	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims producedAdornment links ropeIsDocument imageOrdinals'
+	classVariableNames: 'ImageOrdinalCache RegexCache'
 	package: 'MalleableControl'!
 
 !McMarkdownInlineStyler class methodsFor: 'instance creation'!
@@ -133,6 +133,47 @@ token: aToken beginsIn: aString at: anIndex
 			ifFalse: [ ^ false ] ].
 	^ true! !
 
+!McMarkdownInlineStyler class methodsFor: 'image occurrences'!
+imageOrdinalsIn: aString
+	"For every image token in aString, how many images with that same target
+	 and caption start at or before it: 1 for the first `!![a](x.png)', 2 for
+	 the next identical one.  Keyed by the token's start index in aString.
+
+	 Memoised on the string itself because every block of one restyle asks the
+	 same question of the same document, and answering it is a whole scan of
+	 that document.  The key is the text, not the rope, so an edit answers
+	 afresh and a caret move does not."
+	| cache |
+	cache := self imageOrdinalCache.
+	"With McCache absent the fallback is a plain Dictionary, and these keys are
+	 whole documents rather than short patterns, so bound it here instead."
+	((cache isKindOf: Dictionary) and: [ cache size >= 8 ])
+		ifTrue: [ cache removeAll ].
+	^ cache at: aString ifAbsentPut: [ self computeImageOrdinalsIn: aString ]!
+
+computeImageOrdinalsIn: aString
+	"Dynamic lookup of the scanner for the same reason linkSpans does it: an
+	 incremental re-file of this file alone must not break styling.  With no
+	 scanner there are no occurrences, and imageCacheKeyFor: falls back."
+	| scannerClass ordinals tallies |
+	ordinals := Dictionary new.
+	tallies := Dictionary new.
+	scannerClass := Smalltalk at: #McMarkdownLinkScanner ifAbsent: [ nil ].
+	scannerClass ifNil: [ ^ ordinals ].
+	((scannerClass scan: aString) select: [ :each | each isImage ]) do: [ :each |
+		| identity tally |
+		identity := Array with: each target with: each caption.
+		tally := (tallies at: identity ifAbsent: [ 0 ]) + 1.
+		tallies at: identity put: tally.
+		ordinals at: each start put: tally ].
+	^ ordinals!
+
+imageOrdinalCache
+	^ ImageOrdinalCache ifNil: [ ImageOrdinalCache := self newCacheWithLimit: 4 ]!
+
+clearImageOrdinalCache
+	ImageOrdinalCache := nil! !
+
 !McMarkdownInlineStyler methodsFor: 'initialization'!
 setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText cursor: anInteger palette: aPalette owner: anOwner
 	source := aString.
@@ -144,7 +185,12 @@ setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText c
 	owner := anOwner.
 	claims := OrderedCollection new.
 	producedAdornment := false.
-	links := nil! !
+	links := nil.
+	imageOrdinals := nil.
+	"Captured before asArray so it is the caller's intent that is recorded and
+	 not whatever copying asArray happens to do: handing one map object twice
+	 is how a caller says `the rope I am decorating is the document'."
+	ropeIsDocument := aTargetMap == aDocumentMap! !
 
 !McMarkdownInlineStyler methodsFor: 'accessing'!
 paletteAt: aKey
@@ -424,22 +470,93 @@ imageAdornmentCache
 imageCacheKeyFor: aLink
 	"What distinguishes one image occurrence from another, for pooling.
 
-	 The document position of the token's first character, and not the target,
-	 is what makes the key an occurrence: two `!![a](x.png)' in one document
-	 must render as two elements, because a BlElement has one parent and
-	 sharing one between two positions would make the second occurrence steal
-	 the first.  Position is also stable under a cursor move, which is the
-	 whole point -- a caret step restyles the entire rope, and every image on
-	 it should come back rather than be rebuilt.
+	 Three answers, in descending order of how much the asker knows.
 
-	 Target and caption ride along for an explicit identity.  The owner rotates
-	 the pool on source, palette and document changes, so an edit cannot leave
-	 an element under a stale occurrence key."
-	| documentStart |
+	 An owner that retains a reconciled render tree knows best, so it is asked
+	 first: it answers a lineage for the block the image sits in plus the
+	 offset within that block, which survives an insertion anywhere above the
+	 block.  See McRichEdit>>imageAdornmentCacheKeyFor:documentPosition:.
+
+	 Failing that -- no snapshot yet, an unreconciled block, a table cell, or
+	 any other owner -- the styler answers for itself, and it answers with an
+	 occurrence rather than a position: the target, the caption, and how many
+	 images with that same target and caption start at or before this one.  A
+	 document position moves whenever anything above it is typed, so a key
+	 built from one retires every image below an edit even though none of them
+	 changed; an ordinal does not move when unrelated text grows or shrinks
+	 above it, which is the property the pool needs to survive an edit at all.
+
+	 The ordinal is counted over the whole rope being decorated rather than
+	 over this block, because the pool belongs to the editor and two separate
+	 blocks each holding `!![a](x.png)' must still get two elements: a
+	 BlElement has one parent, so one shared between them would let the second
+	 occurrence steal it from the first.  Counting over the rope makes those
+	 two ordinals 1 and 2, and the two keys distinct.  A cell decorates its own
+	 private rope, so a rope-wide count there is only cell-wide; its key also
+	 carries the cell's document start, from imageCacheScope.
+
+	 Last, when the occurrence cannot be found in that count -- no scanner in
+	 the image, or a token that does not appear verbatim in the rope -- the key
+	 falls back to the document position it always used.  That pools exactly as
+	 it did before rather than not at all, and it can never alias, a position
+	 being unique by construction.  The three shapes differ in size and in
+	 their first element, so no two of them are ever equal."
+	| documentStart retainedKey ordinal |
 	owner ifNil: [ ^ nil ].
 	documentStart := self documentAt: aLink start.
 	documentStart ifNil: [ ^ nil ].
-	^ Array with: documentStart with: aLink target with: aLink caption!
+	(owner respondsTo: #imageAdornmentCacheKeyFor:documentPosition:) ifTrue: [
+		retainedKey := owner imageAdornmentCacheKeyFor: aLink documentPosition: documentStart.
+		retainedKey ifNotNil: [ ^ retainedKey ] ].
+	ordinal := self imageOrdinalFor: aLink.
+	ordinal ifNil: [
+		^ Array with: documentStart with: aLink target with: aLink caption ].
+	^ Array
+		with: #imageOccurrence
+		with: self imageCacheScope
+		with: aLink target
+		with: aLink caption
+		with: ordinal!
+
+imageCacheScope
+	"Which rope the occurrence ordinal was counted in.
+
+	 Nil when that rope is the document, because then the count is already
+	 document-wide and nothing further is needed to tell two occurrences apart.
+	 For a cell it is the cell's document start, which is what separates two
+	 cells whose source is character-for-character the same.  A cell's images
+	 therefore stay position-bound -- no worse than they were, and never
+	 ambiguous -- until a cell can be addressed by lineage too."
+	ropeIsDocument ifTrue: [ ^ nil ].
+	documentMap isEmpty ifTrue: [ ^ nil ].
+	^ documentMap first!
+
+imageOrdinalFor: aLink
+	"This occurrence's number among the images sharing its target and caption,
+	 or nil when the scan found no token starting exactly where this one does."
+	| index |
+	index := ropeIsDocument
+		ifTrue: [ self documentAt: aLink start ]
+		ifFalse: [ aLink start ].
+	index ifNil: [ ^ nil ].
+	^ self imageOrdinals at: index ifAbsent: [ nil ]!
+
+imageOrdinals
+	"The occurrence numbers of every image in the rope this styler decorates,
+	 computed once per styler and memoised class-side per text, so a document
+	 holding several images is scanned once a revision rather than once a
+	 block.  Reached only from styleImage:, so a block with no image away from
+	 the cursor never pays for it."
+	imageOrdinals ifNotNil: [ ^ imageOrdinals ].
+	^ imageOrdinals := self class imageOrdinalsIn: self imageOrdinalScopeSource!
+
+imageOrdinalScopeSource
+	"The text the ordinals are counted in: the document when the rope is the
+	 document, and this styler's own source when the rope is a cell's private
+	 one -- which is the same string, and cheaper than rebuilding it."
+	^ ropeIsDocument
+		ifTrue: [ text asString ]
+		ifFalse: [ source ]!
 
 imageElementFor: aLink
 	owner ifNotNil: [

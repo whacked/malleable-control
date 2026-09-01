@@ -27,6 +27,8 @@
          (table-path (expand-file-name "pharo/McMarkdownTable.st" mc-rich-edit-home))
          (sqlite-path (expand-file-name "pharo/McSqlite.st" mc-rich-edit-home))
          (markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
+         (snapshot-path (expand-file-name "pharo/McMarkdownSnapshot.st" mc-rich-edit-home))
+         (reconciler-path (expand-file-name "pharo/McMarkdownReconciler.st" mc-rich-edit-home))
          (st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
          (links-path (expand-file-name "pharo/McRichEditLinks.st" mc-rich-edit-home))
          ;; Load order matters: McBoundedCache is used by McMarkdownInline,
@@ -43,9 +45,11 @@
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
                                "(Smalltalk at: #McRichEdit) open. 'opened'")
                        cache-path relation-path link-path inline-path table-path
-                       sqlite-path markdown-path st-path links-path))
+                       sqlite-path markdown-path snapshot-path reconciler-path st-path links-path))
          (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
                   (json-serialize `(:v 1 :args (:expression ,expr))))))
     (if reply

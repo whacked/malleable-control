@@ -151,7 +151,7 @@ doesNotUnderstand: aMessage
 	^ aMessage sendTo: value! !
 
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries suspendCursorRestyle documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'
+instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -233,7 +233,11 @@ initialize
 	super initialize.
 	darkMode := false.
 	paletteCache := nil.
-	suspendCursorRestyle := false.
+	stylingSuspensionDepth := 0.
+	pendingEditDescriptor := nil.
+	renderSnapshot := nil.
+	reconciler := McMarkdownReconciler new.
+	lastRenderWasPartial := false.
 	watchGeneration := 0.
 	self invalidateStyleState.
 	self resetImageAdornmentCache.
@@ -263,16 +267,27 @@ resetImageAdornmentCache
 	imageCacheSource := nil!
 
 noteImageCacheSource: aString
-	"Rotate the pool when the document text has changed.
+	"Source edits no longer rotate the pool.  A retained owner supplies a
+	 lineage/local-occurrence key, so an edit before the Images block still
+	 addresses the same live element.  Explicit document/theme resets retain
+	 the lifecycle boundary for reclamation and stale-resource correctness."
+	imageCacheSource := aString!
 
-	 An edit moves every image after it, and a key carries the position, so
-	 stale entries would simply never be hit again -- rotating is what keeps
-	 the pool the size of the document's images rather than the size of the
-	 edit history.  A cursor-only restyle passes the same source and keeps the
-	 pool, which is the case the pool exists for."
-	(imageCacheSource notNil and: [ imageCacheSource = aString ]) ifTrue: [ ^ self ].
-	imageAdornmentCache := Dictionary new.
-	imageCacheSource := aString! !
+imageAdornmentCacheKeyFor: aLink documentPosition: aDocumentPosition
+	"A resource belongs to its structural owner, not an absolute document
+	 offset.  The local offset distinguishes duplicate images in one owner;
+	 the lineage survives an unrelated insertion before that owner."
+	| ownerNode localOffset |
+	renderSnapshot ifNil: [ ^ nil ].
+	ownerNode := renderSnapshot rootChildContainingPosition: aDocumentPosition.
+	ownerNode ifNil: [ ^ nil ].
+	ownerNode lineageId ifNil: [ ^ nil ].
+	localOffset := aDocumentPosition - ownerNode sourceRange first.
+	^ Array
+		with: ownerNode lineageId
+		with: localOffset
+		with: aLink target
+		with: aLink caption! !
 
 !McRichEdit methodsFor: 'palette'!
 palette
@@ -716,6 +731,15 @@ reloadDocumentFromDisk
 editorElement
 	^ editorElement! !
 
+!McRichEdit methodsFor: 'initialization - editor attachment'!
+attachToEditor: anEditorElement
+	"Attach an existing editor without creating window chrome; tests and the
+	 retained-rendering state can use the same initialization seam."
+	editorElement := anEditorElement.
+	space := anEditorElement space.
+	self invalidateStyleState.
+	^ self! !
+
 !McRichEdit methodsFor: 'styling'!
 styleText: aText
 	"Main styling entry point.  The document is parsed into a Microdown AST
@@ -723,6 +747,7 @@ styleText: aText
 	 decoration -- emphasis and this editor's own tokens alike -- through
 	 McMarkdownInlineStyler, per block.  Nothing scans the flat document any
 	 more: a range a widget has claimed is simply never descended into."
+	self consumePendingEditDescriptorFor: aText.
 	self styleMarkdown: aText source: aText asString cursor: self cursorPosition!
 
 styleMarkdown: aText source: str cursor: cursorPos
@@ -735,20 +760,69 @@ styleMarkdown: aText source: str cursor: cursorPos
 	 recording the positions at which the answer would have flipped.  That
 	 record is what onCursorMoved later consults to decide whether a move
 	 can change the projection at all."
-	| parser probe |
+	| parser probe snapshot reconciliation |
 	probe := McCursorProbe on: cursorPos.
 	[ parser := self parserFor: str.
-	  (McMarkdownStylerVisitor
-		parser: parser
-		text: aText
-		cursor: probe
-		palette: self palette
-		owner: self) visit: parser root.
-	  self noteStyledSource: str cursor: cursorPos boundaries: probe boundaries ]
+	  "Cursor-only passes retain the established full visitor and its complete
+	 boundary proof.  Source changes take the reconciler path below."
+	  (renderSnapshot notNil and: [ renderSnapshot source = str ]) ifTrue: [
+		self styleWholeText: aText parser: parser cursor: probe.
+		lastRenderWasPartial := false.
+		^ self noteStyledSource: str cursor: cursorPos boundaries: probe boundaries ].
+	  snapshot := McMarkdownDocumentSnapshot forParser: parser.
+	  reconciliation := reconciler reconcileFrom: renderSnapshot to: snapshot.
+	  "Make the newly reconciled lineage visible to image styling in this pass."
+	  renderSnapshot := snapshot.
+	  (self canPatchReconciliation: reconciliation on: aText)
+		ifTrue: [ self patchText: aText with: reconciliation cursor: probe. lastRenderWasPartial := true ]
+		ifFalse: [ self styleWholeText: aText parser: parser cursor: probe. lastRenderWasPartial := false ].
+	  self noteStyledSource: str cursor: cursorPos
+		boundaries: probe boundaries ]
 		on: Error
 		do: [ :e |
+			renderSnapshot := nil.
 			self invalidateStyleState.
 			self showStatus: 'markdown: ' , e messageText asString ]!
+
+styleWholeText: aText parser: aParser cursor: aCursor
+	(McMarkdownStylerVisitor
+		parser: aParser
+		text: aText
+		cursor: aCursor
+		palette: self palette
+		owner: self) visit: aParser root!
+
+canPatchReconciliation: aReconciliation on: aText
+	"The standard Brick strategy gives us a next-generation copy of the rope.
+	 Unchanged owners therefore already carry their attributes.  Restrict the
+	 patch path to a finite, local set of root owners; the full visitor remains
+	 the correctness fallback for the first pass, wholesale changes, malformed
+	 ranges, and a missing reconciliation implementation."
+	aReconciliation ifNil: [ ^ false ].
+	^ (aReconciliation requiresFullRender not
+		and: [ aReconciliation dirtyNodes notEmpty ])
+		and: [ aReconciliation dirtyFraction <= 0.75 ]!
+
+patchText: aText with: aReconciliation cursor: aCursor
+	| visitor |
+	visitor := McMarkdownStylerVisitor
+		parser: aReconciliation newSnapshot parser
+		text: aText
+		cursor: aCursor
+		palette: self palette
+		owner: self.
+	aReconciliation dirtyNodes do: [ :each |
+		self clearRenderedAttributesIn: each sourceRange from: aText.
+		visitor visit: each astNode ]!
+
+clearRenderedAttributesIn: aRange from: aText
+	"Owners are top-level structural blocks.  Clearing the entire owner range
+	 before revisiting it makes the patch idempotent and keeps attributes from
+	 changed markup out of the next generation.  No range outside the owner is
+	 touched, so retained siblings keep their existing adornment/cache objects."
+	aRange ifNil: [ ^ self ].
+	(aRange first < 1 or: [ aRange last > aText size ]) ifTrue: [ ^ self ].
+	aText clearAttributes: aRange first to: aRange last if: [ :attribute | true ]!
 
 parserFor: aString
 	"The parser for aString, reusing the last one when the source has not
@@ -807,7 +881,7 @@ cursorRestyleNeeded
 	"Whether the cursor's current position needs a fresh styling pass; see
 	 onCursorMoved for why the boundary set answers this exactly."
 	| position currentText low high |
-	suspendCursorRestyle ifTrue: [ ^ false ].
+	self isStylingSuspended ifTrue: [ ^ false ].
 	lastStyledSource ifNil: [ ^ true ].
 	lastStyledCursor ifNil: [ ^ true ].
 	lastStyledBoundaries ifNil: [ ^ true ].
@@ -838,6 +912,39 @@ invalidateStyleState
 	lastStyledCursor := nil.
 	lastStyledBoundaries := nil! !
 
+!McRichEdit methodsFor: 'styling - suspension'!
+beginStylingSuspension
+	stylingSuspensionDepth := (stylingSuspensionDepth ifNil: [ 0 ]) + 1!
+
+endStylingSuspension
+	stylingSuspensionDepth := ((stylingSuspensionDepth ifNil: [ 0 ]) - 1) max: 0!
+
+isStylingSuspended
+	^ (stylingSuspensionDepth ifNil: [ 0 ]) > 0! !
+
+!McRichEdit methodsFor: 'text mutation - descriptors'!
+pendingEditDescriptor
+	^ pendingEditDescriptor!
+
+notePendingEditFrom: start to: stop replacement: aString expectedSize: anInteger
+	"The descriptor is advisory until reconciliation consumes it.  A source
+	 size stamp prevents an unrelated later styler callback from using it."
+	pendingEditDescriptor := Dictionary new
+		at: #start put: start;
+		at: #stop put: stop;
+		at: #replacementLength put: aString size;
+		at: #delta put: aString size - ((stop - start + 1) max: 0);
+		at: #expectedSize put: anInteger;
+		yourself!
+
+consumePendingEditDescriptorFor: aText
+	| descriptor |
+	descriptor := pendingEditDescriptor.
+	pendingEditDescriptor := nil.
+	descriptor ifNil: [ ^ nil ].
+	(descriptor at: #expectedSize) = aText size ifFalse: [ ^ nil ].
+	^ descriptor! !
+
 !McRichEdit methodsFor: 'text mutation'!
 replaceFrom: start to: stop with: aString
 	"Replace the 1-based, inclusive document range start..stop with aString.
@@ -863,7 +970,7 @@ replaceFrom: start to: stop with: aString
 	size := editor text size.
 	from := ((start - 1) max: 0) min: size.
 	to := (stop max: from) min: size.
-	suspendCursorRestyle := true.
+	self beginStylingSuspension.
 	[ editor disableStyleTextWhenModifiedDuring: [
 		to > from ifTrue: [ editor deleter from: from to: to; delete ].
 		aString isEmpty ifFalse: [
@@ -872,7 +979,8 @@ replaceFrom: start to: stop with: aString
 				at: from;
 				string: aString;
 				insert ] ] ]
-		ensure: [ suspendCursorRestyle := false ].
+		ensure: [ self endStylingSuspension ].
+	self notePendingEditFrom: start to: stop replacement: aString expectedSize: editor text size.
 	self invalidateStyleState.
 	editor styleText!
 

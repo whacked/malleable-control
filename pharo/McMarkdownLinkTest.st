@@ -117,6 +117,24 @@ style: aString cursor: anInteger owner: anOwner
 	self styleText: text cursor: anInteger owner: anOwner.
 	^ text!
 
+styleCell: aString at: anInteger owner: anOwner
+	"A styler wired the way a table cell's is: an identity map into the cell's
+	 own private rope, and the cell's interval as the document map.  Two
+	 different objects, which is how the styler knows the rope it decorates is
+	 not the document."
+	| text |
+	text := aString asRopedText.
+	(McMarkdownInlineStyler
+		source: aString
+		targetMap: (McMarkdownInlineStyler identityMapOfSize: aString size)
+		documentMap: (McMarkdownInlineStyler
+			mapForInterval: (anInteger to: anInteger + aString size - 1))
+		text: text
+		cursor: -1
+		palette: McRichEdit new palette
+		owner: anOwner) styleAll.
+	^ text!
+
 styleText: aText cursor: anInteger owner: anOwner
 	| source map |
 	source := aText asString.
@@ -328,7 +346,76 @@ testImageWithoutAnOwnerKeepsBuildingFreshElements
 		deny: (self buildAdornment: adornments first)
 			== (self buildAdornment: adornments first)!
 
-testEditorRotatesTheImagePoolOnSourceThemeAndExplicitReset
+testImageElementSurvivesAnUnrelatedEditAboveIt
+	"The point of the whole pool.  Typing before an image moves every position
+	 after it; the key is an occurrence rather than a position, so the same
+	 element comes back from the pool instead of the file being decoded again."
+	| owner before after |
+	owner := McMarkdownImageCacheTestOwner new.
+	before := self adornmentsIn: (self style: 'intro !![a](x.png)' cursor: -1 owner: owner).
+	after := self adornmentsIn:
+		(self style: 'a considerably longer intro !![a](x.png)' cursor: -1 owner: owner).
+	self assert: before size equals: 1.
+	self assert: after size equals: 1.
+	self assert: before first cache == after first cache.
+	self buildAdornment: before first.
+	self buildAdornment: after first.
+	self assert: owner calls equals: 1.
+	self assert: owner imageAdornmentCache size equals: 1!
+
+testDuplicateImagesStayDistinctAcrossAnUnrelatedEdit
+	"Stability must not be bought with aliasing: two identical images are two
+	 occurrences, and a BlElement has one parent, so the second sharing the
+	 first's element would take it away from the first."
+	| owner before after |
+	owner := McMarkdownImageCacheTestOwner new.
+	before := self adornmentsIn:
+		(self style: 'x !![a](p.png) and !![a](p.png)' cursor: -1 owner: owner).
+	self assert: before size equals: 2.
+	self deny: before first cache == before second cache.
+	after := self adornmentsIn:
+		(self style: 'xxxxxxxxxxxx !![a](p.png) and !![a](p.png)' cursor: -1 owner: owner).
+	self assert: after size equals: 2.
+	self deny: after first cache == after second cache.
+	self assert: before first cache == after first cache.
+	self assert: before second cache == after second cache.
+	before do: [ :each | self buildAdornment: each ].
+	after do: [ :each | self buildAdornment: each ].
+	self assert: owner calls equals: 2.
+	self assert: owner imageAdornmentCache size equals: 2!
+
+testImageOccurrenceOrdinalsCountIdenticalTargetsAndCaptions
+	"The count is per target-and-caption pair and keyed by where the token
+	 starts, which is what makes it an ordinal rather than a position."
+	| ordinals |
+	ordinals := McMarkdownInlineStyler
+		imageOrdinalsIn: '!![a](p.png) !![b](q.png) !![a](p.png)'.
+	self assert: ordinals size equals: 3.
+	self assert: (ordinals at: 1) equals: 1.
+	self assert: (ordinals at: 13) equals: 1.
+	self assert: (ordinals at: 25) equals: 2!
+
+testIdenticalCellImagesAtDifferentDocumentPositionsDoNotAlias
+	"A cell counts occurrences in its own rope, so two identical cells would
+	 both answer one; the cell's document start is what keeps them apart."
+	| owner one two |
+	owner := McMarkdownImageCacheTestOwner new.
+	one := self adornmentsIn: (self styleCell: '!![a](p.png)' at: 10 owner: owner).
+	two := self adornmentsIn: (self styleCell: '!![a](p.png)' at: 40 owner: owner).
+	self assert: one size equals: 1.
+	self assert: two size equals: 1.
+	self deny: one first cache == two first cache.
+	self buildAdornment: one first.
+	self buildAdornment: two first.
+	self assert: owner calls equals: 2.
+	self assert: owner imageAdornmentCache size equals: 2!
+
+testEditorKeepsTheImagePoolAcrossSourceEditsAndRotatesItOnLifecycle
+	"A source edit no longer retires the pool, because a key is no longer a
+	 position: the same occurrence addresses the same element on the other side
+	 of an edit.  What still rotates it is a change that invalidates the
+	 elements themselves -- a theme, which bakes colours into them, and an
+	 explicit reset, which is what opening another document does."
 	| instance pool |
 	instance := McRichEdit new.
 	instance noteImageCacheSource: 'one'.
@@ -336,8 +423,7 @@ testEditorRotatesTheImagePoolOnSourceThemeAndExplicitReset
 	instance noteImageCacheSource: 'one'.
 	self assert: instance imageAdornmentCache == pool.
 	instance noteImageCacheSource: 'two'.
-	self deny: instance imageAdornmentCache == pool.
-	pool := instance imageAdornmentCache.
+	self assert: instance imageAdornmentCache == pool.
 	instance darkMode: true.
 	self deny: instance imageAdornmentCache == pool.
 	pool := instance imageAdornmentCache.

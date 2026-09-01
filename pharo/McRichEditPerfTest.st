@@ -147,8 +147,7 @@ instanceOn: aString
 	| editor instance |
 	editor := self editorOn: aString.
 	instance := McRichEdit new.
-	instance instVarNamed: 'editorElement' put: editor.
-	instance instVarNamed: 'space' put: editor space.
+	instance attachToEditor: editor.
 	instance instVarNamed: 'statusLabel' put: BlTextElement new.
 	^ instance!
 
@@ -548,3 +547,25 @@ testCursorMoveRestylesWithNoRecordedPass
 	model navigator moveTo: 12; apply.
 	instance onCursorMoved.
 	self assert: runs size equals: 1! !
+
+!McRichEditPerfTest methodsFor: 'tests - retained renderer seams'!
+testStylingSuspensionIsNestingSafe
+	| instance |
+	instance := McRichEdit new.
+	self deny: instance isStylingSuspended.
+	instance beginStylingSuspension; beginStylingSuspension.
+	self assert: instance isStylingSuspended.
+	instance endStylingSuspension.
+	self assert: instance isStylingSuspended.
+	instance endStylingSuspension.
+	self deny: instance isStylingSuspended!
+
+testPendingEditDescriptorIsConsumedOnlyByTheExpectedRopeSize
+	| instance descriptor |
+	instance := McRichEdit new.
+	instance notePendingEditFrom: 3 to: 4 replacement: 'abc' expectedSize: 12.
+	self assert: (instance consumePendingEditDescriptorFor: '123456789012' asRopedText) notNil.
+	instance notePendingEditFrom: 3 to: 4 replacement: 'abc' expectedSize: 12.
+	descriptor := instance consumePendingEditDescriptorFor: 'short' asRopedText.
+	self assert: descriptor isNil.
+	self assert: instance pendingEditDescriptor isNil! !
