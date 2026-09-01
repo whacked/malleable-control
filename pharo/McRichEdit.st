@@ -207,8 +207,36 @@ mouseWheelEvent: anEvent
 						ifTrue: [ self doScrollUp: anEvent ]
 						ifFalse: [ 0 ] ] ]
 		ifFalse: [ 0 ].
-	element scrollBy:
-		(self scrollDeltaX: dX of: anEvent) @ (self scrollDeltaY: dY of: anEvent)! !
+	self
+		applyScroll: (self scrollDeltaX: dX of: anEvent)
+			@ (self scrollDeltaY: dY of: anEvent)
+		to: element!
+
+applyScroll: aPoint to: anElement
+	"Not `anElement scrollBy:'.  BrEditor overrides that, and despite a comment
+	 promising pixels it dispatches a BrScrollByWish whose handler reads the
+	 delta as a COUNT OF SEGMENTS:
+
+		position := aWish delta y.
+		position := position positive
+			ifTrue: [ self lastVisibleSegment ... aSegment index + position ceiling ]
+			ifFalse: [ self firstVisibleSegment ... aSegment index + position floor ].
+		self scrollToPosition: position
+
+	 -- so a pixel distance becomes a line count, and scrollToPosition: then
+	 snaps the viewport to that segment's boundary.  Over uniform text the snap
+	 is a line high and passes for smooth scrolling; over a segment carrying an
+	 image it is the whole image in one step.
+
+	 The animated path never went through it: BlScrollFlinger reaches
+	 scrollVerticallyBy: and scrolls in pixels.  scrollByInternal:from: is that
+	 same pixel path with the layout bookkeeping BlInfiniteElement>>scrollBy:
+	 would have done, and neither BrEditor nor BrEditorElement overrides it."
+	| dX dY |
+	dX := anElement layout canScrollHorizontally ifTrue: [ aPoint x ] ifFalse: [ 0 ].
+	dY := anElement layout canScrollVertically ifTrue: [ aPoint y ] ifFalse: [ 0 ].
+	(dX isZero and: [ dY isZero ]) ifTrue: [ ^ self ].
+	anElement scrollByInternal: dX @ dY from: nil! !
 
 !McInstantScrollListener class methodsFor: 'scaling'!
 scrollFactor

@@ -1951,15 +1951,30 @@ initialize
 canScrollDown
 	^ true!
 
+canScrollHorizontally
+	^ true!
+
 canScrollUp
+	^ true!
+
+canScrollVertically
 	^ true!
 
 isNestedScrollingEnabled
 	"No parent to negotiate with, so the handler takes the whole delta."
 	^ false!
 
+layout
+	"BlInfiniteElement asks its layout which axes can scroll; the double
+	 answers for itself."
+	^ self!
+
 scrollBy: aPoint
+	"BrEditor's override of this is the segment-snapping path."
 	messages add: #scrollBy: -> aPoint!
+
+scrollByInternal: aPoint from: anOrigin
+	messages add: #scrollByInternal: -> aPoint!
 
 smoothScrollBy: aPoint
 	messages add: #smoothScrollBy: -> aPoint! !
@@ -2008,11 +2023,13 @@ testStockWheelHandlerAnimatesTheScroll
 	self assert: target selectors equals: #(#smoothScrollBy:)!
 
 testInstantWheelHandlerScrollsInTheSameFrame
+	"Nothing is handed to BlScrollFlinger, so nothing is animated."
 	| event target |
 	event := self wheelEventDownBy: 3.
 	target := self targetOf: event.
 	McInstantScrollListener new mouseWheelEvent: event.
-	self assert: target selectors equals: #(#scrollBy:)!
+	self deny: (target selectors includes: #smoothScrollBy:).
+	self assert: target selectors size equals: 1!
 
 testInstantWheelHandlerAppliesAPixelDeltaOneToOne
 	"The host layer has already computed the distance the OS wants scrolled."
@@ -2054,6 +2071,27 @@ testScrollFactorScalesTheDelta
 
 testScrollFactorDefaultsToOne
 	self assert: McInstantScrollListener scrollFactor equals: 1!
+
+testInstantWheelHandlerUsesThePixelScrollPath
+	"Not scrollBy:, which BrEditor overrides into a segment wish."
+	| event |
+	event := self wheelEventDownBy: 3 pixelBased: false.
+	McInstantScrollListener new mouseWheelEvent: event.
+	self assert: (self targetOf: event) selectors equals: #(#scrollByInternal:)!
+
+testEditorScrollByIsASegmentWishNotAPixelScroll
+	"Pins the upstream behaviour applyScroll:to: exists to route around.
+	 BrEditor>>scrollBy: promises pixels in its comment and delivers a
+	 BrScrollByWish, which BrEditor>>onScrollBy: reads as a count of segments
+	 and resolves with scrollToPosition: -- snapping the viewport to a segment
+	 boundary, which over an image is the height of the whole image."
+	| editor wishes |
+	wishes := OrderedCollection new.
+	editor := BrEditor new.
+	editor addEventHandler: (BlEventHandler on: BrScrollByWish do: [ :each |
+		wishes add: each delta ]).
+	editor scrollBy: 0 @ 3.
+	self assert: wishes asArray equals: (Array with: 0 @ 3)!
 
 testInstantWheelHandlerIgnoresAZeroVector
 	| event target |
