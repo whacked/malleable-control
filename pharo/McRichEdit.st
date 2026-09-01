@@ -151,7 +151,7 @@ doesNotUnderstand: aMessage
 	^ aMessage sendTo: value! !
 
 Object subclass: #McRichEdit
-instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'
+instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -253,6 +253,7 @@ initialize
 	watchGeneration := 0.
 	self invalidateStyleState.
 	self resetImageAdornmentCache.
+	searchSession := nil.
 	buttonHandlers := Dictionary new! !
 
 !McRichEdit methodsFor: 'images - adornment pool'!
@@ -333,6 +334,8 @@ buildPalette
 			at: 'boldText' put: (Color fromHexString: '#fffffe');
 			at: 'dimDelimiter' put: (Color fromHexString: '#555555');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
+			at: 'searchMatch' put: ((Color fromHexString: '#f9c74f') alpha: 0.35);
+			at: 'searchActiveMatch' put: (Color fromHexString: '#f9c74f');
 			at: 'link' put: (Color fromHexString: '#7fbdff');
 			at: 'deadLink' put: (Color fromHexString: '#ff6b6b');
 			at: 'status' put: (Color fromHexString: '#a7a9be');
@@ -354,6 +357,8 @@ buildPalette
 			at: 'boldText' put: (Color fromHexString: '#111111');
 			at: 'dimDelimiter' put: (Color fromHexString: '#bbbbbb');
 			at: 'highlight' put: (Color fromHexString: '#7f5af0');
+			at: 'searchMatch' put: ((Color fromHexString: '#f9c74f') alpha: 0.35);
+			at: 'searchActiveMatch' put: (Color fromHexString: '#f9c74f');
 			at: 'link' put: (Color fromHexString: '#315fbd');
 			at: 'deadLink' put: (Color fromHexString: '#b42318');
 			at: 'status' put: (Color fromHexString: '#888888');
@@ -774,7 +779,8 @@ styleMarkdown: aText source: str cursor: cursorPos
 	 can change the projection at all."
 	| parser probe snapshot reconciliation |
 	probe := McCursorProbe on: cursorPos.
-	[ parser := self parserFor: str.
+	[ searchSession ifNotNil: [ searchSession source: str ].
+	  parser := self parserFor: str.
 	  "Cursor-only passes retain the established full visitor and its complete
 	 boundary proof.  Source changes take the reconciler path below."
 	  (renderSnapshot notNil and: [ renderSnapshot source = str ]) ifTrue: [
@@ -805,8 +811,26 @@ styleWholeText: aText parser: aParser cursor: aCursor
 		text: aText
 		cursor: aCursor
 		palette: self palette
-		owner: self) visit: aParser root!
+		owner: self) visit: aParser root.
+	McSearchPresentation applyTo: aText session: searchSession palette: self palette! !
 
+!McRichEdit methodsFor: 'search'!
+beginSearch
+	searchSession ifNil: [ searchSession := McSearchSession on: editorElement editor text asString ].
+	^ searchSession!
+
+searchFor: aString
+	self beginSearch queryText: aString.
+	editorElement editor styleText!
+
+cancelSearch
+	searchSession ifNotNil: [ searchSession clear ].
+	editorElement editor styleText!
+
+searchSession
+	^ searchSession! !
+
+!McRichEdit methodsFor: 'styling'!
 parserFor: aString
 	"The parser for aString, reusing the last one when the source has not
 	 changed.  Two full restyles run for every keystroke -- one from the text
