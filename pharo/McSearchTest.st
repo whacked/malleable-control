@@ -324,4 +324,88 @@ testActivatingAnOutOfRangeIndexChangesNothing
 	session activateIndex: 99.
 	self assert: session activeIndex equals: 1.
 	session activateIndex: 0.
-	self assert: session activeIndex equals: 1! !
+	self assert: session activeIndex equals: 1!
+
+testWraparoundCanBeDisabled
+	| session |
+	session := self sessionFor: 'link'.
+	session wrapAround: false.
+	session previous.
+	self assert: session activeIndex equals: 1.
+	session next; next; next.
+	self assert: session activeIndex equals: 3! !
+
+TestCase subclass: #McSearchResultTest
+	instanceVariableNames: ''
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McSearchResultTest methodsFor: 'tests'!
+testStructuredResultCarriesDocumentRangesAndPolicies
+	| session result dictionary |
+	session := McSearchSession on: 'link and link'.
+	session queryText: 'link'.
+	result := McSearchResult document: '/notes/demo.md' sourceSize: 13 session: session.
+	dictionary := result asDictionary.
+	self assert: (dictionary at: #document) equals: '/notes/demo.md'.
+	self assert: (dictionary at: #sourceSize) equals: 13.
+	self assert: (dictionary at: #query) equals: 'link'.
+	self assert: (dictionary at: #matchCount) equals: 2.
+	self assert: (dictionary at: #ranges) equals: #((1 4) (10 13)).
+	self assert: (dictionary at: #activeRange) equals: #(1 4).
+	self assert: (dictionary at: #activeIndex) equals: 1.
+	self assert: (dictionary at: #highlightAll).
+	self assert: (dictionary at: #wrapAround)! !
+
+TestCase subclass: #McSearchPresentationTest
+	instanceVariableNames: ''
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McSearchPresentationTest methodsFor: 'helpers'!
+underlayAt: anIndex in: aText
+	^ (aText attributesAt: anIndex)
+		detect: [ :each | each isKindOf: BlTextUnderlayAttribute ]
+		ifNone: [ nil ]!
+
+palette
+	^ Dictionary new
+		at: 'searchMatch' put: Color yellow;
+		at: 'searchActiveMatch' put: Color orange;
+		yourself! !
+
+!McSearchPresentationTest methodsFor: 'tests'!
+testActiveAndOrdinaryMatchesUseDifferentPresentation
+	| session text active ordinary |
+	session := McSearchSession on: 'link and link'.
+	session queryText: 'link'.
+	text := session source asRopedText.
+	McSearchPresentation applyTo: text session: session palette: self palette.
+	active := self underlayAt: 1 in: text.
+	ordinary := self underlayAt: 10 in: text.
+	self assert: active paint equals: Color orange.
+	self assert: ordinary paint equals: Color yellow!
+
+testHighlightAllCanBeDisabledWhileKeepingTheActiveMatch
+	| session text |
+	session := McSearchSession on: 'link and link'.
+	session queryText: 'link'; highlightAll: false.
+	text := session source asRopedText.
+	McSearchPresentation applyTo: text session: session palette: self palette.
+	self assert: (self underlayAt: 1 in: text) notNil.
+	self assert: (self underlayAt: 10 in: text) isNil! !
+
+TestCase subclass: #McCommandKeymapTest
+	instanceVariableNames: ''
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McCommandKeymapTest methodsFor: 'tests'!
+testRichEditBindingsAreNamedAndRemappable
+	| keymap replacement |
+	keymap := McCommandKeymap richEditDefaults.
+	self assert: (keymap commandNames includes: #openSearch).
+	self assert: (keymap bindingFor: #openSearch in: #editor) equals: BlKeyCombination primaryF.
+	replacement := BlKeyCombination primaryS.
+	keymap bind: #openSearch in: #editor to: replacement.
+	self assert: (keymap bindingFor: #openSearch in: #editor) equals: replacement! !

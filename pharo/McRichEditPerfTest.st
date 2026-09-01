@@ -569,3 +569,17 @@ testPendingEditDescriptorIsConsumedOnlyByTheExpectedRopeSize
 	descriptor := instance consumePendingEditDescriptorFor: 'short' asRopedText.
 	self assert: descriptor isNil.
 	self assert: instance pendingEditDescriptor isNil! !
+
+!McRichEditPerfTest methodsFor: 'tests - search'!
+testProgrammaticSearchAnswersStructuredRangesAndNavigates
+	| instance result |
+	instance := self instanceOn: 'link and link'.
+	result := instance searchFor: 'link'.
+	self assert: (result at: #matchCount) equals: 2.
+	self assert: (result at: #ranges) equals: #((1 4) (10 13)).
+	self assert: (result at: #activeRange) equals: #(1 4).
+	result := instance nextSearch.
+	self assert: (result at: #activeIndex) equals: 2.
+	self assert: (result at: #activeRange) equals: #(10 13).
+	instance cancelSearch.
+	self assert: instance searchSession isNil! !

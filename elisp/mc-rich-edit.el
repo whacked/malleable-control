@@ -29,6 +29,8 @@
          (markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
          (snapshot-path (expand-file-name "pharo/McMarkdownSnapshot.st" mc-rich-edit-home))
          (reconciler-path (expand-file-name "pharo/McMarkdownReconciler.st" mc-rich-edit-home))
+         (keymap-path (expand-file-name "pharo/McKeymap.st" mc-rich-edit-home))
+         (search-path (expand-file-name "pharo/McSearch.st" mc-rich-edit-home))
          (st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
          (links-path (expand-file-name "pharo/McRichEditLinks.st" mc-rich-edit-home))
          ;; Load order matters: McBoundedCache is used by McMarkdownInline,
@@ -47,14 +49,26 @@
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
                                "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
+                               "'%s' asFileReference fileIn. "
                                "(Smalltalk at: #McRichEdit) open. 'opened'")
                        cache-path relation-path link-path inline-path table-path
-                       sqlite-path markdown-path snapshot-path reconciler-path st-path links-path))
+                       sqlite-path markdown-path snapshot-path reconciler-path
+                       keymap-path search-path st-path links-path))
          (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
                   (json-serialize `(:v 1 :args (:expression ,expr))))))
     (if reply
         (message "Rich Edit prototype opened in GT")
       (message "GT did not respond (is it running?)"))))
+
+;;;###autoload
+(defun mc-rich-edit-open-from (root)
+  "Load and open the Rich Edit implementation rooted at ROOT.
+This is the explicit worktree/development entry point; unlike changing the
+global `mc-rich-edit-home', the override lasts for one invocation only."
+  (interactive "DRich Edit project/worktree root: ")
+  (let ((mc-rich-edit-home (file-name-as-directory (expand-file-name root))))
+    (mc-rich-edit-open)))
 
 ;;;###autoload
 (defun mc-rich-edit-render (markdown)

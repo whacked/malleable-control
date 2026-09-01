@@ -151,7 +151,7 @@ doesNotUnderstand: aMessage
 	^ aMessage sendTo: value! !
 
 Object subclass: #McRichEdit
-instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
+instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -254,6 +254,7 @@ initialize
 	self invalidateStyleState.
 	self resetImageAdornmentCache.
 	searchSession := nil.
+	commandKeymap := McCommandKeymap richEditDefaults.
 	buttonHandlers := Dictionary new! !
 
 !McRichEdit methodsFor: 'images - adornment pool'!
@@ -488,6 +489,8 @@ openView
 	styler := BlPluggableStyler new block: [:aText |
 		self styleText: aText].
 	editorElement styler: styler.
+	commandKeymap installContext: #editor on: editorElement owner: self.
+	searchBar := self buildSearchBar.
 
 	"Status bar for button feedback."
 	statusLabel := BlTextElement new.
@@ -499,6 +502,7 @@ openView
 	self registerDefaultButtons.
 
 	container addChild: headerRow.
+	container addChild: searchBar.
 	container addChild: editorFrame.
 	container addChild: statusLabel.
 
@@ -507,6 +511,65 @@ openView
 	space show.
 	self startWatchingDocument.
 	^ self!
+
+buildSearchBar
+	| bar previous next close highlightLabel wrapLabel |
+	bar := BlElement new.
+	bar layout: BlLinearLayout horizontal.
+	bar visibility: BlVisibility gone.
+	bar margin: (BlInsets bottom: 10).
+	bar padding: (BlInsets all: 6).
+	bar background: (self palette at: 'codeBg').
+	bar border: (BlBorder paint: (self palette at: 'tableBorder') width: 1).
+	bar geometry: (BlRoundedRectangleGeometry cornerRadius: 5).
+	bar constraintsDo: [ :c | c horizontal matchParent. c vertical exact: 42 ].
+
+	searchInput := BrEditor new.
+	searchInput aptitude: BrGlamorousRegularEditorAptitude new.
+	searchInput constraintsDo: [ :c | c horizontal matchParent. c vertical exact: 30 ].
+	searchInput editor when: BrTextEditorModifiedEvent do: [ :event |
+		self searchFor: searchInput text asString ].
+	commandKeymap installContext: #searchInput on: searchInput owner: self.
+
+	searchCountLabel := BrLabel new.
+	searchCountLabel constraintsDo: [ :c | c horizontal exact: 72. c linear vertical alignCenter ].
+	previous := BrButton new
+		label: 'Previous';
+		aptitude: BrGlamorousButtonWithLabelAptitude new;
+		action: [ self previousSearch ];
+		yourself.
+	next := BrButton new
+		label: 'Next';
+		aptitude: BrGlamorousButtonWithLabelAptitude new;
+		action: [ self nextSearch ];
+		yourself.
+	searchHighlightCheckbox := BrCheckbox new.
+	searchHighlightCheckbox aptitude: BrGlamorousCheckboxAptitude new.
+	searchHighlightCheckbox checked: true.
+	searchHighlightCheckbox whenCheckedDo: [ self highlightAllSearchMatches: true ].
+	searchHighlightCheckbox whenUncheckedDo: [ self highlightAllSearchMatches: false ].
+	highlightLabel := BrLabel new text: 'All'.
+	searchWrapCheckbox := BrCheckbox new.
+	searchWrapCheckbox aptitude: BrGlamorousCheckboxAptitude new.
+	searchWrapCheckbox checked: true.
+	searchWrapCheckbox whenCheckedDo: [ self wrapSearch: true ].
+	searchWrapCheckbox whenUncheckedDo: [ self wrapSearch: false ].
+	wrapLabel := BrLabel new text: 'Wrap'.
+	close := BrButton new
+		label: 'Close';
+		aptitude: BrGlamorousButtonWithLabelAptitude new;
+		action: [ self closeSearch ];
+		yourself.
+	bar addChild: searchInput.
+	bar addChild: searchCountLabel.
+	bar addChild: previous.
+	bar addChild: next.
+	bar addChild: searchHighlightCheckbox.
+	bar addChild: highlightLabel.
+	bar addChild: searchWrapCheckbox.
+	bar addChild: wrapLabel.
+	bar addChild: close.
+	^ bar!
 
 applyPalette
 	"Update all chrome from the current palette, then restyle editor text."
@@ -531,6 +594,10 @@ applyPalette
 		pathLabel text: (self relativeDocumentPath asRopedText
 			foreground: (p at: 'link');
 			fontSize: 12).
+		searchBar ifNotNil: [
+			searchBar
+				background: (p at: 'codeBg');
+				border: (BlBorder paint: (p at: 'tableBorder') width: 1) ].
 		statusLabel text: (statusLabel text asString asRopedText
 			foreground: (p at: 'status');
 			fontSize: 13).
@@ -821,14 +888,93 @@ beginSearch
 
 searchFor: aString
 	self beginSearch queryText: aString.
-	editorElement editor styleText!
+	editorElement editor styleText.
+	self updateSearchStatus.
+	^ self searchResult asDictionary!
+
+openSearch
+	self beginSearch.
+	searchBar ifNotNil: [ searchBar visibility: BlVisibility visible ].
+	searchInput ifNotNil: [
+		searchInput requestFocus.
+		searchInput text asString isEmpty ifFalse: [ self searchFor: searchInput text asString ] ].
+	self updateSearchStatus.
+	^ self searchResult asDictionary!
+
+nextSearch
+	self beginSearch next.
+	self presentActiveSearchMatch.
+	^ self searchResult asDictionary!
+
+previousSearch
+	self beginSearch previous.
+	self presentActiveSearchMatch.
+	^ self searchResult asDictionary!
+
+presentActiveSearchMatch
+	| range source lineIndex scroller |
+	range := searchSession activeMatch.
+	editorElement editor styleText.
+	range ifNil: [ ^ self updateSearchStatus ].
+	editorElement editor navigator moveTo: range first - 1; apply.
+	source := editorElement editor text asString.
+	lineIndex := range first = 1
+		ifTrue: [ 1 ]
+		ifFalse: [ 1 + ((source copyFrom: 1 to: range first - 1) occurrencesOf: Character lf) ].
+	scroller := BrEditorSearchTextScroller new
+		editorElement: editorElement;
+		lineIndex: lineIndex;
+		characterStartPosition: range first;
+		characterStopPosition: range last;
+		yourself.
+	scroller scroll.
+	self updateSearchStatus!
+
+highlightAllSearchMatches: aBoolean
+	self beginSearch highlightAll: aBoolean.
+	editorElement editor styleText.
+	self updateSearchStatus!
+
+wrapSearch: aBoolean
+	self beginSearch wrapAround: aBoolean.
+	self updateSearchStatus!
+
+searchResult
+	| identifier session |
+	identifier := documentFile
+		ifNil: [ '<memory>' ]
+		ifNotNil: [ documentFile fullName ].
+	session := searchSession ifNil: [ McSearchSession on: editorElement editor text asString ].
+	^ McSearchResult
+		document: identifier
+		sourceSize: editorElement editor text size
+		session: session!
 
 cancelSearch
-	searchSession ifNotNil: [ searchSession clear ].
-	editorElement editor styleText!
+	searchSession := nil.
+	editorElement editor styleText.
+	self updateSearchStatus!
+
+closeSearch
+	self cancelSearch.
+	searchBar ifNotNil: [ searchBar visibility: BlVisibility gone ].
+	editorElement ifNotNil: [ editorElement requestFocus ].
+	^ self searchResult asDictionary!
+
+updateSearchStatus
+	searchCountLabel ifNil: [ ^ self ].
+	searchSession
+		ifNil: [ searchCountLabel text: 'No search' ]
+		ifNotNil: [
+			searchCountLabel text: (searchSession hasMatches
+				ifTrue: [ searchSession activeIndex printString , '/' , searchSession matchCount printString ]
+				ifFalse: [ '0/0' ]) ]!
 
 searchSession
-	^ searchSession! !
+	^ searchSession!
+
+commandKeymap
+	^ commandKeymap! !
 
 !McRichEdit methodsFor: 'styling'!
 parserFor: aString

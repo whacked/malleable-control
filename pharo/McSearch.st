@@ -244,7 +244,7 @@ matchesFor: aQuery in: aString
 	^ matches asArray! !
 
 Object subclass: #McSearchSession
-	instanceVariableNames: 'source query matcher matches activeIndex direction'
+	instanceVariableNames: 'source query matcher matches activeIndex direction highlightAll wrapAround'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -283,6 +283,8 @@ setSource: aString query: aQuery matcher: aMatcher
 	query := aQuery ifNil: [ McSearchQuery empty ].
 	matcher := aMatcher ifNil: [ McSearchMatcher default ].
 	direction := #forward.
+	highlightAll := true.
+	wrapAround := true.
 	matches := #().
 	activeIndex := 0.
 	self recompute! !
@@ -317,7 +319,19 @@ activeMatch
 
 direction
 	"The direction of the last navigation, #forward or #backward."
-	^ direction! !
+	^ direction!
+
+highlightAll
+	^ highlightAll!
+
+highlightAll: aBoolean
+	highlightAll := aBoolean = true!
+
+wrapAround
+	^ wrapAround!
+
+wrapAround: aBoolean
+	wrapAround := aBoolean = true! !
 
 !McSearchSession methodsFor: 'updating'!
 query: aQuery
@@ -359,6 +373,7 @@ next
 	"Advance one match, wrapping past the last.  Answers the active range."
 	direction := #forward.
 	matches isEmpty ifTrue: [ ^ nil ].
+	(activeIndex = matches size and: [ wrapAround not ]) ifTrue: [ ^ self activeMatch ].
 	activeIndex := activeIndex \\ matches size + 1.
 	^ self activeMatch!
 
@@ -366,6 +381,7 @@ previous
 	"Step back one match, wrapping past the first.  Answers the active range."
 	direction := #backward.
 	matches isEmpty ifTrue: [ ^ nil ].
+	(activeIndex <= 1 and: [ wrapAround not ]) ifTrue: [ ^ self activeMatch ].
 	activeIndex := activeIndex <= 1
 		ifTrue: [ matches size ]
 		ifFalse: [ activeIndex - 1 ].
@@ -391,6 +407,80 @@ printOn: aStream
 		print: matches size;
 		nextPut: $)! !
 
+Object subclass: #McSearchResult
+	instanceVariableNames: 'document sourceSize query ranges activeIndex activeRange highlightAll wrapAround'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McSearchResult class methodsFor: 'instance creation'!
+document: aDocument sourceSize: aSize session: aSession
+	^ self new
+		setDocument: aDocument
+		sourceSize: aSize
+		session: aSession;
+		yourself! !
+
+!McSearchResult methodsFor: 'initialization'!
+setDocument: aDocument sourceSize: aSize session: aSession
+	document := aDocument.
+	sourceSize := aSize.
+	query := aSession query text.
+	ranges := aSession matches collect: [ :each | { each first. each last } ].
+	activeIndex := aSession activeIndex.
+	activeRange := aSession activeMatch
+		ifNil: [ nil ]
+		ifNotNil: [ :each | { each first. each last } ].
+	highlightAll := aSession highlightAll.
+	wrapAround := aSession wrapAround! !
+
+!McSearchResult methodsFor: 'accessing'!
+document
+	^ document!
+
+sourceSize
+	^ sourceSize!
+
+query
+	^ query!
+
+ranges
+	^ ranges copy!
+
+matchCount
+	^ ranges size!
+
+activeIndex
+	^ activeIndex!
+
+activeRange
+	^ activeRange!
+
+highlightAll
+	^ highlightAll!
+
+wrapAround
+	^ wrapAround!
+
+asDictionary
+	^ Dictionary new
+		at: #document put: document;
+		at: #sourceSize put: sourceSize;
+		at: #query put: query;
+		at: #matchCount put: self matchCount;
+		at: #ranges put: self ranges;
+		at: #activeIndex put: activeIndex;
+		at: #activeRange put: activeRange;
+		at: #highlightAll put: highlightAll;
+		at: #wrapAround put: wrapAround;
+		yourself!
+
+printOn: aStream
+	aStream
+		nextPutAll: self class name asString;
+		nextPut: $(;
+		print: self asDictionary;
+		nextPut: $)! !
+
 Object subclass: #McSearchPresentation
 	instanceVariableNames: ''
 	classVariableNames: ''
@@ -404,9 +494,10 @@ applyTo: aText session: aSession palette: aPalette
 	aSession ifNil: [ ^ aText ].
 	aSession matches do: [ :range |
 		| color |
+		(range = aSession activeMatch or: [ aSession highlightAll ]) ifTrue: [
 		color := range = aSession activeMatch
 			ifTrue: [ aPalette at: 'searchActiveMatch' ifAbsent: [ Color yellow ] ]
 			ifFalse: [ aPalette at: 'searchMatch' ifAbsent: [ Color yellow alpha: 0.35 ] ].
 		aText attribute: (BlTextUnderlayAttribute paint: color)
-			from: (range first max: 1) to: (range last min: aText size) ].
+			from: (range first max: 1) to: (range last min: aText size) ] ].
 	^ aText! !
