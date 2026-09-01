@@ -186,11 +186,14 @@ attachTo: anElement
 
 !McInstantScrollListener methodsFor: 'event handling'!
 mouseWheelEvent: anEvent
-	"As BlInfiniteMouseScrollListener>>mouseWheelEvent:, but applied at once.
-	 doScrollUp:/doScrollDown: are the superclass's: they may rewrite the
-	 event vector to hand a parent its share of the scroll, and they mark the
-	 event consumed, so both must run before the delta is read."
-	| dX dY element isVertical scrollDeltaX scrollDeltaY |
+	"As BlInfiniteMouseScrollListener>>mouseWheelEvent:, but applied at once and
+	 with the delta recalibrated -- see scrollDeltaY:of: for why the stock
+	 factor of ten cannot survive the move off the animation.
+
+	 doScrollUp:/doScrollDown: are the superclass's: they may rewrite the event
+	 vector to hand a parent its share of the scroll, and they mark the event
+	 consumed, so both must run before the delta is read."
+	| dX dY element isVertical |
 	anEvent vector isZero ifTrue: [ ^ self ].
 	element := anEvent currentTarget.
 	isVertical := anEvent isPrimarilyHorizontal not.
@@ -204,13 +207,43 @@ mouseWheelEvent: anEvent
 						ifTrue: [ self doScrollUp: anEvent ]
 						ifFalse: [ 0 ] ] ]
 		ifFalse: [ 0 ].
-	scrollDeltaX := anEvent isPixelBased
-		ifTrue: [ dX * 10 ]
+	element scrollBy:
+		(self scrollDeltaX: dX of: anEvent) @ (self scrollDeltaY: dY of: anEvent)! !
+
+!McInstantScrollListener methodsFor: 'scaling'!
+scrollDeltaX: aDelta of: anEvent
+	"The stock handler multiplies a pixel-based horizontal delta by ten as
+	 well, and for the same reason it must not here.  A line-based delta keeps
+	 the stock treatment, including the shift modifier's slower step."
+	^ anEvent isPixelBased
+		ifTrue: [ aDelta ]
 		ifFalse: [ anEvent modifiers isShift
-				ifTrue: [ dX * self class shiftWheelScrollSpeed ]
-				ifFalse: [ dX ] ].
-	scrollDeltaY := dY * 10.
-	element scrollBy: scrollDeltaX @ scrollDeltaY! !
+				ifTrue: [ aDelta * self class shiftWheelScrollSpeed ]
+				ifFalse: [ aDelta ] ]!
+
+scrollDeltaY: aDelta of: anEvent
+	"BlRustWindowingHostSpace>>visitMouseWheelEvent: draws the distinction this
+	 method turns on.  A PixelDelta from the OS -- a trackpad, or any precise
+	 device -- arrives already converted to logical pixels (aDeltaPoint /
+	 scaleFactor) and is the distance the OS wants scrolled; a LineDelta from a
+	 notched wheel arrives as notches scaled by mouseWheelScrollSpeed, 15 here.
+
+	 The stock handler multiplies both by ten indiscriminately.  It gets away
+	 with that because smoothScrollBy:during:with: calls `scroller startScrollAt:
+	 0@0 by: aDeltaPoint', which REPLACES the scroll in flight rather than
+	 accumulating onto it: a trackpad delivers a dense stream of events, so each
+	 one discards most of what the previous had left to travel and only a
+	 fraction of the tenfold distance is ever realised.  An isolated notch from a
+	 wheel, having nothing after it to cut it short, does travel the full ten.
+
+	 Applying the same arithmetic in one frame removes the truncation and the
+	 tenfold overshoot lands in full -- which is a trackpad scrolling roughly ten
+	 times too far per event.  So the factor is kept only where it was actually
+	 being paid: on line deltas.  Pixel deltas go 1:1, which is what the OS
+	 asked for and what every native application does with them."
+	^ anEvent isPixelBased
+		ifTrue: [ aDelta ]
+		ifFalse: [ aDelta * 10 ]! !
 
 Object subclass: #McRichEdit
 instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'

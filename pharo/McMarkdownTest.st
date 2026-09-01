@@ -1974,14 +1974,28 @@ selectors
 !McMarkdownTest methodsFor: 'helpers - scrolling'!
 wheelEventDownBy: anAmount
 	"A wheel notch scrolling down.  BlMouseWheelEvent reads the direction off
-	 the vector: a negative y is a downward scroll."
+	 the vector: a negative y is a downward scroll.  Line-based, as a notched
+	 wheel delivers."
+	^ (self wheelEventDownBy: anAmount pixelBased: false)!
+
+wheelEventDownBy: anAmount pixelBased: aBoolean
+	"aBoolean true models a trackpad, whose delta reaches Bloc already
+	 converted to logical pixels; false models a notched wheel."
 	^ BlMouseWheelEvent new
+		isPixelBased: aBoolean;
 		vector: (BlVector x: 0 y: anAmount negated);
 		currentTarget: McRecordingScrollTarget new;
 		yourself!
 
 targetOf: anEvent
-	^ anEvent currentTarget! !
+	^ anEvent currentTarget!
+
+scrollOf: anEvent by: aHandler
+	"Answer the point the handler moved the target by."
+	aHandler mouseWheelEvent: anEvent.
+	^ (self targetOf: anEvent) messages
+		ifEmpty: [ nil ]
+		ifNotEmpty: [ :each | each first value ]! !
 
 !McMarkdownTest methodsFor: 'tests - scroll inertia'!
 testStockWheelHandlerAnimatesTheScroll
@@ -2000,16 +2014,39 @@ testInstantWheelHandlerScrollsInTheSameFrame
 	McInstantScrollListener new mouseWheelEvent: event.
 	self assert: target selectors equals: #(#scrollBy:)!
 
-testInstantWheelHandlerKeepsTheStockDelta
-	"Same distance as the stock handler moves, just applied at once."
-	| instant stock |
-	instant := self wheelEventDownBy: 3.
-	stock := self wheelEventDownBy: 3.
-	McInstantScrollListener new mouseWheelEvent: instant.
-	BlInfiniteMouseScrollListener new mouseWheelEvent: stock.
+testInstantWheelHandlerKeepsTheStockDeltaForANotchedWheel
+	"An isolated notch has nothing arriving behind it to cut its animation
+	 short, so under the stock handler it travels the full tenfold distance.
+	 Matching it here is what keeps a wheel feeling the same as before."
 	self
-		assert: (self targetOf: instant) messages first value
-		equals: (self targetOf: stock) messages first value!
+		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
+					by: McInstantScrollListener new)
+		equals: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
+					by: BlInfiniteMouseScrollListener new)!
+
+testInstantWheelHandlerAppliesAPixelDeltaOneToOne
+	"A trackpad delta is already the distance the OS wants scrolled.  The stock
+	 tenfold only survived because the animation it fed was being replaced by
+	 the next event before it finished; applied in one frame it overshoots."
+	self
+		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: true)
+					by: McInstantScrollListener new)
+		equals: 0 @ 3!
+
+testInstantWheelHandlerScalesANotchedWheelDelta
+	self
+		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
+					by: McInstantScrollListener new)
+		equals: 0 @ 30!
+
+testStockWheelHandlerOverscrollsAPixelDelta
+	"Pins the defect this subclass has to work around: the stock handler makes
+	 no distinction between the two kinds of delta.  If upstream starts making
+	 one, this fails and scrollDeltaY:of: can lose its branch."
+	self
+		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: true)
+					by: BlInfiniteMouseScrollListener new)
+		equals: 0 @ 30!
 
 testInstantWheelHandlerIgnoresAZeroVector
 	| event target |
