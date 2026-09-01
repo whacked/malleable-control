@@ -279,6 +279,145 @@ scrollDeltaY: aDelta of: anEvent
 	 factor of one -- and eleven screens at the stock ten."
 	^ aDelta * self class scrollFactor! !
 
+"
+McPixelScrollEditor -- an editor whose scrollbar is measured in pixels.
+
+BrEditor answers the three scrollbar metrics in SEGMENTS:
+
+	computeVerticalScrollRange   ^ self lineCount
+	computeVerticalScrollExtent  ^ lastVisibleSegment index - firstVisibleSegment index + 1
+	computeVerticalScrollOffset  ^ firstVisibleSegment index - 1
+
+The thumb is drawn extent/range of the track, so its length is the fraction
+of the document's LINES that are on screen.  While every line is the same
+height that fraction tracks the fraction of the document's height, and the
+bar behaves.  Put an image in one segment and it stops: the viewport now
+holds one segment instead of eighteen, the extent collapses, and the thumb
+shrinks -- then grows again on the way back to text.  The document never
+changed size; the number of lines that fit did.
+
+So the metrics are answered here in pixels instead.  The extent is the
+viewport's height, and the range is the document's height -- which the
+recycling layout is built precisely to avoid computing, since only the
+laid-out segments have ever been measured.  The estimate stands in: every
+segment that has been laid out contributes its measured height, and every
+segment that has not contributes the median of those that have.
+
+The median, not the mean, because one image among two hundred text lines
+drags a mean upward and would make the bar wrong everywhere.  And the cache
+only ever grows, so a tall segment keeps counting toward the total after it
+is recycled out of view -- which is what stops the bar resizing as it
+scrolls past.  The estimate is therefore wrong only for segments never yet
+seen, converges as they are, and then holds still.
+"!
+
+BrEditor subclass: #McPixelScrollEditor
+	instanceVariableNames: 'segmentHeights typicalHeight totalHeight'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McPixelScrollEditor methodsFor: 'initialization'!
+initialize
+	super initialize.
+	segmentHeights := Dictionary new.
+	"BrEditor clears its own lineCount on both of these; the measurements are
+	 keyed by segment index, so they are stale for the same reason."
+	self viewModel when: BrEditorTextChanged do: [ :anEvent |
+		self forgetSegmentHeights ].
+	self editor when: BrTextEditorModifiedEvent do: [ :anEvent |
+		self forgetSegmentHeights ]! !
+
+!McPixelScrollEditor methodsFor: 'measuring'!
+forgetSegmentHeights
+	segmentHeights := Dictionary new.
+	self invalidateHeightEstimates!
+
+heightAboveSegment: anIndex
+	| typical sum |
+	typical := self typicalSegmentHeight.
+	sum := 0.
+	1 to: anIndex - 1 do: [ :each |
+		sum := sum + (segmentHeights at: each ifAbsent: [ typical ]) ].
+	^ sum!
+
+invalidateHeightEstimates
+	typicalHeight := nil.
+	totalHeight := nil!
+
+recordHeight: aHeight forSegment: anIndex
+	"Kept apart from recordLaidOutHeights so the estimate can be exercised
+	 without a laid-out editor."
+	(segmentHeights at: anIndex ifAbsent: [ nil ]) = aHeight ifTrue: [ ^ self ].
+	segmentHeights at: anIndex put: aHeight.
+	self invalidateHeightEstimates!
+
+recordLaidOutHeights
+	"Only the children the layout is currently holding can be measured, which
+	 is the whole premise of a recycling layout.  Their heights are kept."
+	| layout |
+	layout := self layout.
+	layout ifNil: [ ^ self ].
+	1 to: layout childrenCount do: [ :each |
+		| child |
+		child := layout childAt: each.
+		((child respondsTo: #segment) and: [ child height > 0 ])
+			ifTrue: [
+				child segment ifNotNil: [ :segment |
+					self recordHeight: child height forSegment: segment index ] ] ]!
+
+segmentHeights
+	^ segmentHeights!
+
+totalContentHeight
+	^ totalHeight ifNil: [ totalHeight := self computeTotalContentHeight ]!
+
+typicalSegmentHeight
+	"The median of what has been measured.  A mean would be dragged upward by
+	 a single image and make the estimate wrong for every text line."
+	^ typicalHeight ifNil: [ typicalHeight := self computeTypicalSegmentHeight ]! !
+
+!McPixelScrollEditor methodsFor: 'measuring - private'!
+computeTotalContentHeight
+	| typical sum |
+	typical := self typicalSegmentHeight.
+	sum := 0.
+	1 to: self lineCount do: [ :each |
+		sum := sum + (segmentHeights at: each ifAbsent: [ typical ]) ].
+	^ sum!
+
+computeTypicalSegmentHeight
+	| sorted |
+	segmentHeights isEmpty ifTrue: [ ^ 0 ].
+	sorted := segmentHeights values asSortedCollection asArray.
+	^ sorted at: sorted size + 1 // 2! !
+
+!McPixelScrollEditor methodsFor: 'scrolling'!
+computeVerticalScrollExtent
+	"Pixels of document on screen."
+	^ self height!
+
+computeVerticalScrollOffset
+	"Pixels of document above the viewport: the segments before the first
+	 visible one, plus however far into that one we have scrolled.  A child
+	 whose top has passed above the viewport has a negative position."
+	| child segment |
+	self recordLaidOutHeights.
+	segmentHeights isEmpty ifTrue: [ ^ 0 ].
+	child := self layout
+		findFirstVisibleChildClosestToStartCompletelyVisible: true
+		acceptPartiallyVisible: true.
+	child ifNil: [ ^ 0 ].
+	segment := child segment.
+	segment ifNil: [ ^ 0 ].
+	^ 0 max: (self heightAboveSegment: segment index) - child position y!
+
+computeVerticalScrollRange
+	"Pixels of document in total.  Never less than the extent, so the thumb
+	 cannot be asked to be longer than its track."
+	self recordLaidOutHeights.
+	segmentHeights isEmpty ifTrue: [ ^ self computeVerticalScrollExtent ].
+	^ self totalContentHeight max: self computeVerticalScrollExtent! !
+
 Object subclass: #McRichEdit
 instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'
 	classVariableNames: ''
@@ -571,7 +710,7 @@ openView
 	editorFrame geometry: (BlRoundedRectangleGeometry cornerRadius: 6).
 	editorFrame clipChildren: true.
 
-	editorElement := BrEditor new.
+	editorElement := McPixelScrollEditor new.
 	editorElement aptitude: (BrGlamorousRegularEditorAptitude new
 		foreground: (self palette at: 'text');
 		fontSize: 16;

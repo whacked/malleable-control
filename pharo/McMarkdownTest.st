@@ -2122,3 +2122,87 @@ testAttachToIsIdempotent
 	handlers := element eventDispatcher handlers
 		select: [ :each | each isKindOf: BlInfiniteMouseScrollListener ].
 	self assert: handlers size equals: 1! !
+
+!McMarkdownTest methodsFor: 'helpers - scrollbar'!
+editorOfLines: aCount
+	"An editor whose document has aCount lines and no layout, so the height
+	 estimate can be driven directly."
+	| editor |
+	editor := McPixelScrollEditor new.
+	editor text: (String streamContents: [ :s |
+		1 to: aCount do: [ :each |
+			each > 1 ifTrue: [ s cr ].
+			s nextPutAll: 'line '; print: each ] ]).
+	^ editor!
+
+editorOfLines: aCount heights: aCollection
+	| editor |
+	editor := self editorOfLines: aCount.
+	aCollection doWithIndex: [ :each :index |
+		editor recordHeight: each forSegment: index ].
+	^ editor! !
+
+!McMarkdownTest methodsFor: 'tests - scrollbar metrics'!
+testStockEditorMeasuresTheScrollRangeInLines
+	"Pins why McPixelScrollEditor exists.  BrEditor's range is a line count,
+	 so the thumb is drawn as the fraction of the document's LINES on screen
+	 rather than the fraction of its height -- and an image, filling the
+	 viewport with one segment, collapses it."
+	| editor |
+	editor := BrEditor new.
+	editor text: (String streamContents: [ :s |
+		1 to: 5 do: [ :each |
+			each > 1 ifTrue: [ s cr ].
+			s nextPutAll: 'line '; print: each ] ]).
+	self assert: editor computeVerticalScrollRange equals: editor lineCount!
+
+testPixelScrollEditorMeasuresTheScrollRangeInPixels
+	| editor |
+	editor := self editorOfLines: 5 heights: #(20 20 200).
+	"median of 20, 20, 200 is 20, so the two unmeasured lines count 20 each"
+	self assert: editor totalContentHeight equals: 280.
+	self assert: editor computeVerticalScrollRange equals: 280.
+	self deny: editor computeVerticalScrollRange = editor lineCount!
+
+testPixelScrollEditorEstimatesUnmeasuredSegmentsFromTheMedian
+	"A mean would be 80 here and put the two unmeasured lines at 80 apiece."
+	| editor |
+	editor := self editorOfLines: 5 heights: #(20 20 200).
+	self assert: editor typicalSegmentHeight equals: 20!
+
+testPixelScrollEditorKeepsATallSegmentInTheTotalOnceSeen
+	"The cache only grows, so scrolling an image out of view does not take its
+	 height back out of the total -- which is what stops the bar resizing."
+	| editor |
+	editor := self editorOfLines: 5 heights: #(20 20 200).
+	editor recordHeight: 20 forSegment: 1.
+	self assert: editor totalContentHeight equals: 280!
+
+testPixelScrollEditorCountsOnlySegmentsAboveTheOffset
+	| editor |
+	editor := self editorOfLines: 5 heights: #(20 20 200).
+	self assert: (editor heightAboveSegment: 1) equals: 0.
+	self assert: (editor heightAboveSegment: 3) equals: 40.
+	self assert: (editor heightAboveSegment: 4) equals: 240!
+
+testPixelScrollEditorRangeIsNeverBelowTheExtent
+	"The thumb cannot be longer than its track."
+	| editor |
+	editor := self editorOfLines: 5 heights: #(1).
+	self assert: editor computeVerticalScrollRange >= editor computeVerticalScrollExtent!
+
+testPixelScrollEditorFallsBackToTheExtentBeforeAnythingIsMeasured
+	| editor |
+	editor := self editorOfLines: 5.
+	self assert: editor segmentHeights isEmpty.
+	self
+		assert: editor computeVerticalScrollRange
+		equals: editor computeVerticalScrollExtent!
+
+testPixelScrollEditorForgetsMeasurementsWhenTheTextChanges
+	"Heights are keyed by segment index, so they are stale for exactly the
+	 reason BrEditor clears its own lineCount."
+	| editor |
+	editor := self editorOfLines: 5 heights: #(20 20 200).
+	editor text: 'replaced'.
+	self assert: editor segmentHeights isEmpty! !
