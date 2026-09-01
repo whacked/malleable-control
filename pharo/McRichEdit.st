@@ -171,7 +171,7 @@ applied in the same frame.
 
 BlInfiniteMouseScrollListener subclass: #McInstantScrollListener
 	instanceVariableNames: ''
-	classVariableNames: ''
+	classVariableNames: 'ScrollFactor'
 	package: 'MalleableControl'!
 
 !McInstantScrollListener class methodsFor: 'installing'!
@@ -210,40 +210,46 @@ mouseWheelEvent: anEvent
 	element scrollBy:
 		(self scrollDeltaX: dX of: anEvent) @ (self scrollDeltaY: dY of: anEvent)! !
 
+!McInstantScrollListener class methodsFor: 'scaling'!
+scrollFactor
+	"Multiplier applied to the distance the host layer already computed.
+	 One means: scroll exactly as far as the OS asked.  Adjustable live --
+	 McInstantScrollListener scrollFactor: 1.5 -- so the feel can be tuned
+	 without a reload."
+	^ ScrollFactor ifNil: [ 1 ]!
+
+scrollFactor: aNumber
+	ScrollFactor := aNumber! !
+
 !McInstantScrollListener methodsFor: 'scaling'!
 scrollDeltaX: aDelta of: anEvent
-	"The stock handler multiplies a pixel-based horizontal delta by ten as
-	 well, and for the same reason it must not here.  A line-based delta keeps
-	 the stock treatment, including the shift modifier's slower step."
-	^ anEvent isPixelBased
-		ifTrue: [ aDelta ]
-		ifFalse: [ anEvent modifiers isShift
-				ifTrue: [ aDelta * self class shiftWheelScrollSpeed ]
-				ifFalse: [ aDelta ] ]!
+	"The shift modifier's slower horizontal step is the stock handler's and is
+	 kept; the tenfold is not, for the reason scrollDeltaY:of: gives."
+	^ (anEvent isPixelBased not and: [ anEvent modifiers isShift ])
+		ifTrue: [ aDelta * self class shiftWheelScrollSpeed * self class scrollFactor ]
+		ifFalse: [ aDelta * self class scrollFactor ]!
 
 scrollDeltaY: aDelta of: anEvent
-	"BlRustWindowingHostSpace>>visitMouseWheelEvent: draws the distinction this
-	 method turns on.  A PixelDelta from the OS -- a trackpad, or any precise
-	 device -- arrives already converted to logical pixels (aDeltaPoint /
-	 scaleFactor) and is the distance the OS wants scrolled; a LineDelta from a
-	 notched wheel arrives as notches scaled by mouseWheelScrollSpeed, 15 here.
+	"The distance arrives already computed.  BlRustWindowingHostSpace>>
+	 visitMouseWheelEvent: divides a PixelDelta by the scale factor, and
+	 multiplies a LineDelta by the scale factor and by
+	 RustWindowingLibrary mouseWheelScrollSpeed, 15 here.  Either way what
+	 reaches this handler is the distance the OS wants scrolled, so the
+	 factor is one.
 
-	 The stock handler multiplies both by ten indiscriminately.  It gets away
-	 with that because smoothScrollBy:during:with: calls `scroller startScrollAt:
-	 0@0 by: aDeltaPoint', which REPLACES the scroll in flight rather than
-	 accumulating onto it: a trackpad delivers a dense stream of events, so each
-	 one discards most of what the previous had left to travel and only a
-	 fraction of the tenfold distance is ever realised.  An isolated notch from a
-	 wheel, having nothing after it to cut it short, does travel the full ten.
+	 The stock handler multiplies by ten on top of that.  It survives only
+	 because smoothScrollBy:during:with: calls `scroller startScrollAt: 0@0
+	 by: aDeltaPoint', REPLACING the scroll in flight rather than accumulating
+	 onto it, so each event in a burst discards most of what the previous had
+	 left to travel and the tenfold is never realised in full.  Applied in one
+	 frame there is nothing to truncate it.
 
-	 Applying the same arithmetic in one frame removes the truncation and the
-	 tenfold overshoot lands in full -- which is a trackpad scrolling roughly ten
-	 times too far per event.  So the factor is kept only where it was actually
-	 being paid: on line deltas.  Pixel deltas go 1:1, which is what the OS
-	 asked for and what every native application does with them."
-	^ anEvent isPixelBased
-		ifTrue: [ aDelta ]
-		ifFalse: [ aDelta * 10 ]! !
+	 Measured on this machine, wheel events arrive as line deltas ramping with
+	 the OS's own acceleration: 3.0 for the smallest nudge, up to 198.0 mid
+	 gesture, a firm flick totalling about 468 across five events in 135ms.
+	 Against a 421px viewport that is a screen and a tenth per flick at a
+	 factor of one -- and eleven screens at the stock ten."
+	^ aDelta * self class scrollFactor! !
 
 Object subclass: #McRichEdit
 instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource'

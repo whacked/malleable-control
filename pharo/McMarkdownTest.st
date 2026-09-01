@@ -2014,39 +2014,46 @@ testInstantWheelHandlerScrollsInTheSameFrame
 	McInstantScrollListener new mouseWheelEvent: event.
 	self assert: target selectors equals: #(#scrollBy:)!
 
-testInstantWheelHandlerKeepsTheStockDeltaForANotchedWheel
-	"An isolated notch has nothing arriving behind it to cut its animation
-	 short, so under the stock handler it travels the full tenfold distance.
-	 Matching it here is what keeps a wheel feeling the same as before."
-	self
-		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
-					by: McInstantScrollListener new)
-		equals: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
-					by: BlInfiniteMouseScrollListener new)!
-
 testInstantWheelHandlerAppliesAPixelDeltaOneToOne
-	"A trackpad delta is already the distance the OS wants scrolled.  The stock
-	 tenfold only survived because the animation it fed was being replaced by
-	 the next event before it finished; applied in one frame it overshoots."
+	"The host layer has already computed the distance the OS wants scrolled."
 	self
 		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: true)
 					by: McInstantScrollListener new)
 		equals: 0 @ 3!
 
-testInstantWheelHandlerScalesANotchedWheelDelta
+testInstantWheelHandlerAppliesALineDeltaOneToOne
+	"A line delta reaches Bloc already multiplied by the scale factor and by
+	 mouseWheelScrollSpeed, so it too is a distance, not a notch count.
+	 Measured on real hardware these run from 3.0 for the smallest nudge to
+	 198.0 mid-gesture; the stock tenfold turns a flick into eleven screens."
 	self
 		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
 					by: McInstantScrollListener new)
-		equals: 0 @ 30!
+		equals: 0 @ 3!
 
-testStockWheelHandlerOverscrollsAPixelDelta
-	"Pins the defect this subclass has to work around: the stock handler makes
-	 no distinction between the two kinds of delta.  If upstream starts making
-	 one, this fails and scrollDeltaY:of: can lose its branch."
+testStockWheelHandlerOverscrollsBothKindsOfDelta
+	"Pins what this subclass works around.  If upstream drops the tenfold,
+	 these fail and the scaling protocol can go."
 	self
 		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: true)
 					by: BlInfiniteMouseScrollListener new)
+		equals: 0 @ 30.
+	self
+		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
+					by: BlInfiniteMouseScrollListener new)
 		equals: 0 @ 30!
+
+testScrollFactorScalesTheDelta
+	"The factor is the one knob for feel, settable on a live image."
+	[ McInstantScrollListener scrollFactor: 2.
+	  self
+		assert: (self scrollOf: (self wheelEventDownBy: 3 pixelBased: false)
+					by: McInstantScrollListener new)
+		equals: 0 @ 6 ]
+		ensure: [ McInstantScrollListener scrollFactor: 1 ]!
+
+testScrollFactorDefaultsToOne
+	self assert: McInstantScrollListener scrollFactor equals: 1!
 
 testInstantWheelHandlerIgnoresAZeroVector
 	| event target |
