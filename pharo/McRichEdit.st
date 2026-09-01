@@ -785,9 +785,12 @@ styleMarkdown: aText source: str cursor: cursorPos
 	  reconciliation := reconciler reconcileFrom: renderSnapshot to: snapshot.
 	  "Make the newly reconciled lineage visible to image styling in this pass."
 	  renderSnapshot := snapshot.
-	  (self canPatchReconciliation: reconciliation on: aText)
-		ifTrue: [ self patchText: aText with: reconciliation cursor: probe. lastRenderWasPartial := true ]
-		ifFalse: [ self styleWholeText: aText parser: parser cursor: probe. lastRenderWasPartial := false ].
+	  "Brick's generation handed to a pluggable styler does not preserve the
+	 unaffected adornments.  Until the dedicated retained-text transaction is
+	 in place, a local visitor would leave sibling owners as raw source.  Keep
+	 reconciliation for stable resource identity, but project every owner."
+	  self styleWholeText: aText parser: parser cursor: probe.
+	  lastRenderWasPartial := false.
 	  self noteStyledSource: str cursor: cursorPos
 		boundaries: probe boundaries ]
 		on: Error
@@ -803,38 +806,6 @@ styleWholeText: aText parser: aParser cursor: aCursor
 		cursor: aCursor
 		palette: self palette
 		owner: self) visit: aParser root!
-
-canPatchReconciliation: aReconciliation on: aText
-	"The standard Brick strategy gives us a next-generation copy of the rope.
-	 Unchanged owners therefore already carry their attributes.  Restrict the
-	 patch path to a finite, local set of root owners; the full visitor remains
-	 the correctness fallback for the first pass, wholesale changes, malformed
-	 ranges, and a missing reconciliation implementation."
-	aReconciliation ifNil: [ ^ false ].
-	^ (aReconciliation requiresFullRender not
-		and: [ aReconciliation dirtyNodes notEmpty ])
-		and: [ aReconciliation dirtyFraction <= 0.75 ]!
-
-patchText: aText with: aReconciliation cursor: aCursor
-	| visitor |
-	visitor := McMarkdownStylerVisitor
-		parser: aReconciliation newSnapshot parser
-		text: aText
-		cursor: aCursor
-		palette: self palette
-		owner: self.
-	aReconciliation dirtyNodes do: [ :each |
-		self clearRenderedAttributesIn: each sourceRange from: aText.
-		visitor visit: each astNode ]!
-
-clearRenderedAttributesIn: aRange from: aText
-	"Owners are top-level structural blocks.  Clearing the entire owner range
-	 before revisiting it makes the patch idempotent and keeps attributes from
-	 changed markup out of the next generation.  No range outside the owner is
-	 touched, so retained siblings keep their existing adornment/cache objects."
-	aRange ifNil: [ ^ self ].
-	(aRange first < 1 or: [ aRange last > aText size ]) ifTrue: [ ^ self ].
-	aText clearAttributes: aRange first to: aRange last if: [ :attribute | true ]!
 
 parserFor: aString
 	"The parser for aString, reusing the last one when the source has not
