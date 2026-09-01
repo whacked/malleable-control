@@ -157,7 +157,19 @@ instanceVariableNames: 'space editorElement editorFrame container titleLabel sta
 
 !McRichEdit class methodsFor: 'opening'!
 open
-	^ self new openView! !
+	"A remote caller (notably Emacs over NATS) can successfully create a Bloc
+	 space while another GT window retains native focus.  Reuse and foreground
+	 the live editor so the command has an observable result instead of quietly
+	 stacking invisible prototype windows behind the current space."
+	| existing |
+	existing := self allInstances
+		detect: [ :each | (each instVarNamed: 'space') notNil and: [
+			(each instVarNamed: 'space') isOpened ] ]
+		ifNone: [ nil ].
+	existing ifNotNil: [
+		(existing instVarNamed: 'space') toFront.
+		^ existing ].
+	^ self new openView; yourself! !
 
 !McRichEdit class methodsFor: 'live reload'!
 restartAllFileWatchers
