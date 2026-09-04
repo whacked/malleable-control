@@ -26,7 +26,7 @@ Click a column header to sort -- the rows are rewritten in the document.
 SELECT name, done, prio FROM tasks ORDER BY prio
 ```
 
-## Code
+## Code!
 
 ```smalltalk
 McMarkdownParser parseSource: aString

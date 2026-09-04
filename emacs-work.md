@@ -108,3 +108,64 @@ C-c C-z                 switch to REPL
 (require 'mc-rich-edit)
 (mc-rich-edit-open)
 ```
+
+### Verify we're loading the latest source
+
+```emacs-lisp
+(mc-llm--eval
+ "((Smalltalk at: #McRichEdit) >> #attachToEditor:) sourceCode")
+```
+
+### Search
+
+The rich edit includes an interactive search overlay (Cmd-F in GT).
+You can also drive it programmatically from Emacs:
+
+```emacs-lisp
+(mc-rich-edit-search "link")
+```
+
+That returns a plist shaped roughly like:
+
+```emacs-lisp
+(:document "/…/samples/demo.md"
+           :sourceSize 2944
+           :query "link"
+           :matchCount 21
+           :ranges ((846 849) (906 909) ...)
+           :activeIndex 1
+           :activeRange (846 849)
+           :highlightAll t
+           :wrapAround t)
+```
+
+## Corkboard Demo
+
+The corkboard is a standalone coordinate-addressable canvas, independent of
+the rich-edit editor.
+
+```emacs-lisp
+(require 'mc-corkboard)
+(mc-corkboard-open)
+```
+
+## Workbench
+
+The Workbench is a multi-panel BlSpace window. The left panel is an SRT
+subtitle editor with a tabular view, dirty tracking, and a native file
+picker. The right panel is a tmux-backed terminal emulator.
+
+```emacs-lisp
+(require 'mc-workbench)
+(mc-workbench-open)
+```
+
+**SRT Editor (left):** Click **Open** to choose an `.srt` file via the
+macOS file picker. Entries appear in a table: index, start time, end time,
+and subtitle text (all editable except index). A red dot and an enabled
+**Save** button appear when anything has been modified.
+
+**Terminal (right):** Click inside the terminal panel to give it focus,
+then type normally. The terminal runs a real tmux session so full-screen
+programs like `vim` work. The panel polls tmux at ~30 FPS and forwards
+all keystrokes. Currently monochrome; ANSI colour support is planned.
