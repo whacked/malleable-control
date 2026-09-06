@@ -42,6 +42,11 @@ note := [ :text |
       (home , '/pharo/McGtPatches.st') asFileReference fileIn.
       (home , '/pharo/McLlmStream.st') asFileReference fileIn.
       (home , '/pharo/McLlm.st') asFileReference fileIn.
+      "Core, and unconditional: every tool's class-side open compiles a
+       reference to McWindow, so it has to be here before any of them is
+       filed in -- including in a headless image, where the guarded block
+       below never gets as far as the panel."
+      (home , '/pharo/McWindow.st') asFileReference fileIn.
       note value: 'classes loaded from ' , home.
       "The launcher panel.  Guarded on its own: a headless image has no
        GtHome, so the extension method fails to compile there -- and a home

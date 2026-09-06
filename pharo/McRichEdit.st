@@ -420,33 +420,31 @@ computeVerticalScrollRange
 
 Object subclass: #McRichEdit
 	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
-	classVariableNames: 'CurrentInstance'
+	classVariableNames: ''
 	package: 'MalleableControl'!
 
 !McRichEdit class methodsFor: 'opening'!
 activeInstance
-	CurrentInstance ifNotNil: [ ^ CurrentInstance ].
-	^ CurrentInstance := self allInstances
-		detect: [ :each | (each instVarNamed: 'space') notNil and: [
-			(each instVarNamed: 'space') isOpened ] ]
-		ifNone: [ nil ]!
+	"The editor whose window is open, or nil.
 
-currentInstance: anInstance
-	CurrentInstance := anInstance!
+	 Kept as a selector because elisp/mc-rich-edit.el reaches the live editor
+	 through it.  It used to memoize into a CurrentInstance class variable that
+	 nothing ever cleared, so once the window was closed it went on answering a
+	 dead editor and the Emacs search and render commands aimed at a window
+	 that no longer existed."
+	^ McWindow liveInstanceOf: self!
 
 open
 	"A remote caller (notably Emacs over NATS) can successfully create a Bloc
 	 space while another GT window retains native focus.  Reuse and foreground
 	 the live editor so the command has an observable result instead of quietly
-	 stacking invisible prototype windows behind the current space."
-	| existing |
-	existing := self activeInstance.
-	(existing notNil and: [
-		(existing instVarNamed: 'space') notNil and: [
-			(existing instVarNamed: 'space') isOpened ] ]) ifTrue: [
-		(existing instVarNamed: 'space') toFront.
-		^ existing ].
-	^ self new openView; yourself! !
+	 stacking invisible prototype windows behind the current space.
+
+	 Deliberately no refreshView: the editor may be holding unsaved text, and
+	 reloading it from disk on a second click would discard that without
+	 asking.  Reload is a deliberate act -- the file watcher and the reload
+	 command already offer it."
+	^ (McWindow front: self) ifNil: [ self new openView; yourself ]! !
 
 !McRichEdit class methodsFor: 'live reload'!
 restartAllFileWatchers
@@ -656,7 +654,6 @@ openView
 	 and cursor-driven restyling, and open in a new window."
 	| editorModel styler headerRow toggleButton scrollbar |
 	self stopWatchingDocument.
-	self class currentInstance: self.
 	darkMode := false.
 	paletteCache := nil.
 	documentFile := self demoFile.

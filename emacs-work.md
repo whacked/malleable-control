@@ -36,6 +36,14 @@ That defines `mc-corkboard-open`, `mc-rich-edit-open`, `mc-kdi-open`,
 `mc-workbench-open` and `mc-weather-open`. Each files its sources in from disk
 every time it runs, so editing a `.st` and re-running the command reloads it.
 
+Running one twice does not open a second window. The tool's own `open` brings
+the live one to the front instead, and refreshes it where refreshing cannot
+destroy anything -- Corkboard re-projects, Weather re-fetches, KDI fires its
+inspector's update wish, while Rich Edit and Workbench are only foregrounded,
+since one may hold unsaved text and the other a live tmux session. GT's home
+screen buttons go through the same `open`, so the two agree by construction.
+See **One window per tool** in `RUN.md`.
+
 `mc-launcher-filein` is the reload half without the open -- add a `gtView`
 method, file it back in, and an inspector that is already open picks it up:
 

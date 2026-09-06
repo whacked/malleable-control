@@ -28,6 +28,7 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/NatsClientTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McGtPatches.st' asFileReference fileIn.
   '$MC_HOME/pharo/McOffUi.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McWindow.st' asFileReference fileIn.
   '$MC_HOME/pharo/McLauncher.st' asFileReference fileIn.
 
   manifests := (Smalltalk at: #McLauncherManifest)
@@ -44,6 +45,7 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   launcherTests := manifests flatCollect: [ :each | each tests ].
 
   '$MC_HOME/pharo/McLauncherTest.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McWindowTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRelationTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McCacheTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownTest.st' asFileReference fileIn.
@@ -56,11 +58,13 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McSrtEditorTest.st' asFileReference fileIn.
   (Smalltalk at: #McGtPatches) apply.
 
-  \"The suites that belong to no launcher -- the bus client and the manifest
-   reader itself -- plus the union of what every launcher declares.\"
+  \"The suites that belong to no launcher -- the bus client, the manifest
+   reader, and the window reuse every launcher's open method goes through --
+   plus the union of what every launcher declares.\"
   names := (OrderedCollection new
     add: 'NatsClientTest';
     add: 'McLauncherManifestTest';
+    add: 'McWindowTest';
     addAll: launcherTests;
     yourself) asSet asSortedCollection.
 

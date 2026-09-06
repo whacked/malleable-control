@@ -90,4 +90,38 @@ testDiscardRestoresControllerDraftsWithoutMovingCard
 	self assert: (board model coordinateOf: #noteOne) equals: 0 @ 0.
 	self assert: panel constraints position equals: 0 @ 0.
 	self assert: controls second text asString equals: '0'.
-	self assert: controls third text asString equals: '0'! !
+	self assert: controls third text asString equals: '0'!
+
+testRefreshViewReprojectsTheDocumentWithoutDuplicatingCards
+	"The launcher calls refreshView when its button finds this window already
+	 open.  It must rebuild the projection from the model rather than add a
+	 second copy of every card on top of the first."
+	| board first |
+	board := McCorkboard new buildView.
+	first := board canvas children size.
+	(board model panelAt: #noteOne) draftX: '700' draftY: '800'.
+	board refreshView.
+	self assert: board canvas children size equals: first.
+	self assert: (board panelControlsFor: #noteOne) notNil.
+	self assert: (board panelControlsFor: #noteTwo) notNil!
+
+testRefreshViewKeepsCommittedCoordinatesAndDropsDrafts
+	"Committed positions live in the model, so they survive.  A draft in flight
+	 does not -- refreshView discards it, the same as Escape."
+	| board controls |
+	board := McCorkboard new buildView.
+	controls := board panelControlsFor: #noteTwo.
+	controls second text: '-90' asRopedText.
+	controls third text: '240' asRopedText.
+	(board model panelAt: #noteTwo) draftX: '-90' draftY: '240'.
+	board commitPanel: (board model panelAt: #noteTwo)
+		xEditor: controls second
+		yEditor: controls third
+		dirty: controls fourth
+		view: controls first.
+	(board model panelAt: #noteOne) draftX: '111' draftY: '222'.
+	board refreshView.
+	self assert: (board model coordinateOf: #noteTwo) equals: -90 @ 240.
+	self assert: (board panelControlsFor: #noteTwo) first constraints position equals: -90 @ 240.
+	self assert: (board model coordinateOf: #noteOne) equals: 0 @ 0.
+	self deny: (board model panelAt: #noteOne) isDirty! !

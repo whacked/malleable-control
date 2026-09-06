@@ -276,6 +276,49 @@ carrying its own error rather than vanishing from the panel; one whose sources
 are missing keeps its title and names the missing path; and either one fails
 `test/run-pharo-tests.sh` outright.
 
+### One window per tool
+
+A second click on a card does not open a second window. Every `open` runs the
+same two lines,
+
+```smalltalk
+open
+	^ (McWindow front: self) ifNil: [ self new openView ]
+```
+
+and `McWindow front:` finds the live window by looking for an instance of the
+class whose `space` variable holds an open `BlSpace`. That is a search of
+`allInstances`, not a registry, on purpose: the launcher re-files sources from
+disk before every open, and a registry would go stale across a class
+redefinition at exactly the moment the panel is being used to reload code. It
+answers `nil` when there is no live window, which is the caller's signal to
+build one.
+
+**Refresh is opt in, and the default is to leave the window alone.** On finding
+a live window `McWindow` foregrounds it, then sends `refreshView` if -- and only
+if -- the class implements it:
+
+| tool | on a second click |
+|---|---|
+| Corkboard | front, then re-project the cards from the model |
+| Weather | front, then re-fetch |
+| KDI Explorer | front, then fire the inspector's update wish |
+| Rich Edit | front only -- it may hold unsaved text |
+| Workbench | front only -- it holds a live tmux session |
+
+So a tool that cannot refresh itself without destroying work says so by not
+implementing the method, and adding a tool can never silently start discarding
+a user's edits.
+
+KDI is the one tool that cannot be found this way: `GtInspector` builds a fresh
+space on every call and hands it to a pager, so the space belongs to the pager
+rather than to the store. `McKdiStore` therefore remembers its own pager and
+fronts that instead. Its refresh is the update wish, which re-renders the views
+from answers already cached -- no subprocess call.
+
+Because the reuse lives in each tool's `open` rather than in the panel, the
+Emacs commands get it too: `mc-corkboard-open` twice also yields one window.
+
 ## Inspecting and changing the live image
 
 `gt.cmd.eval` gives full control of a running GT over the bus, and two scripts

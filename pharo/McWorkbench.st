@@ -298,7 +298,10 @@ Object subclass: #McWorkbench
 
 !McWorkbench class methodsFor: 'opening'!
 open
-	^ self new openView! !
+	"One window per tool.  Deliberately no refreshView: the workbench holds a
+	 live tmux session and unsaved subtitle edits, and rebuilding it would
+	 discard both.  See McWindow."
+	^ (McWindow front: self) ifNil: [ self new openView ]! !
 
 !McWorkbench methodsFor: 'opening'!
 openView

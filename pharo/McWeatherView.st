@@ -17,7 +17,9 @@ Object subclass: #McWeatherView
 
 !McWeatherView class methodsFor: 'opening'!
 open
-	^ self new openView! !
+	"One window per tool: a panel that is already up comes forward and
+	 re-fetches rather than being duplicated.  See McWindow."
+	^ (McWindow front: self) ifNil: [ self new openView ]! !
 
 !McWeatherView methodsFor: 'opening'!
 openView
@@ -93,6 +95,11 @@ openView
 	^ self! !
 
 !McWeatherView methodsFor: 'fetching'!
+refreshView
+	"Re-fetch.  fetchWeather forks its HTTP calls, so this answers at once and
+	 the panel is already in front by the time the reading lands."
+	^ self fetchWeather!
+
 fetchWeather
 	"Detect location, fetch weather, update display, and notify Emacs.
 	 Forked so the HTTP calls do not block the Bloc UI pulse."

@@ -13,7 +13,9 @@ Object subclass: #McCorkboard
 
 !McCorkboard class methodsFor: 'opening'!
 open
-	^ self new openView!
+	"One window per tool: a corkboard that is already up comes forward and is
+	 re-projected rather than duplicated.  See McWindow."
+	^ (McWindow front: self) ifNil: [ self new openView ]!
 
 exampleModel
 	^ McCorkboardDocument new
@@ -25,6 +27,18 @@ exampleModel
 openView
 	self buildView.
 	space show.
+	^ self!
+
+refreshView
+	"Re-project the document onto the canvas.  The model is the source of
+	 truth here, so this rebuilds the panel views from it rather than
+	 reloading anything: committed coordinates survive and drafts still in
+	 flight are dropped, which is what Escape already does."
+	canvas ifNil: [ ^ self ].
+	self discardAllDrafts.
+	canvas removeChildren.
+	panelViews := Dictionary new.
+	model panels do: [ :each | self addPanelViewFor: each ].
 	^ self!
 
 buildView
