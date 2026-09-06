@@ -201,3 +201,153 @@ testResultsTimestampOfANonResultsInfoIsNil
 	"This runs over half-typed documents, so it answers nil rather than
 	 raising."
 	self assert: (McMarkdownCode resultsTimestampFrom: 'python') isNil! !
+
+!McMarkdownCodeTest methodsFor: 'running'!
+setUp
+	super setUp.
+	McCodeEvaluator reset!
+
+tearDown
+	"The evaluator's state is global to the image, so it goes back whether
+	 the test passed or not."
+	McCodeEvaluator reset.
+	super tearDown! !
+
+!McMarkdownCodeTest methodsFor: 'helpers - rendering'!
+style: aString cursor: anInteger trusted: aBoolean
+	"Style aString as a standalone fragment, the way a table cell is styled.
+	 owner: nil means the evaluation resolves on this process, so one pass
+	 produces the finished result and the test needs no callback."
+	| text styler |
+	text := aString asRopedText.
+	styler := McMarkdownInlineStyler
+		source: aString
+		targetMap: (McMarkdownInlineStyler identityMapOfSize: aString size)
+		documentMap: (McMarkdownInlineStyler identityMapOfSize: aString size)
+		text: text
+		cursor: anInteger
+		palette: McRichEdit new palette
+		owner: nil.
+	styler trusted: aBoolean.
+	styler styleAll.
+	^ text!
+
+styleTrusted: aString
+	^ self style: aString cursor: -1 trusted: true!
+
+styleUntrusted: aString
+	^ self style: aString cursor: -1 trusted: false!
+
+adornmentsIn: aText
+	| found |
+	found := OrderedCollection new.
+	1 to: aText size do: [ :index |
+		(aText attributesAt: index) do: [ :each |
+			((each isKindOf: BrTextAdornmentDynamicAttribute)
+				and: [ (found includes: each) not ])
+				ifTrue: [ found add: each ] ] ].
+	^ found!
+
+renderedTextOf: anElement
+	"Every string an element and its children show, joined -- the tag and
+	 the body, in that order."
+	| out |
+	out := WriteStream on: String new.
+	self collectTextOf: anElement into: out.
+	^ out contents!
+
+collectTextOf: anElement into: aStream
+	(anElement isKindOf: BlTextElement)
+		ifTrue: [ aStream nextPutAll: anElement text asString; nextPut: $  ].
+	anElement children do: [ :each | self collectTextOf: each into: aStream ]!
+
+in: aText hasAttributeKind: aClass
+	1 to: aText size do: [ :index |
+		((aText attributesAt: index) anySatisfy: [ :each | each isKindOf: aClass ])
+			ifTrue: [ ^ true ] ].
+	^ false!
+
+renderedSpanOf: aString trusted: aBoolean
+	| text adornments |
+	text := self style: aString cursor: -1 trusted: aBoolean.
+	adornments := self adornmentsIn: text.
+	self assert: adornments size equals: 1.
+	^ self renderedTextOf: adornments first stencil build! !
+
+!McMarkdownCodeTest methodsFor: 'tests - inline rendering'!
+testTrustedSpanRendersTheTagAndTheResult
+	| rendered |
+	McCodeEvaluator executor: [ :language :expression | '10' ].
+	rendered := self renderedSpanOf: 'radius `{python} 5 * 2` m' trusted: true.
+	self assert: (rendered includesSubstring: 'python').
+	self assert: (rendered includesSubstring: '10')!
+
+testUntrustedSpanRunsNothingAndShowsItsSource
+	"Opening a document must never be the same thing as running it."
+	| rendered |
+	McCodeEvaluator executor: [ :language :expression | '10' ].
+	rendered := self renderedSpanOf: 'radius `{python} 5 * 2` m' trusted: false.
+	self
+		assert: McCodeEvaluator executionCount = 0
+		description: 'an untrusted document must not evaluate anything'.
+	self assert: (rendered includesSubstring: 'python').
+	self assert: (rendered includesSubstring: '5 * 2').
+	self deny: (rendered includesSubstring: '10')!
+
+testUntrustedSpanIsStillTagged
+	"Tagged source, not a blank and not plain code: the reader should be able
+	 to see there is something here to run."
+	| rendered |
+	rendered := self renderedSpanOf: '`{r} mean(x)`' trusted: false.
+	self assert: (rendered includesSubstring: 'r')!
+
+testFailedEvaluationRendersItsMessage
+	| rendered |
+	rendered := self renderedSpanOf: '`{cobol} 1`' trusted: true.
+	self assert: (rendered includesSubstring: 'cobol')!
+
+testCursorOnTheSpanRevealsTheSource
+	"The same rule links and images follow: the cursor on a token shows the
+	 token, so it can be edited."
+	| text |
+	McCodeEvaluator executor: [ :language :expression | '10' ].
+	text := self style: '`{python} 5 * 2`' cursor: 4 trusted: true.
+	self
+		assert: (self adornmentsIn: text) isEmpty
+		description: 'no widget should cover a span the cursor is on'!
+
+testPlainInlineCodeProducesNoWidget
+	self assert: (self adornmentsIn: (self styleTrusted: 'a `code` b')) isEmpty! !
+
+!McMarkdownCodeTest methodsFor: 'tests - inline precedence'!
+testALinkInsideAnExpressionStaysLiteral
+	"First claim wins, and styleAll runs code before links.  Without that,
+	 the link pass would put a second adornment inside the expression's."
+	| text |
+	McCodeEvaluator executor: [ :language :expression | 'ok' ].
+	text := self styleTrusted: '`{python} f("[a](b)")`'.
+	self assert: (self adornmentsIn: text) size equals: 1!
+
+testACheckboxInsideAnExpressionStaysLiteral
+	| text |
+	McCodeEvaluator executor: [ :language :expression | 'ok' ].
+	text := self styleTrusted: '`{python} g("[ ]")`'.
+	self assert: (self adornmentsIn: text) size equals: 1!
+
+testALinkOutsideAnExpressionStillRenders
+	"The precedence must not cost links their own rendering."
+	| text |
+	McCodeEvaluator executor: [ :language :expression | 'ok' ].
+	text := self styleTrusted: '`{python} 1` and [a](b)'.
+	self assert: (self adornmentsIn: text) size equals: 1.
+	self
+		assert: (self in: text hasAttributeKind: BrTextTooltipAttribute)
+		description: 'the link beside the expression should still be projected'!
+
+testEmphasisDoesNotReachInsideAnExpression
+	"Underscores in an expression are Python, not italics.  The span is
+	 masked before Microdown's inline parser sees the line."
+	| text |
+	McCodeEvaluator executor: [ :language :expression | 'ok' ].
+	text := self styleTrusted: '`{python} _a_ + _b_`'.
+	self assert: (self adornmentsIn: text) size equals: 1! !

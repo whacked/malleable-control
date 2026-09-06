@@ -40,7 +40,7 @@ Chunk format: load with fileIn.
 "!
 
 Object subclass: #McMarkdownInlineStyler
-	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims producedAdornment links ropeIsDocument imageOrdinals'
+	instanceVariableNames: 'source targetMap documentMap text cursor palette owner claims producedAdornment links ropeIsDocument imageOrdinals trusted codeSpans'
 	classVariableNames: 'ImageOrdinalCache RegexCache'
 	package: 'MalleableControl'!
 
@@ -186,6 +186,8 @@ setSource: aString targetMap: aTargetMap documentMap: aDocumentMap text: aText c
 	claims := OrderedCollection new.
 	producedAdornment := false.
 	links := nil.
+	codeSpans := nil.
+	trusted := nil.
 	imageOrdinals := nil.
 	"Captured before asArray so it is the caller's intent that is recorded and
 	 not whatever copying asArray happens to do: handing one map object twice
@@ -202,6 +204,22 @@ targetAt: anIndex
 documentAt: anIndex
 	^ documentMap at: anIndex ifAbsent: [ nil ]!
 
+trusted: aBoolean
+	"Force the trust decision instead of taking it from the owner.  For a
+	 headless render and for tests, which have no editor to ask."
+	trusted := aBoolean!
+
+isTrusted
+	"Whether labeled expressions in this block may be evaluated.
+
+	 Taken from the editor showing the document, so a table cell gets the
+	 same answer as the prose around it.  Untrusted is the default and the
+	 answer whenever there is nobody to ask: opening a document must never be
+	 the same thing as running it."
+	trusted ifNotNil: [ ^ trusted ].
+	owner ifNil: [ ^ false ].
+	^ [ owner isTrustedDocument = true ] on: Error do: [ :e | false ]!
+
 producedAdornment
 	"Whether styleAll actually put an adornment -- a widget, or a collapsed
 	 delimiter -- on the rope.
@@ -217,10 +235,16 @@ producedAdornment
 
 !McMarkdownInlineStyler methodsFor: 'styling'!
 styleAll
-	"Emphasis first, then links and the tokens Microdown does not know about.  This
-	 order is also the precedence when two tokens overlap: the first pass to
-	 claim a source range keeps it -- see claimFromSource:toSource:."
+	"Emphasis first, then labeled code, then links and the tokens Microdown does
+	 not know about.  This order is also the precedence when two tokens overlap:
+	 the first pass to claim a source range keeps it -- see
+	 claimFromSource:toSource:.
+
+	 Code claims before links and checkboxes so that a link or a checkbox
+	 written INSIDE an expression stays literal text: `{python} f(""[a](b)"")'
+	 is one expression, not an expression containing a link."
 	self styleEmphasis.
+	self styleCode.
 	self styleLinks.
 	self styleCheckboxes.
 	self styleColours.
@@ -341,6 +365,11 @@ maskedForEmphasis
 		(link isImage not and: [ #(link wiki) includes: link kind ]) ifTrue: [
 			link labelStart to: link labelStop do: [ :index |
 				masked at: index put: (source at: index) ] ] ].
+	"Last, so a link written inside an expression cannot unmask part of it:
+	 a labeled span is opaque to Microdown, which would otherwise style the
+	 label and the backticks underneath the adornment that replaces them."
+	self codeSpans do: [ :code |
+		code start to: code stop do: [ :index | masked at: index put: $  ] ].
 	^ masked!
 
 styleEmphasisNode: aNode
@@ -645,6 +674,189 @@ styleButtons
 						button ]
 					fromSource: start
 					toSource: stop ] ]! !
+
+!McMarkdownInlineStyler methodsFor: 'styling - code'!
+codeSpans
+	"The labeled code spans in this inline block, computed once because both
+	 the emphasis mask and the code pass need exactly the same spans.
+
+	 Dynamic lookup keeps an incremental reload of this file from disabling
+	 older widgets when McMarkdownCode has not been filed in yet -- the same
+	 reason linkSpans does it."
+	| scannerClass |
+	codeSpans ifNotNil: [ ^ codeSpans ].
+	scannerClass := Smalltalk at: #McMarkdownCodeScanner ifAbsent: [ nil ].
+	^ codeSpans := scannerClass
+		ifNil: [ #() ]
+		ifNotNil: [ scannerClass scan: source ]!
+
+styleCode
+	self codeSpans do: [ :each | self styleCodeSpan: each ]!
+
+styleCodeSpan: aCode
+	"Three states, and the cursor decides the first of them.
+
+	 Cursor on the span: the raw source, so it can be edited -- the same
+	 rule links and images follow.  Cursor away: the language tag, and
+	 beside it either the result or, in a document that has not been
+	 trusted, the expression itself."
+	| result |
+	(self isNearSource: aCode start to: aCode stop) ifTrue: [
+		^ self highlightFromSource: aCode start toSource: aCode stop ].
+	result := self resultFor: aCode.
+	self
+		replace: [ self codeElementFor: aCode result: result ]
+		fromSource: aCode start
+		toSource: aCode stop!
+
+resultFor: aCode
+	"What is known about aCode right now, or nil when this document has not
+	 been trusted -- which is what makes an untrusted document render as
+	 inert tagged source.
+
+	 Never waits.  With an owner the evaluation goes to a background process
+	 and this pass draws a placeholder, exactly as a database view does;
+	 without one -- a headless render, a test -- it resolves on this process
+	 so that a single pass produces the finished result."
+	| evaluator |
+	self isTrusted ifFalse: [ ^ nil ].
+	evaluator := Smalltalk at: #McCodeEvaluator ifAbsent: [ nil ].
+	evaluator ifNil: [ ^ nil ].
+	^ [ owner
+		ifNil: [ evaluator resultFor: aCode ]
+		ifNotNil: [ :anOwner |
+			evaluator
+				resultFor: aCode
+				token: anOwner
+				onComplete: (self restyleRequestFor: anOwner) ] ]
+		on: Error
+		do: [ :e | nil ]!
+
+restyleRequestFor: anOwner
+	"A one-argument block for the evaluator to call when an expression
+	 finishes.
+
+	 It runs on the background process, so it does two things and no more:
+	 it hops to the UI process through the editor's task queue, and there it
+	 asks for a restyle.  It never reads or writes the rope, so there is no
+	 stale document to get wrong -- if the span has been edited or deleted
+	 meanwhile, the restyle simply does not ask for that expression again.
+
+	 Closed over anOwner alone, deliberately: capturing the styler would
+	 hold its rope alive for as long as the evaluation ran."
+	^ [ :ignoredResult |
+		| element |
+		element := [ anOwner editorElement ] on: Error do: [ :e | nil ].
+		element ifNotNil: [
+			element enqueueTask: (BlTaskAction new action: [
+				[ element editor styleText ] on: Error do: [ :e | nil ] ]) ] ]! !
+
+!McMarkdownInlineStyler methodsFor: 'stencils - code'!
+codeElementFor: aCode result: aResultOrNil
+	"A coloured language tag and, beside it, whatever there is to show.
+
+	 The tag is the label doing its second job: it tells the reader which
+	 evaluator produced the number they are looking at, which matters most
+	 exactly when the result is a bare 12.0 that could have come from
+	 anywhere."
+	| row tip |
+	row := BlElement new.
+	row layout: BlLinearLayout horizontal.
+	row constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	row addChild: (self codeTagElementFor: aCode).
+	row addChild: (self codeBodyElementFor: aCode result: aResultOrNil).
+	tip := BrGlamorousWithExplicitTooltipAptitude new.
+	tip content: [ self codeTooltipFor: aCode result: aResultOrNil ].
+	row addAptitude: tip.
+	^ row!
+
+codeTagElementFor: aCode
+	| tag |
+	tag := BlTextElement new.
+	tag text: (aCode language asRopedText
+		foreground: (self paletteAt: 'evalTagText');
+		fontSize: 10).
+	tag padding: (BlInsets top: 1 right: 5 bottom: 1 left: 5).
+	tag geometry: (BlRoundedRectangleGeometry cornerRadius: 3).
+	tag background: (self languageColourFor: aCode language).
+	tag margin: (BlInsets right: 4).
+	^ tag!
+
+codeBodyElementFor: aCode result: aResultOrNil
+	| body |
+	body := BlTextElement new.
+	body text: ((self codeBodyStringFor: aCode result: aResultOrNil) asRopedText
+		foreground: (self codeBodyColourFor: aResultOrNil);
+		fontSize: 13).
+	^ body!
+
+codeBodyStringFor: aCode result: aResultOrNil
+	"Untrusted shows the expression rather than a result, so the document
+	 reads as what it is -- code that has not been run -- instead of as a
+	 blank."
+	aResultOrNil ifNil: [ ^ aCode expression ].
+	^ aResultOrNil displayString!
+
+codeBodyColourFor: aResultOrNil
+	aResultOrNil ifNil: [ ^ self paletteAt: 'codeText' ].
+	aResultOrNil isFailed ifTrue: [ ^ self paletteAt: 'deadLink' ].
+	aResultOrNil isPending ifTrue: [ ^ self paletteAt: 'status' ].
+	^ self paletteAt: 'text'!
+
+languageColourFor: aLanguage
+	"Palette-keyed rather than hard-coded so the tag survives the dark-mode
+	 toggle and can be rethemed with everything else."
+	| key |
+	aLanguage isEmpty ifTrue: [ ^ self paletteAt: 'langDefault' ].
+	key := 'lang' , aLanguage first asUppercase asString , aLanguage allButFirst.
+	^ palette at: key ifAbsent: [ self paletteAt: 'langDefault' ]!
+
+codeTooltipFor: aCode result: aResultOrNil
+	"The source, when it ran, and how to run it again.
+
+	 The re-run binding is named here on purpose: results are cached and
+	 never invalidate themselves, so a reader who does not know how to ask
+	 for a fresh one has no way to find out."
+	| container |
+	container := BlElement new.
+	container layout: BlLinearLayout vertical.
+	container constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	container padding: (BlInsets top: 7 right: 9 bottom: 7 left: 9).
+	container background: (self paletteAt: 'codeBg').
+	container geometry: (BlRoundedRectangleGeometry cornerRadius: 4).
+	container border: (BlBorder paint: (self paletteAt: 'tableBorder') width: 1).
+	(self codeTooltipLinesFor: aCode result: aResultOrNil) do: [ :each |
+		| line |
+		line := BlTextElement new.
+		line text: (each value asRopedText
+			foreground: (self paletteAt: each key);
+			fontSize: 12).
+		container addChild: line ].
+	^ container!
+
+codeTooltipLinesFor: aCode result: aResultOrNil
+	"Palette key -> text, in the order they are shown."
+	| lines |
+	lines := OrderedCollection new.
+	lines add: 'text' -> (aCode language , '  ' , aCode expression).
+	aResultOrNil
+		ifNil: [
+			lines add: 'status' -> 'not evaluated: this document is not trusted' ]
+		ifNotNil: [ :result |
+			result isFailed ifTrue: [ lines add: 'deadLink' -> result message ].
+			result evaluatedAt ifNotNil: [ :stamp |
+				lines add: 'dimDelimiter'
+					-> ('evaluated ' , (self stampStringFor: stamp)) ].
+			lines add: 'dimDelimiter' -> 'Cmd-Shift-E re-runs the expression at the cursor' ].
+	^ lines!
+
+stampStringFor: aDateAndTime
+	| codeClass |
+	codeClass := Smalltalk at: #McMarkdownCode ifAbsent: [ nil ].
+	codeClass ifNil: [ ^ aDateAndTime printString ].
+	^ [ codeClass timestampStringFor: aDateAndTime ]
+		on: Error
+		do: [ :e | aDateAndTime printString ]! !
 
 !McMarkdownInlineStyler methodsFor: 'actions'!
 write: aString at: aDocumentIndex

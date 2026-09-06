@@ -419,7 +419,7 @@ computeVerticalScrollRange
 	^ self totalContentHeight max: self computeVerticalScrollExtent! !
 
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel trustLabel trustCheckbox pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -623,6 +623,13 @@ buildPalette
 			at: 'quoteBar' put: (Color fromHexString: '#7f5af0');
 			at: 'quoteText' put: (Color fromHexString: '#8f91a8');
 			at: 'listMarker' put: (Color fromHexString: '#7f5af0');
+			at: 'evalTagText' put: (Color fromHexString: '#ffffff');
+			at: 'langPython' put: (Color fromHexString: '#3572a5');
+			at: 'langR' put: (Color fromHexString: '#1f65b7');
+			at: 'langJulia' put: (Color fromHexString: '#9558b2');
+			at: 'langSmalltalk' put: (Color fromHexString: '#c05621');
+			at: 'langOjs' put: (Color fromHexString: '#5f6b7a');
+			at: 'langDefault' put: (Color fromHexString: '#7f5af0');
 			yourself]
 		ifFalse: [Dictionary new
 			at: 'containerBg' put: (Color fromHexString: '#f0f0f0');
@@ -646,6 +653,13 @@ buildPalette
 			at: 'quoteBar' put: (Color fromHexString: '#7f5af0');
 			at: 'quoteText' put: (Color fromHexString: '#555555');
 			at: 'listMarker' put: (Color fromHexString: '#7f5af0');
+			at: 'evalTagText' put: (Color fromHexString: '#ffffff');
+			at: 'langPython' put: (Color fromHexString: '#3572a5');
+			at: 'langR' put: (Color fromHexString: '#1f65b7');
+			at: 'langJulia' put: (Color fromHexString: '#9558b2');
+			at: 'langSmalltalk' put: (Color fromHexString: '#c05621');
+			at: 'langOjs' put: (Color fromHexString: '#5f6b7a');
+			at: 'langDefault' put: (Color fromHexString: '#7f5af0');
 			yourself]! !
 
 !McRichEdit methodsFor: 'opening'!
@@ -695,6 +709,27 @@ openView
 	pathLabel addAptitude: pathTooltip.
 	self updatePathComponent.
 
+	"Trust gates every evaluation in this document -- the inline expressions
+	 and the Run buttons under fenced blocks alike.  It sits beside Dark Mode
+	 because it is the other thing about the view that is set per document,
+	 and it carries a visible label for the same reason Dark Mode does: an
+	 unlabelled checkbox beside a labelled one reads as a second, nameless
+	 setting."
+	trustLabel := BrLabel new.
+	trustLabel aptitude: BrGlamorousLabelAptitude new.
+	trustLabel text: ('Trust' asRopedText fontSize: 13).
+	trustLabel margin: (BlInsets right: 8).
+	trustLabel constraintsDo: [:c | c linear vertical alignCenter].
+
+	trustCheckbox := BrCheckbox new.
+	trustCheckbox aptitude: BrGlamorousCheckboxAptitude new.
+	trustCheckbox beNormalSize.
+	trustCheckbox checked: self isTrustedDocument.
+	trustCheckbox margin: (BlInsets right: 14).
+	trustCheckbox constraintsDo: [:c | c linear vertical alignCenter].
+	trustCheckbox whenCheckedDo: [ self trustDocument: true ].
+	trustCheckbox whenUncheckedDo: [ self trustDocument: false ].
+
 	toggleLabel := BrLabel new.
 	toggleLabel aptitude: BrGlamorousLabelAptitude new.
 	toggleLabel text: ('Dark Mode' asRopedText fontSize: 13).
@@ -713,6 +748,8 @@ openView
 
 	headerRow addChild: pathLabel.
 	headerRow addChild: titleLabel.
+	headerRow addChild: trustLabel.
+	headerRow addChild: trustCheckbox.
 	headerRow addChild: toggleLabel.
 	headerRow addChild: toggleButton.
 
@@ -998,6 +1035,41 @@ relativeDocumentPath
 		on: Error
 		do: [ :e | self documentFile basename ]!
 
+documentKey
+	"What trust is recorded against: the document's full path, or nil for a
+	 document that has never been saved.  A buffer with no name cannot be
+	 trusted, because there is nothing stable to record the decision against."
+	^ [ self documentFile ifNotNil: [ :f | f fullName ] ]
+		on: Error
+		do: [ :e | nil ]!
+
+isTrustedDocument
+	"Asked by the styler, once per inline block per restyle."
+	^ [ (Smalltalk at: #McCodeEvaluator) isTrusted: self documentKey ]
+		on: Error
+		do: [ :e | false ]!
+
+trustDocument: aBoolean
+	"Turn evaluation on or off for this document and re-render.
+
+	 Untrusting does not drop cached results: turning trust back on should
+	 not cost a second run of everything.  It does re-render, so the results
+	 stop being shown at once."
+	| evaluator |
+	evaluator := Smalltalk at: #McCodeEvaluator ifAbsent: [ nil ].
+	evaluator ifNil: [ ^ self ].
+	aBoolean
+		ifTrue: [ evaluator trust: self documentKey ]
+		ifFalse: [ evaluator untrust: self documentKey ].
+	editorElement ifNotNil: [
+		[ editorElement editor styleText ] on: Error do: [ :e | nil ] ]!
+
+updateTrustComponent
+	"Trust is per document, so switching documents must re-read it rather
+	 than carry the previous document's answer across."
+	trustCheckbox ifNil: [ ^ self ].
+	trustCheckbox checked: self isTrustedDocument!
+
 updatePathComponent
 	pathLabel ifNil: [ ^ self ].
 	pathLabel text: (self relativeDocumentPath asRopedText
@@ -1042,6 +1114,7 @@ openDocument: aFileReference
 	self resetImageAdornmentCache.
 	editorElement text: contents asRopedText.
 	self updatePathComponent.
+	self updateTrustComponent.
 	editorElement editor styleText.
 	self showStatus: 'Opened ' , self relativeDocumentPath.
 	self startWatchingDocument! !

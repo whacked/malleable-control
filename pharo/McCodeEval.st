@@ -155,7 +155,7 @@ argumentsFor: anExpression
 
 Object subclass: #McCodeEvaluator
 	instanceVariableNames: ''
-	classVariableNames: 'Languages ResultCache PendingJobs AccessLock CacheGeneration JobRunner Executor ExecutionCount CacheLimit TimeoutSeconds'
+	classVariableNames: 'Languages ResultCache PendingJobs AccessLock CacheGeneration JobRunner Executor ExecutionCount CacheLimit TimeoutSeconds TrustedDocuments'
 	package: 'MalleableControl'!
 
 !McCodeEvaluator class methodsFor: 'languages'!
@@ -210,6 +210,34 @@ pythonProgramFor: anExpression
 	 '12.0' with quotes around it."
 	^ 'import sys' , (String with: Character lf)
 		, 'sys.stdout.write(str(' , anExpression , '))'! !
+
+!McCodeEvaluator class methodsFor: 'trust'!
+trustedDocuments
+	"The documents whose labeled expressions may be evaluated, by full path.
+
+	 In memory only, for the lifetime of this image.  There is deliberately
+	 no trust store on disk: a file recording that some document is
+	 trustworthy is a file that goes stale, gets copied between machines, and
+	 can be edited into a lie by the very thing it is meant to gate."
+	^ TrustedDocuments ifNil: [ TrustedDocuments := Set new ]!
+
+isTrusted: aPathOrNil
+	"Untrusted is the default and the answer for anything unnamed.  Opening
+	 a document must never be the same thing as running it, and this editor
+	 follows links and wiki-links into documents the reader never chose."
+	aPathOrNil ifNil: [ ^ false ].
+	^ self trustedDocuments includes: aPathOrNil asString!
+
+trust: aPathOrNil
+	aPathOrNil ifNil: [ ^ self ].
+	self trustedDocuments add: aPathOrNil asString!
+
+untrust: aPathOrNil
+	aPathOrNil ifNil: [ ^ self ].
+	self trustedDocuments remove: aPathOrNil asString ifAbsent: [ nil ]!
+
+untrustAll
+	TrustedDocuments := nil! !
 
 !McCodeEvaluator class methodsFor: 'configuration'!
 cacheLimit
@@ -559,4 +587,5 @@ reset
 	Executor := nil.
 	ExecutionCount := 0.
 	CacheLimit := nil.
-	TimeoutSeconds := nil! !
+	TimeoutSeconds := nil.
+	TrustedDocuments := nil! !
