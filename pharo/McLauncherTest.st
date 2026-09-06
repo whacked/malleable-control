@@ -166,15 +166,25 @@ testMissingDirectoryAnswersEmptyRatherThanRaising
 		home: home fullName.
 	self assert: all isEmpty!
 
-testLaunchExpressionFilesInEverySourceThenOpens
+testLoadExpressionFilesInEverySourceInOrder
 	| m expr |
 	self write: 'corkboard.json' contents: self goodJson.
 	m := self readOne: 'corkboard.json'.
-	expr := m launchExpression.
+	expr := m loadExpression.
 	self assert: (expr includesSubstring: 'pharo/McCorkboardDocument.st').
 	self assert: (expr includesSubstring: 'pharo/McCorkboard.st').
 	self assert: (expr includesSubstring: 'fileIn').
-	self assert: (expr endsWith: 'McCorkboard open').
 	"Load order is the whole point: the document must be filed in first."
 	self assert: (expr indexOfSubCollection: 'McCorkboardDocument.st')
-		< (expr indexOfSubCollection: 'pharo/McCorkboard.st')! !
+		< (expr indexOfSubCollection: 'pharo/McCorkboard.st')!
+
+testLoadAndOpenStaySeparateExpressions
+	"They must be compiled separately.  Pharo resolves variable names at
+	 COMPILE time, so a single `... fileIn. McCorkboard open' does not
+	 compile -- McCorkboard does not exist until the fileIn has run."
+	| m |
+	self write: 'corkboard.json' contents: self goodJson.
+	m := self readOne: 'corkboard.json'.
+	self deny: (m loadExpression includesSubstring: 'McCorkboard open').
+	self assert: m openExpression equals: 'McCorkboard open'.
+	self deny: (m respondsTo: #launchExpression)! !

@@ -43,6 +43,14 @@ note := [ :text |
       (home , '/pharo/McLlmStream.st') asFileReference fileIn.
       (home , '/pharo/McLlm.st') asFileReference fileIn.
       note value: 'classes loaded from ' , home.
+      "The launcher panel.  Guarded on its own: a headless image has no
+       GtHome, so the extension method fails to compile there -- and a home
+       screen that will not build must never stop the bus connection below."
+      [ (home , '/pharo/McOffUi.st') asFileReference fileIn.
+        (home , '/pharo/McLauncher.st') asFileReference fileIn.
+        note value: 'launcher panel loaded' ]
+        on: Error
+        do: [ :e | note value: 'launcher panel not loaded: ' , e messageText printString ].
       "Patches to GT's own code. Kept out of the image on purpose, so they
        are version controlled and reapplied every start. A patch that fails
        must not stop the bus connection below."
