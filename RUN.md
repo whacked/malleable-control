@@ -772,6 +772,100 @@ Parsing is `MicrodownParser`, not the `LeParser` the chat uses, which is why
 tables and lists parse at all. Microdown also covers quotes, strikethrough,
 figures and math.
 
+## Evaluating code in a document
+
+Rich Edit understands Quarto's language-labeled inline code and Org Babel's
+evaluation semantics.
+
+```
+The calculated radius is `{python} 5 * 2` meters.
+The statistical mean is `{r} mean(c(10, 20, 30))`.
+This image is `{smalltalk} Smalltalk version`.
+``{python} len("`backticks`")``
+```
+
+The label names a **language**, not an execution context. That matters because
+the same label is what a syntax highlighter will key on later, and because it
+lets `python` gain a session evaluator one day without anything in a document
+having to be renamed. The fence width is data, not a constant, which is why the
+double-backtick form above can quote backticks of its own.
+
+`smalltalk` (alias `gt`) is evaluated by **this image**, on the calling
+process. That is the same relationship org-babel has with `emacs-lisp`, and it
+is not new capability: `McGtService` already answers `gt.cmd.eval` with
+`Smalltalk compiler evaluate:`, and the Emacs REPL in `emacs-work.md` is a
+front end to it. The editor runs inside GT, so it reaches the same evaluation
+without the bus.
+
+Everything else is a one-shot subprocess per expression: `python3 -c`,
+`Rscript -e`, `julia -e`, capped by `timeout` when it is on `PATH`. Interpreters
+are located by searching `PATH` and then the places a per-user package manager
+puts things, because a windowed GT inherits almost no `PATH` -- the same reason
+`McTerminal` has to go looking for tmux. An interpreter you do not have renders
+as a visible `no interpreter for julia`, not as a broken document. `ojs` parses
+and tags but never evaluates: Observable JS is a browser dataflow runtime, and
+there is nothing to shell out to.
+
+### Trust
+
+**Nothing evaluates until you tick `Trust`**, the labelled checkbox beside
+`Dark Mode`. It is per document and lives in memory for the image's lifetime;
+there is deliberately no trust store on disk, because a file asserting that
+some document is trustworthy is one that goes stale, gets copied between
+machines, and can be edited by the thing it gates.
+
+| | untrusted (default) | trusted |
+|---|---|---|
+| `` `{python} 5 * 2` `` | tagged source, nothing runs | evaluates, renders the result |
+| ` ```python ` block | no Run button at all | a permanent Run button |
+
+This matters because the editor follows links and wiki-links into documents you
+never chose to open.
+
+### Fenced blocks
+
+A block never evaluates by being rendered, trusted or not -- only its **Run**
+button does, which is Org Babel's rule. The button is permanent: it survives
+success and failure alike.
+
+On success the result is written **into the document**, as real markdown:
+
+    ```results{2026-09-06T14:22:01.123Z}
+    12.0
+    ```
+
+So it outlives the session, and any other markdown tool shows it as a code
+block with an unfamiliar language. The timestamp is there because a result with
+no timestamp cannot be told apart from one that stopped being true some time
+ago. Re-running replaces that fence rather than adding a second one, and a
+failed run removes a fence left by an earlier success -- a stale result must
+not outlive the code that produced it. A failure writes nothing; its message
+appears beside the button.
+
+### Re-running
+
+Results are cached, bounded and least-recently-used, and they **never
+invalidate themselves** -- `{smalltalk} McKdiStore session label` reads live
+image state, and a subprocess may read a file that has since changed. So
+re-running is explicit:
+
+- `Cmd-Shift-E` drops the cached result for whatever the cursor is in.
+- Hovering a rendered expression shows its source, when it was evaluated, and
+  that binding. The tooltip exists precisely because a cache with no visible
+  way to clear it is a bug waiting to be reported.
+
+### What this cannot do
+
+A subprocess is capped by `timeout`. **In-image Smalltalk is not and cannot
+be**: `{smalltalk} [ true ] whileTrue` freezes the editor. That is the same
+bargain Org Babel makes with elisp, and the trust checkbox is the only thing
+standing in front of it.
+
+There are no persistent sessions, so an inline expression cannot see variables
+defined in a fenced block above it. That keeps the cache honest: a result is a
+pure function of the language and the expression, which is what makes it safe
+to reuse at all.
+
 ## Streaming responses
 
 GT never streams. `GtLOpenAiResponsesEndpoint` hardcodes `'stream' -> false`,

@@ -101,3 +101,39 @@ that anchor navigation is pending without reopening the file.
 Buttons: <<hello>>  <<time>>  <<count>>
 
 Move your cursor into any element to reveal its raw source.
+
+## Evaluated code
+
+Nothing on this page runs until you tick **Trust** in the header. Untrusted,
+each expression below shows its language tag and its own source; trusted, it
+shows what the language answered.
+
+The calculated radius is `{python} 5 * 2` meters.
+
+The statistical mean is `{r} mean(c(10, 20, 30))`.
+
+Matrix determinant: `{julia} det([1 2; 3 4])` -- julia is probably not
+installed, which is what a missing interpreter is meant to look like.
+
+Dynamic threshold: `{ojs} Math.PI * 2` -- ojs is parsed and tagged but never
+evaluated; there is no interpreter to shell out to.
+
+This image is `{smalltalk} Smalltalk version`, evaluated in the running GT
+process rather than a subprocess -- the org-babel `emacs-lisp` case.
+
+Double backticks let an expression quote backticks of its own:
+``{python} len("`backticks`")``.
+
+Fenced blocks never run on their own. Trusted, each gets a Run button; the
+result is written back into this file as a `results{...}` fence.
+
+```python
+sum(range(10))
+```
+
+```smalltalk
+(1 to: 10) inject: 0 into: [ :a :b | a + b ]
+```
+
+Hover any evaluated expression for its source, when it ran, and the re-run
+binding.

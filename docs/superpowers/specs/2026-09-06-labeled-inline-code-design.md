@@ -107,8 +107,8 @@ inline code keeps rendering exactly as it does today.
 `McCodeEvaluator` holds a class-side registry from language to evaluator, and
 the cache. Two evaluator kinds:
 
-**Subprocess evaluators** -- `python3 -c`, `Rscript -e`, `julia -e`, and
-`node -p` for languages that name it. These run on a background process
+**Subprocess evaluators** -- `python3 -c`, `Rscript -e` and `julia -e`.
+These run on a background process
 through the same mechanism `McSqliteSource` uses, whose class comment states
 the contract: the styler "takes whatever the source already knows and never
 waits", a cold expression answers `pending` and starts a job, and when the job
@@ -175,7 +175,10 @@ Untrusted is the default, and it governs both halves:
 | | untrusted (default) | trusted |
 |---|---|---|
 | inline `{lang} expr` | renders as tagged source; nothing runs | evaluates and renders its result |
-| fenced ` ```lang ` block | **no Run button is shown at all** | Run button on every block |
+| fenced ` ```lang ` block | **no Run button is drawn at all** | a permanent Run button under every block |
+
+A fenced block still never evaluates by being rendered, trusted or not.
+Trust decides whether the control to run it exists.
 
 ### 5. Rendering -- inline
 
@@ -199,10 +202,10 @@ Three states:
   * **Cursor away, pending**: the tag plus a placeholder, replaced when the
     restyle triggered by the finished job comes round.
 
-**Hover tooltip.** `BrTextTooltipAttribute` -- already used to show a link's
-target -- carrying the source, the evaluation timestamp, and the re-run
-binding. This exists specifically so the re-run keystroke is discoverable
-rather than folklore.
+**Hover tooltip.** `BrGlamorousWithExplicitTooltipAptitude` on the rendered
+element, carrying the source, the evaluation timestamp, and the re-run binding
+(`Cmd-Shift-E`). This exists specifically so the re-run keystroke is
+discoverable rather than folklore.
 
 ### 6. Rendering -- fenced blocks
 
@@ -216,6 +219,13 @@ document is trusted it also gets a **Run** button beneath it. The button is
 disappear after a failed one. Org Babel's blocks are always re-evaluatable and
 this copies that, for better or worse. When the document is untrusted no
 button is drawn at all.
+
+Where the button sits depends on the cursor. Away from the block the closing
+fence is replaced by the button, so the block reads as code followed by its
+control; with the cursor on the block the source is showing and the button is
+appended after it, so editing a block never takes its button away. The closing
+fence is never both hidden and replaced -- a hide attribute and an adornment
+over the same characters render unpredictably.
 
 Blocks never evaluate on their own. Only the button runs them.
 
