@@ -76,6 +76,20 @@ check_contains "emacs serves emacs.query.capabilities" \
 check_contains "gt serves gt.query.capabilities" \
   "$(mc_request gt.query.capabilities || echo NOREPLY)" '"ok":true'
 
+printf '\n== launchers come from launchers/, on both sides ==\n'
+# The point of the manifests is that GT and Emacs cannot disagree about what
+# is launchable. So assert the two counts against each other, not against a
+# number written here -- a hardcoded 5 would go stale the first time a
+# launcher is added, which is the exact failure being designed out.
+LAUNCH_N="$(ls "$MC_HOME"/launchers/*.json 2>/dev/null | wc -l | tr -d ' ')"
+EMACS_LAUNCHERS="$(mc_emacsclient --eval "(progn (add-to-list 'load-path \"$MC_HOME/elisp\") (require 'mc-launchers) (length (mc-launchers-load)))" 2>&1 || echo NOREPLY)"
+check_contains "emacs defines a command per manifest ($LAUNCH_N)" \
+  "$EMACS_LAUNCHERS" "$LAUNCH_N"
+check_contains "emacs generated mc-corkboard-open" \
+  "$(mc_emacsclient --eval "(fboundp 'mc-corkboard-open)" 2>&1 || echo NOREPLY)" 't'
+GT_LAUNCHERS="$(mc_request gt.cmd.eval "$(printf '{"v":1,"args":{"expression":"((Smalltalk at: #McLauncherManifest) all) size printString"}}')" || echo NOREPLY)"
+check_contains "gt reads the same manifests ($LAUNCH_N)" "$GT_LAUNCHERS" "$LAUNCH_N"
+
 printf '\n== terminal -> emacs ==\n'
 TESTFILE="$WORKDIR/hello.txt"
 printf 'first line\nsecond line\nthird line\n' > "$TESTFILE"

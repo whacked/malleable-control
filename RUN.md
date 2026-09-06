@@ -194,6 +194,8 @@ Four things that look like breakage but are not:
 elisp/nats-client.el        Core NATS protocol for Emacs. Knows no subjects.
 elisp/mc-emacs-service.el   emacs.* subjects -> editor operations.
 elisp/mc-llm.el             Emacs launcher for GT's chat. Binds C-c g.
+elisp/mc-launchers.el       Reads launchers/ and defines one command per tool.
+launchers/*.json            One per tool: its .st load order and how to open it.
 run/llm-endpoint.txt        OpenAI-compatible servers, one per line.
 run/llm-models.txt          What each of them last said it serves.
 run/llm-default.txt         The connection chosen with 'gt-llm use'.
@@ -203,6 +205,8 @@ pharo/McGtPatches.st        Overrides of GT's own code. Reapplied every start.
 pharo/McLlm.st              GT's LLM connections, driven from the bus.
 pharo/McLlmStream.st        Streaming responses from an OpenAI-compatible server.
 pharo/McRichText.st         Demo: markdown blocks swapped for live components.
+pharo/McLauncher.st         Reads launchers/; the home-screen launcher panel.
+pharo/McOffUi.st            Runs work off the UI process, marking the button.
 pharo/mc-bootstrap.st       Loads all of the above into an image and connects.
 nats/nats-server.conf       Localhost-only, port 4223.
 bin/                        Lifecycle scripts.
@@ -211,6 +215,66 @@ demo/  test/                Proof.
 
 The protocol/semantics split is deliberate: the subject namespace will churn in
 later phases, and none of that should reach wire-protocol code.
+
+## Launcher manifests
+
+A launcher is two facts -- an ordered list of `.st` files to file in, and one
+expression to evaluate once they are in. Both live in one JSON file per tool
+under `launchers/`, and three things read that directory:
+
+- **GT's home screen.** `McLauncherSection` builds one card per manifest, in a
+  **Malleable Control** panel below Get Started.
+- **Emacs.** `mc-launchers.el` defines `mc-<name>-open` per manifest.
+- **`test/run-pharo-tests.sh`.** Files in each manifest's sources and runs the
+  suites it declares.
+
+None of the three keeps a list of its own, so they cannot disagree about what
+is launchable or in what order it loads. Adding a tool is adding one file.
+
+```json
+{
+  "title":    "Corkboard",
+  "blurb":    "Coordinate-addressable canvas, independent of the rich editor",
+  "files":    ["pharo/McCorkboardPanelModel.st",
+               "pharo/McCorkboardDocument.st",
+               "pharo/McCorkboard.st"],
+  "open":     "McCorkboard open",
+  "tests":    ["McCorkboardTest"],
+  "priority": 30,
+  "icon":     "play",
+  "note":     "free text; JSON has no comments"
+}
+```
+
+| field | required | meaning |
+|---|---|---|
+| `title` | yes | the card's label, and the sort key when priorities tie |
+| `blurb` | yes | one line; becomes the card's tooltip |
+| `files` | yes | the ordered load list, relative to `MC_HOME` |
+| `open` | yes | one Smalltalk expression, evaluated after the files are in |
+| `tests` | no | test class names for the runner; absent means none |
+| `priority` | no | card order; absent sorts last, then by `title` |
+| `icon` | no | a `BrGlamorousVectorIcons` selector; absent uses a default |
+| `note` | no | ignored by every reader |
+
+Unknown keys are ignored, so the format can grow without breaking older readers.
+
+**The launcher's name comes from the filename, not a field.** `corkboard.json`
+is the launcher `corkboard`, which Emacs exposes as `mc-corkboard-open`. Two
+launchers therefore cannot collide, and the command name is predictable without
+opening the file.
+
+**`open` is compiled separately from the fileIns, and this is not optional.**
+Pharo resolves variable names when it COMPILES an expression, so
+`'...McCorkboard.st' asFileReference fileIn. McCorkboard open` does not compile:
+the class does not exist yet. Both readers evaluate the two halves as separate
+expressions, the second only after the first has run. It is the same reason the
+older hand-written elisp said `(Smalltalk at: #McRichEdit) open`.
+
+Nothing fails silently. A manifest that will not parse renders as a card
+carrying its own error rather than vanishing from the panel; one whose sources
+are missing keeps its title and names the missing path; and either one fails
+`test/run-pharo-tests.sh` outright.
 
 ## Inspecting and changing the live image
 
