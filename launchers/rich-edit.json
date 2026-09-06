@@ -5,6 +5,8 @@
     "pharo/McCache.st",
     "pharo/McRelation.st",
     "pharo/McMarkdownLink.st",
+    "pharo/McMarkdownCode.st",
+    "pharo/McCodeEval.st",
     "pharo/McMarkdownInline.st",
     "pharo/McMarkdownTable.st",
     "pharo/McSqlite.st",
@@ -29,8 +31,10 @@
     "McSearchSessionTest",
     "McSearchResultTest",
     "McSearchPresentationTest",
-    "McCommandKeymapTest"
+    "McCommandKeymapTest",
+    "McMarkdownCodeTest",
+    "McCodeEvalTest"
   ],
   "priority": 20,
-  "note": "Order matters: McBoundedCache is used by McMarkdownInline, McMarkdownTable and McSqlite; McMarkdownTable's cell reader and McSqlite depend on McRelation; McMarkdown's visitor calls into McMarkdownInline, McMarkdownTable and McSqlite; McRichEdit's styler calls into McMarkdown."
+  "note": "Order matters: McBoundedCache is used by McMarkdownInline, McMarkdownTable, McSqlite and McCodeEvaluator; McCodeEval needs McMarkdownCode's node to key its cache; McMarkdownTable's cell reader and McSqlite depend on McRelation; McMarkdown's visitor calls into McMarkdownInline, McMarkdownTable, McSqlite and McCodeEvaluator; McRichEdit's styler calls into McMarkdown."
 }

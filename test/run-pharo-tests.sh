@@ -53,6 +53,8 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McMarkdownReconcilerTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McRichEditPerfTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownLinkTest.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McMarkdownCodeTest.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McCodeEvalTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McSearchTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McCorkboardTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McSrtEditorTest.st' asFileReference fileIn.
