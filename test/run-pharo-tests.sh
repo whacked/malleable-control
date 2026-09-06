@@ -39,6 +39,8 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McTerminal.st' asFileReference fileIn.
   '$MC_HOME/pharo/McWorkbench.st' asFileReference fileIn.
 
+  '$MC_HOME/pharo/McLauncher.st' asFileReference fileIn.
+
   '$MC_HOME/pharo/McRelationTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McCacheTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McMarkdownTest.st' asFileReference fileIn.
@@ -49,10 +51,11 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McSearchTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McCorkboardTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McSrtEditorTest.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McLauncherTest.st' asFileReference fileIn.
   (Smalltalk at: #McGtPatches) apply.
   failed := false.
   suites := OrderedCollection new.
-  #( #NatsClientTest #McRelationTest #McCacheTest #McMarkdownTest #McMarkdownSnapshotTest #McMarkdownReconcilerTest #McRichEditPerfTest #McMarkdownLinkTest #McSearchMatcherTest #McSearchSessionTest #McSearchResultTest #McSearchPresentationTest #McCommandKeymapTest #McCorkboardTest #McSrtEditorTest ) do: [ :each |
+  #( #NatsClientTest #McRelationTest #McCacheTest #McMarkdownTest #McMarkdownSnapshotTest #McMarkdownReconcilerTest #McRichEditPerfTest #McMarkdownLinkTest #McSearchMatcherTest #McSearchSessionTest #McSearchResultTest #McSearchPresentationTest #McCommandKeymapTest #McCorkboardTest #McSrtEditorTest #McLauncherManifestTest ) do: [ :each |
     result := (Smalltalk at: each) suite run.
     (result hasFailures or: [ result hasErrors ]) ifTrue: [ failed := true ].
     suites add: each -> result ].
