@@ -1,0 +1,13 @@
+{
+  "title": "Corkboard",
+  "blurb": "Coordinate-addressable canvas, independent of the rich editor",
+  "files": [
+    "pharo/McCorkboardPanelModel.st",
+    "pharo/McCorkboardDocument.st",
+    "pharo/McCorkboard.st"
+  ],
+  "open": "McCorkboard open",
+  "tests": ["McCorkboardTest"],
+  "priority": 30,
+  "note": "McCorkboard projects a McCorkboardDocument, which holds McCorkboardPanelModel instances."
+}

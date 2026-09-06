@@ -1,0 +1,16 @@
+{
+  "title": "KDI Explorer",
+  "blurb": "Moldable alternative to kdi tui; drill down from source to grounding",
+  "files": [
+    "pharo/McKdi.st",
+    "pharo/McKdiEvidence.st",
+    "pharo/McKdiStore.st",
+    "pharo/McKdiDiscovery.st",
+    "pharo/McKdiInfer.st",
+    "pharo/McKdiSlice.st",
+    "pharo/McKdiReport.st"
+  ],
+  "open": "McKdiStore openLauncherSession",
+  "priority": 10,
+  "note": "McKdiEvidence defines McKdiObject, which every other class subclasses, so reloading it alone leaves the rest stale. Always file these in as a set. No tests key: the KDI classes have no suite yet."
+}

@@ -1,0 +1,36 @@
+{
+  "title": "Rich Edit",
+  "blurb": "Live-styled Markdown editor with search, links and tables",
+  "files": [
+    "pharo/McCache.st",
+    "pharo/McRelation.st",
+    "pharo/McMarkdownLink.st",
+    "pharo/McMarkdownInline.st",
+    "pharo/McMarkdownTable.st",
+    "pharo/McSqlite.st",
+    "pharo/McMarkdown.st",
+    "pharo/McMarkdownSnapshot.st",
+    "pharo/McMarkdownReconciler.st",
+    "pharo/McKeymap.st",
+    "pharo/McSearch.st",
+    "pharo/McRichEdit.st",
+    "pharo/McRichEditLinks.st"
+  ],
+  "open": "McRichEdit open",
+  "tests": [
+    "McRelationTest",
+    "McCacheTest",
+    "McMarkdownTest",
+    "McMarkdownSnapshotTest",
+    "McMarkdownReconcilerTest",
+    "McRichEditPerfTest",
+    "McMarkdownLinkTest",
+    "McSearchMatcherTest",
+    "McSearchSessionTest",
+    "McSearchResultTest",
+    "McSearchPresentationTest",
+    "McCommandKeymapTest"
+  ],
+  "priority": 20,
+  "note": "Order matters: McBoundedCache is used by McMarkdownInline, McMarkdownTable and McSqlite; McMarkdownTable's cell reader and McSqlite depend on McRelation; McMarkdown's visitor calls into McMarkdownInline, McMarkdownTable and McSqlite; McRichEdit's styler calls into McMarkdown."
+}

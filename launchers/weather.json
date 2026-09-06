@@ -1,0 +1,7 @@
+{
+  "title": "Weather",
+  "blurb": "Fetches Open-Meteo, renders vector icons, publishes back over the bus",
+  "files": ["pharo/McWeatherView.st"],
+  "open": "McWeatherView open",
+  "priority": 50
+}

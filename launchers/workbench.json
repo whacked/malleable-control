@@ -1,0 +1,14 @@
+{
+  "title": "Workbench",
+  "blurb": "SRT subtitle editor beside a tmux-backed terminal",
+  "files": [
+    "pharo/McSrtEntry.st",
+    "pharo/McSrtEditor.st",
+    "pharo/McTerminal.st",
+    "pharo/McWorkbench.st"
+  ],
+  "open": "McWorkbench open",
+  "tests": ["McSrtEditorTest"],
+  "priority": 40,
+  "note": "McSrtEditor depends on McSrtEntry; McWorkbench depends on both editors."
+}
