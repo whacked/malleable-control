@@ -73,7 +73,7 @@ showStatus: aString
 	statusMessage := aString! !
 
 TestCase subclass: #McMarkdownLinkTest
-	instanceVariableNames: 'tempDir'
+	instanceVariableNames: 'tempDir homeDir'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -81,6 +81,8 @@ TestCase subclass: #McMarkdownLinkTest
 tearDown
 	tempDir ifNotNil: [
 		[ tempDir ensureDeleteAll ] on: Error do: [ :e | nil ] ].
+	homeDir ifNotNil: [
+		[ homeDir ensureDeleteAll ] on: Error do: [ :e | nil ] ].
 	super tearDown! !
 
 !McMarkdownLinkTest methodsFor: 'helpers'!
@@ -92,6 +94,16 @@ tempDir
 		tempDir := FileLocator temp / ('mc-link-test-' , UUID new asString).
 		tempDir ensureCreateDirectory.
 		tempDir ]!
+
+homeDir
+	"A sandbox under HOME rather than under temp, because HOME is the one
+	 variable an expansion test can count on naming this directory: the
+	 image resolves FileLocator temp to /private/tmp, which is not what
+	 TMPDIR holds.  Removed again in tearDown."
+	^ homeDir ifNil: [
+		homeDir := FileLocator home / ('mc-link-test-' , UUID new asString).
+		homeDir ensureCreateDirectory.
+		homeDir ]!
 
 write: aString to: aName
 	| ref |
@@ -512,3 +524,47 @@ testDifferentLocalDocumentStillOpens
 	instance instVarNamed: 'documentFile' put: current.
 	instance activateLink: (self linkTarget: 'next.md').
 	self assert: instance openedFile equals: next! !
+
+!McMarkdownLinkTest methodsFor: 'tests - environment'!
+testEnvironmentReferenceExpandsFromTheProcessEnvironment
+	| expanded |
+	expanded := McRichEdit new expandEnvironmentIn: '$HOME/notes/current.md'.
+	self deny: (expanded includesSubstring: '$HOME').
+	self assert: (expanded beginsWith: '/').
+	self assert: (expanded endsWith: '/notes/current.md')!
+
+testUnsetEnvironmentReferenceIsLeftStanding
+	"Substituting an empty string would turn an absolute target into a
+	 relative one and resolve it beside the document instead of failing."
+	self
+		assert: (McRichEdit new expandEnvironmentIn: '$MC_NO_SUCH_VARIABLE/current.md')
+		equals: '$MC_NO_SUCH_VARIABLE/current.md'!
+
+testTildeExpandsOnlyAtTheStart
+	| instance |
+	instance := McRichEdit new.
+	self
+		assert: (instance expandEnvironmentIn: 'notes/~/current.md')
+		equals: 'notes/~/current.md'.
+	self deny: ((instance expandEnvironmentIn: '~/current.md') beginsWith: '~').
+	self assert: ((instance expandEnvironmentIn: '~/current.md') endsWith: '/current.md')!
+
+testAbsoluteTargetWithAnEnvironmentReferenceResolves
+	"Proves the expansion runs before resolution: unexpanded, the target is
+	 relative and gets looked for beside the document, where it is not."
+	| current instance prefix |
+	current := self write: '# current' to: 'current.md'.
+	instance := McRichEdit new.
+	instance instVarNamed: 'documentFile' put: current.
+	(self homeDir / 'note.md') writeStreamDo: [ :stream | stream nextPutAll: '# note' ].
+	prefix := '$HOME/' , self homeDir basename.
+	self
+		assert: (instance resolvedFileForLink: (self linkTarget: prefix , '/note.md')) contents
+		equals: '# note'.
+	self
+		assert: (instance linkStateFor: (self linkTarget: 'file://' , prefix , '/note.md'))
+		equals: #local.
+	self
+		assert: (instance linkStateFor:
+			(self linkTarget: '$MC_NO_SUCH_VARIABLE/' , self homeDir basename , '/note.md'))
+		equals: #dead! !

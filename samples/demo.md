@@ -71,8 +71,11 @@ states. Blue links are usable; red links are intentionally dead.
 - [Missing absolute file](/definitely/missing/mc-rich-edit-note.md)
 
 Slash-prefixed paths and `file://` URLs are both treated as absolute local
-paths. The absolute examples are intentionally machine-specific; relative
-links are the portable form for documents kept together.
+paths. A leading `~` and any `$NAME` are expanded from the environment
+before resolution, which is what keeps the absolute examples above readable
+on a machine other than the one that wrote them -- they resolve wherever
+`$CLOUDSYNC` points, and read as dead where it is unset. Relative links
+remain the portable form for documents kept together.
 
 ### Current-document links
 

@@ -41,7 +41,7 @@ webUrlForTarget: aString
 !McRichEdit methodsFor: 'links - local resolution'!
 resolvedFileForLink: aLink
 	| target |
-	target := aLink target trimBoth.
+	target := self expandEnvironmentIn: aLink target trimBoth.
 	(target asLowercase beginsWith: 'file://') ifTrue: [
 		^ [ | ref |
 			ref := target asZnUrl asFileReference.
@@ -81,7 +81,52 @@ localPathPartOf: aString
 	hash > 0 ifTrue: [ stop := stop min: hash ].
 	query > 0 ifTrue: [ stop := stop min: query ].
 	stop = 1 ifTrue: [ ^ '' ].
-	^ (aString copyFrom: 1 to: stop - 1) trimBoth! !
+	^ (aString copyFrom: 1 to: stop - 1) trimBoth!
+
+expandEnvironmentIn: aString
+	"Expand a leading ~ and every $NAME from the process environment.
+	 A document that has to name an absolute path stays portable this way:
+	 the machine-specific prefix lives in the environment, not in the text.
+	 An unset name is left standing so the link reads as dead rather than
+	 silently resolving somewhere else."
+	| rest |
+	rest := aString.
+	(rest beginsWith: '~/') ifTrue: [
+		(self environmentAt: 'HOME')
+			ifNotNil: [ :home | rest := home , (rest allButFirst: 1) ] ].
+	(rest includes: $$) ifFalse: [ ^ rest ].
+	^ String streamContents: [ :out |
+		| i size |
+		i := 1.
+		size := rest size.
+		[ i <= size ] whileTrue: [
+			| j name |
+			((rest at: i) = $$ and: [ i < size and: [ self isNameStart: (rest at: i + 1) ] ])
+				ifFalse: [ out nextPut: (rest at: i). i := i + 1 ]
+				ifTrue: [
+					j := i + 1.
+					[ j <= size and: [ self isNameCharacter: (rest at: j) ] ]
+						whileTrue: [ j := j + 1 ].
+					name := rest copyFrom: i + 1 to: j - 1.
+					(self environmentAt: name)
+						ifNil: [ out nextPutAll: (rest copyFrom: i to: j - 1) ]
+						ifNotNil: [ :value | out nextPutAll: value ].
+					i := j ] ] ]!
+
+isNameStart: aCharacter
+	^ aCharacter isLetter or: [ aCharacter = $_ ]!
+
+isNameCharacter: aCharacter
+	^ aCharacter isAlphaNumeric or: [ aCharacter = $_ ]!
+
+environmentAt: aName
+	"An empty value counts as unset -- expanding it would turn an absolute
+	 target into a relative one and resolve it beside the document."
+	^ [ | value |
+		value := Smalltalk os environment at: aName ifAbsent: [ nil ].
+		(value isNil or: [ value isEmpty ]) ifTrue: [ nil ] ifFalse: [ value asString ] ]
+		on: Error
+		do: [ :e | nil ]! !
 
 !McRichEdit methodsFor: 'links - actions'!
 activateLink: aLink

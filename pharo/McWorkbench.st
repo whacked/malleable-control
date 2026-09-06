@@ -36,13 +36,18 @@ initialize
 
 detectTmux
 	"Find the tmux binary by checking known paths.
-	 GT subprocesses may not inherit the user login-shell PATH."
-	#(  '$HOME/.nix-profile/bin/tmux'
-		'/opt/homebrew/bin/tmux'
+	 GT subprocesses may not inherit the user login-shell PATH.
+	 The per-user prefix is resolved here rather than written out: a
+	 literal home path only ever matches on the machine that wrote it."
+	| candidates |
+	candidates := OrderedCollection new.
+	candidates add: (FileLocator home / '.nix-profile' / 'bin' / 'tmux') fullName.
+	#(  '/opt/homebrew/bin/tmux'
 		'/usr/local/bin/tmux'
 		'/usr/bin/tmux'
 		'/bin/tmux' )
-		do: [ :p | p asFileReference exists ifTrue: [ ^ p ] ].
+		do: [ :p | candidates add: p ].
+	candidates do: [ :p | p asFileReference exists ifTrue: [ ^ p ] ].
 	^ 'tmux'!
 
 buildKeyMaps
