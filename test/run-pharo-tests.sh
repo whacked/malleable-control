@@ -39,6 +39,7 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McTerminal.st' asFileReference fileIn.
   '$MC_HOME/pharo/McWorkbench.st' asFileReference fileIn.
 
+  '$MC_HOME/pharo/McOffUi.st' asFileReference fileIn.
   '$MC_HOME/pharo/McLauncher.st' asFileReference fileIn.
 
   '$MC_HOME/pharo/McRelationTest.st' asFileReference fileIn.
