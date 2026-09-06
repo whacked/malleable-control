@@ -6,6 +6,12 @@
 
 (require 'mc-emacs-service)
 (require 'mc-smalltalk)
+(require 'mc-launchers)
+
+;; `mc-rich-edit-open' is generated from launchers/rich-edit.json -- the
+;; thirteen-file load order used to be inlined here as a format string, and was
+;; the copy most likely to drift.  What is left in this file is the commands
+;; that operate on an editor that is already running.
 
 (defvar mc-rich-edit-home
   (file-name-directory
@@ -14,62 +20,6 @@
                              (locate-library "mc-rich-edit")
                              (buffer-file-name)))))
   "Root of the malleable-control project.")
-
-;;;###autoload
-(defun mc-rich-edit-open ()
-  "Load McRichEdit into GT and open the prototype editor."
-  (interactive)
-  (unless (nats-connected-p mc-emacs-connection)
-    (user-error "Not connected — run M-x mc-emacs-start"))
-  (let* ((cache-path (expand-file-name "pharo/McCache.st" mc-rich-edit-home))
-         (relation-path (expand-file-name "pharo/McRelation.st" mc-rich-edit-home))
-         (link-path (expand-file-name "pharo/McMarkdownLink.st" mc-rich-edit-home))
-         (inline-path (expand-file-name "pharo/McMarkdownInline.st" mc-rich-edit-home))
-         (table-path (expand-file-name "pharo/McMarkdownTable.st" mc-rich-edit-home))
-         (sqlite-path (expand-file-name "pharo/McSqlite.st" mc-rich-edit-home))
-         (markdown-path (expand-file-name "pharo/McMarkdown.st" mc-rich-edit-home))
-         (snapshot-path (expand-file-name "pharo/McMarkdownSnapshot.st" mc-rich-edit-home))
-         (reconciler-path (expand-file-name "pharo/McMarkdownReconciler.st" mc-rich-edit-home))
-         (keymap-path (expand-file-name "pharo/McKeymap.st" mc-rich-edit-home))
-         (search-path (expand-file-name "pharo/McSearch.st" mc-rich-edit-home))
-         (st-path (expand-file-name "pharo/McRichEdit.st" mc-rich-edit-home))
-         (links-path (expand-file-name "pharo/McRichEditLinks.st" mc-rich-edit-home))
-         ;; Load order matters: McBoundedCache is used by McMarkdownInline,
-         ;; McMarkdownTable and McSqlite, McMarkdownTable's cell reader
-         ;; depends on McRelation, McSqlite depends on McRelation,
-         ;; McMarkdown's visitor calls into McMarkdownInline, McMarkdownTable,
-         ;; and McSqlite, and McRichEdit's styler calls into McMarkdown.
-         (expr (format (concat "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "'%s' asFileReference fileIn. "
-                               "(Smalltalk at: #McRichEdit) open. 'opened'")
-                       cache-path relation-path link-path inline-path table-path
-                       sqlite-path markdown-path snapshot-path reconciler-path
-                       keymap-path search-path st-path links-path))
-         (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
-                  (json-serialize `(:v 1 :args (:expression ,expr))))))
-    (if reply
-        (message "Rich Edit prototype opened in GT")
-      (message "GT did not respond (is it running?)"))))
-
-;;;###autoload
-(defun mc-rich-edit-open-from (root)
-  "Load and open the Rich Edit implementation rooted at ROOT.
-This is the explicit worktree/development entry point; unlike changing the
-global `mc-rich-edit-home', the override lasts for one invocation only."
-  (interactive "DRich Edit project/worktree root: ")
-  (let ((mc-rich-edit-home (file-name-as-directory (expand-file-name root))))
-    (mc-rich-edit-open)))
 
 (defun mc-rich-edit--unquote-smalltalk-string (printed)
   "Decode the printString representation of a Smalltalk String."

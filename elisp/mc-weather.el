@@ -19,6 +19,7 @@
 ;;; Code:
 
 (require 'mc-emacs-service)
+(require 'mc-launchers)
 
 (defvar mc-weather-home
   (file-name-directory
@@ -61,24 +62,10 @@
                  (mc-emacs--log "weather event error: %S" err))))))))
 
 ;;;###autoload
-(defun mc-weather-open ()
-  "Load the weather view into GT and open it.
-
-Subscribes to `gt.event.weather' so that when the user clicks Fetch
-Weather in the GT window, the reading also appears in the Emacs
-minibuffer."
-  (interactive)
-  (unless (nats-connected-p mc-emacs-connection)
-    (user-error "Not connected — run M-x mc-emacs-start"))
-  (mc-weather--ensure-subscription)
-  (let* ((st-path (expand-file-name "pharo/McWeatherView.st" mc-weather-home))
-         (expr (format "'%s' asFileReference fileIn. (Smalltalk at: #McWeatherView) open. 'opened'"
-                       st-path))
-         (reply (nats-request-sync mc-emacs-connection "gt.cmd.eval"
-                  (json-serialize `(:v 1 :args (:expression ,expr))))))
-    (if reply
-        (message "Weather view opened in GT")
-      (message "GT did not respond (is it running?)"))))
+;; `mc-weather-open' is generated from launchers/weather.json.  What cannot be
+;; generated is the bus subscription below: GT's own card knows nothing about
+;; Emacs, so the subscription attaches itself to the launcher's hook instead.
+(add-hook 'mc-launcher-weather-hook #'mc-weather--ensure-subscription)
 
 (provide 'mc-weather)
 
