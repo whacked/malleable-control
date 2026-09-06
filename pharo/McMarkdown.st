@@ -360,7 +360,7 @@ stripPrefix: aPattern from: aLine
 	^ aLine copyFrom: found first last + 1 to: aLine size! !
 
 MicrodownVisitor subclass: #McMarkdownStylerVisitor
-	instanceVariableNames: 'parser text cursor palette owner'
+	instanceVariableNames: 'parser text cursor palette owner trusted'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -396,7 +396,28 @@ setParser: aParser text: aText cursor: anInteger palette: aPalette owner: anOwne
 
 !McMarkdownStylerVisitor methodsFor: 'accessing'!
 paletteAt: aKey
-	^ palette at: aKey ifAbsent: [ Color gray ]! !
+	^ palette at: aKey ifAbsent: [ Color gray ]!
+
+trusted: aBoolean
+	"Force the trust decision instead of taking it from the owner.  For a
+	 headless render and for tests, which have no editor to ask."
+	trusted := aBoolean!
+
+isTrustedDocument
+	"Whether this document's blocks may be run.  Untrusted is the default
+	 and the answer whenever there is nobody to ask, so no Run button is
+	 drawn at all until the reader asks for one."
+	trusted ifNotNil: [ ^ trusted ].
+	owner ifNil: [ ^ false ].
+	^ [ owner isTrustedDocument = true ] on: Error do: [ :e | false ]!
+
+codeClass
+	"Dynamic, so an incremental reload of this file does not disable older
+	 widgets when McMarkdownCode has not been filed in yet."
+	^ Smalltalk at: #McMarkdownCode ifAbsent: [ nil ]!
+
+evaluatorClass
+	^ Smalltalk at: #McCodeEvaluator ifAbsent: [ nil ]! !
 
 !McMarkdownStylerVisitor methodsFor: 'styling - primitives'!
 apply: anAttribute from: start to: stop
@@ -442,6 +463,12 @@ monospaceFrom: start to: stop
 replace: aStencil from: start to: stop
 	self
 		apply: (BrTextAdornmentDynamicAttribute new beReplace; stencil: aStencil)
+		from: start
+		to: stop!
+
+append: aStencil from: start to: stop
+	self
+		apply: (BrTextAdornmentDynamicAttribute new beAppend; stencil: aStencil)
 		from: start
 		to: stop! !
 
@@ -529,10 +556,14 @@ visitHorizontalLine: aLine
 
 visitCode: aCodeBlock
 	"Monospace the whole block over a tinted background, and collapse the
-	 fence lines when the cursor is elsewhere.  A code block whose info
-	 string starts with sql&db= is a database view: when the cursor is away,
-	 its entire range is replaced by a query result table or an error box."
-	| range lines info |
+	 fence lines when the cursor is elsewhere.
+
+	 The info string decides what a fence is.  sql&db= is a database view and
+	 has its own renderer.  results{...} is output written by a previous run.
+	 A bare language name is code that can be evaluated, and in a document
+	 that has been trusted it gets a Run button.  Anything else is an
+	 ordinary code block, styled exactly as it always was."
+	| range lines info language |
 	range := parser rangeOf: aCodeBlock.
 	range ifNil: [ ^ self ].
 	lines := parser lineIntervalsWithin: range.
@@ -540,18 +571,42 @@ visitCode: aCodeBlock
 	info := aCodeBlock firstLine ifNil: [ '' ].
 	((info beginsWith: 'sql&db=') and: [ (self isNear: range) not ])
 		ifTrue: [ ^ self visitDatabaseView: aCodeBlock range: range info: info ].
-	self monospaceFrom: range first to: range last.
-	self fontSize: 14 from: range first to: range last.
-	self background: (self paletteAt: 'codeBg') from: range first to: range last.
-	self foreground: (self paletteAt: 'codeText') from: range first to: range last.
-	(self isNear: range) ifTrue: [
+	language := self codeClass
+		ifNil: [ nil ]
+		ifNotNil: [ :c |
+			(c isResultsInfo: info)
+				ifTrue: [ #results ]
+				ifFalse: [ c languageFromInfo: info ] ].
+	(language == #results and: [ (self isNear: range) not ])
+		ifTrue: [ ^ self visitResultsBlock: aCodeBlock range: range info: info ].
+	language == #results ifTrue: [ language := nil ].
+	self
+		styleCodeBlockIn: range
+		lines: lines
+		closingFenceReplaced: (language notNil
+			and: [ self isTrustedDocument
+			and: [ (self isNear: range) not
+			and: [ lines size > 1 ] ] ]).
+	(language notNil and: [ self isTrustedDocument ]) ifTrue: [
+		self runButtonFor: aCodeBlock range: range lines: lines language: language ]!
+
+styleCodeBlockIn: aRange lines: lines closingFenceReplaced: aBoolean
+	"The ordinary code-block projection.  aBoolean says the closing fence is
+	 about to be replaced by a Run button, so it must not also be hidden --
+	 a hide attribute and an adornment over the same characters render
+	 unpredictably."
+	self monospaceFrom: aRange first to: aRange last.
+	self fontSize: 14 from: aRange first to: aRange last.
+	self background: (self paletteAt: 'codeBg') from: aRange first to: aRange last.
+	self foreground: (self paletteAt: 'codeText') from: aRange first to: aRange last.
+	(self isNear: aRange) ifTrue: [
 		self dimFrom: lines first first to: lines first last.
 		lines size > 1 ifTrue: [ self dimFrom: lines last first to: lines last last ].
 		^ self ].
 	"Cursor away: hide each fence together with the line break it owns, so the
 	 block closes up instead of leaving two blank lines behind."
 	self hideFrom: lines first first to: lines first last + 1.
-	lines size > 1 ifTrue: [
+	(lines size > 1 and: [ aBoolean not ]) ifTrue: [
 		self hideFrom: lines last first - 1 to: lines last last ]!
 
 visitUnorderedList: aList
@@ -723,6 +778,204 @@ quoteBarElement
 	bar background: (self paletteAt: 'quoteBar').
 	bar margin: (BlInsets left: 2 right: 10).
 	^ bar! !
+
+!McMarkdownStylerVisitor methodsFor: 'visiting - code blocks'!
+visitResultsBlock: aCodeBlock range: aRange info: anInfoString
+	"Output written into the document by a previous run.
+
+	 Rendered with the moment it was produced along its top edge, because a
+	 result with no timestamp cannot be told apart from a result that is no
+	 longer true -- which is the complaint org-babel's bare #+RESULTS earns."
+	| stamp body pal |
+	stamp := self codeClass resultsTimestampFrom: anInfoString.
+	body := aCodeBlock body ifNil: [ '' ].
+	"Captured for the stencil closure, which Bloc evaluates at render time."
+	pal := palette.
+	self
+		replace: [ self resultsElementFor: body stamp: stamp palette: pal ]
+		from: aRange first
+		to: aRange first.
+	aRange first + 1 <= aRange last ifTrue: [
+		self hideFrom: aRange first + 1 to: aRange last ]!
+
+runButtonFor: aCodeBlock range: aRange lines: lines language: aLanguage
+	"A Run button under the block, in a trusted document, always.
+
+	 Always: it does not vanish after a successful run and it does not vanish
+	 after a failed one.  An org-babel block is re-evaluatable whenever you
+	 are looking at it, for better or worse, and this copies that.  In an
+	 untrusted document no button is drawn at all.
+
+	 Where it goes depends on the cursor.  Away from the block the closing
+	 fence is replaced by the button, so the block reads as code followed by
+	 its control; on the block the source is showing and the button is
+	 appended after it, so editing the block never takes the button away."
+	| code stencil documentSource |
+	"The source as it stands at this render.  The write-back computes offsets
+	 against it rather than against whatever the document later becomes; the
+	 editor restyles after every edit, so it is current as of the last render
+	 -- the same bargain a checkbox in a table cell already makes with the
+	 document index it captures."
+	documentSource := parser source.
+	code := self codeClass
+		blockLanguage: aLanguage
+		expression: (aCodeBlock body ifNil: [ '' ])
+		start: aRange first
+		stop: aRange last.
+	stencil := [ self runElementFor: code source: documentSource ].
+	(self isNear: aRange)
+		ifTrue: [ self append: stencil from: aRange last to: aRange last ]
+		ifFalse: [
+			lines size > 1
+				ifTrue: [ self replace: stencil from: lines last first - 1 to: lines last last ]
+				ifFalse: [ self append: stencil from: aRange last to: aRange last ] ]!
+
+runBlock: aCode source: aSource
+	"Evaluate one block because the reader asked.
+
+	 The result is applied on whichever process learns it: at once when the
+	 cache or an in-image evaluator can answer, and otherwise from the
+	 background job through the editor's task queue.  The completion block
+	 closes over the owner, the node and the source string and nothing else
+	 -- capturing the visitor would hold a rope and a parser alive for as
+	 long as the evaluation ran, and both are stale the moment the document
+	 changes."
+	| evaluator anOwner result |
+	evaluator := self evaluatorClass.
+	evaluator ifNil: [ ^ self ].
+	anOwner := owner.
+	anOwner ifNil: [ ^ self ].
+	result := evaluator
+		resultFor: aCode
+		token: aCode cacheKey
+		onComplete: [ :landed |
+			self class applyLater: landed for: aCode source: aSource owner: anOwner ].
+	result isPending
+		ifTrue: [ self class requestRestyleFor: anOwner ]
+		ifFalse: [ self class apply: result for: aCode source: aSource owner: anOwner ]! !
+
+!McMarkdownStylerVisitor class methodsFor: 'running blocks'!
+apply: aResult for: aCode source: aSource owner: anOwner
+	"Record what a run produced.
+
+	 On success a results fence is written into the document, so the result
+	 outlives the session and is legible to every other markdown tool.  On
+	 failure nothing is written, and any results fence left by an earlier
+	 successful run is removed -- a stale success must not outlive the code
+	 that produced it.  The failure itself is shown beside the button, out of
+	 the evaluator's cache, so it costs the document nothing."
+	| codeClass range replacement |
+	codeClass := Smalltalk at: #McMarkdownCode ifAbsent: [ nil ].
+	codeClass ifNil: [ ^ self ].
+	range := [ codeClass resultsRangeIn: aSource after: aCode stop ]
+		on: Error
+		do: [ :e | nil ].
+	aResult isReady ifFalse: [
+		"Nothing to write and nothing stale to clear: just show the error."
+		range ifNil: [ ^ self requestRestyleFor: anOwner ].
+		^ self write: '' over: range for: anOwner ].
+	replacement := codeClass resultsFenceFor: aResult output at: aResult evaluatedAt.
+	range
+		ifNil: [ self insert: replacement at: aCode stop for: anOwner ]
+		ifNotNil: [ self write: replacement over: range for: anOwner ]!
+
+write: aString over: aRange for: anOwner
+	[ anOwner replaceFrom: aRange first to: aRange last with: aString ]
+		on: Error
+		do: [ :e | nil ]!
+
+insert: aString at: anIndex for: anOwner
+	"An empty range is an insertion: replaceFrom:to:with: deletes nothing
+	 when its stop precedes its start."
+	[ anOwner replaceFrom: anIndex + 1 to: anIndex with: aString ]
+		on: Error
+		do: [ :e | nil ]!
+
+applyLater: aResult for: aCode source: aSource owner: anOwner
+	"Called from the background job.  Hops to the UI process before touching
+	 the document, because the rope may only be edited there."
+	| element |
+	element := [ anOwner editorElement ] on: Error do: [ :e | nil ].
+	element ifNil: [ ^ self ].
+	element enqueueTask: (BlTaskAction new action: [
+		[ self apply: aResult for: aCode source: aSource owner: anOwner ]
+			on: Error
+			do: [ :e | nil ] ])!
+
+requestRestyleFor: anOwner
+	"Ask for a re-render without touching the rope.  A write does not need
+	 this -- replaceFrom:to:with: restyles on its own -- but showing a
+	 failure beside the button does, because nothing in the document changed."
+	| element |
+	element := [ anOwner editorElement ] on: Error do: [ :e | nil ].
+	element ifNil: [ ^ self ].
+	element enqueueTask: (BlTaskAction new action: [
+		[ element editor styleText ] on: Error do: [ :e | nil ] ])! !
+
+!McMarkdownStylerVisitor methodsFor: 'stencils - code blocks'!
+runElementFor: aCode source: aSource
+	"The Run button, and beside it whatever the last run left behind.
+
+	 A success leaves nothing here: it is written into the document as a
+	 results fence and rendered as one.  A failure leaves its message, taken
+	 from the evaluator's cache, so it costs the document nothing and
+	 disappears of its own accord when the next run succeeds."
+	| row button evaluator cached |
+	row := BlElement new.
+	row layout: BlLinearLayout horizontal.
+	row constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	row margin: (BlInsets top: 2 bottom: 2).
+	button := BrButton new.
+	button label: 'Run ' , aCode language.
+	button aptitude: BrGlamorousButtonWithLabelAptitude new.
+	button beSmallSize.
+	button action: [ self runBlock: aCode source: aSource ].
+	row addChild: button.
+	evaluator := self evaluatorClass.
+	evaluator ifNil: [ ^ row ].
+	([ evaluator isPendingFor: aCode cacheKey ] on: Error do: [ :e | false ])
+		ifTrue: [
+			row addChild: (self runNote: 'running...' colour: (self paletteAt: 'status')).
+			^ row ].
+	cached := [ evaluator cachedAt: aCode cacheKey ] on: Error do: [ :e | nil ].
+	(cached notNil and: [ cached isFailed ]) ifTrue: [
+		row addChild: (self runNote: cached message colour: (self paletteAt: 'deadLink')) ].
+	^ row!
+
+runNote: aString colour: aColor
+	| label |
+	label := BlTextElement new.
+	label text: (aString asRopedText foreground: aColor; fontSize: 12).
+	label margin: (BlInsets left: 8).
+	label constraintsDo: [ :c | c linear vertical alignCenter ].
+	^ label!
+
+resultsElementFor: aBody stamp: aStampOrNil palette: aPalette
+	"A results fence, rendered.  The timestamp sits along the top edge in
+	 small dim text: it is not the content, but without it a result cannot be
+	 told apart from one that stopped being true some time ago."
+	| container header body |
+	container := BlElement new.
+	container layout: BlLinearLayout vertical.
+	container constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	container padding: (BlInsets all: 8).
+	container margin: (BlInsets top: 2 bottom: 2).
+	container border: (BlBorder
+		paint: (aPalette at: 'tableBorder' ifAbsent: [ Color gray ])
+		width: 1).
+	container background: (aPalette at: 'codeBg' ifAbsent: [ Color veryLightGray ]).
+	header := BlTextElement new.
+	header text: (('result  ' , (aStampOrNil ifNil: [ 'unstamped' ])) asRopedText
+		foreground: (aPalette at: 'dimDelimiter' ifAbsent: [ Color gray ]);
+		fontSize: 10).
+	header margin: (BlInsets bottom: 4).
+	container addChild: header.
+	body := BlTextElement new.
+	body text: (aBody asRopedText
+		foreground: (aPalette at: 'codeText' ifAbsent: [ Color black ]);
+		fontSize: 13).
+	container addChild: body.
+	^ container! !
 
 !McMarkdownStylerVisitor methodsFor: 'visiting - database views'!
 visitDatabaseView: aCodeBlock range: aRange info: anInfoString

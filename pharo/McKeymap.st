@@ -19,7 +19,9 @@ richEditDefaults
 		registerCommand: #nextSearch action: [ :owner | owner nextSearch ];
 		registerCommand: #previousSearch action: [ :owner | owner previousSearch ];
 		registerCommand: #cancelSearch action: [ :owner | owner closeSearch ];
+		registerCommand: #rerunAtCursor action: [ :owner | owner rerunAtCursor ];
 		bind: #openSearch in: #editor to: BlKeyCombination primaryF;
+		bind: #rerunAtCursor in: #editor to: (BlKeyCombination builder primary shift key: BlKeyboardKey e; build);
 		bind: #nextSearch in: #searchInput to: BlKeyCombination return;
 		bind: #previousSearch in: #searchInput to: BlKeyCombination shiftReturn;
 		bind: #cancelSearch in: #searchInput to: BlKeyCombination escape;

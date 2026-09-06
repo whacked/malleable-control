@@ -351,3 +351,330 @@ testEmphasisDoesNotReachInsideAnExpression
 	McCodeEvaluator executor: [ :language :expression | 'ok' ].
 	text := self styleTrusted: '`{python} _a_ + _b_`'.
 	self assert: (self adornmentsIn: text) size equals: 1! !
+
+!McMarkdownCodeTest methodsFor: 'helpers - blocks'!
+blockSource
+	"A document with one python block between two paragraphs, so the
+	 write-back has something on both sides of it to get wrong."
+	^ 'Intro para.
+
+```python
+6 * 2
+```
+
+Tail para.'!
+
+blockStop
+	"The last character of the block in blockSource -- the closing fence."
+	^ self blockSource indexOfSubCollection: '```
+' startingAt: 14!
+
+styleDocument: aString trusted: aBoolean owner: anOwner
+	| text parser visitor |
+	text := aString asRopedText.
+	parser := McMarkdownParser parseSource: aString.
+	visitor := McMarkdownStylerVisitor
+		parser: parser
+		text: text
+		cursor: -1
+		palette: McRichEdit new palette
+		owner: anOwner.
+	visitor trusted: aBoolean.
+	visitor visit: parser root.
+	^ text!
+
+buttonIn: anElement
+	(anElement isKindOf: BrButton) ifTrue: [ ^ anElement ].
+	anElement children do: [ :each |
+		(self buttonIn: each) ifNotNil: [ :found | ^ found ] ].
+	^ nil!
+
+runButtonIn: aText
+	(self adornmentsIn: aText) do: [ :each |
+		(self buttonIn: each stencil build) ifNotNil: [ :found | ^ found ] ].
+	^ nil!
+
+evaluateInline: aBlock
+	"Keep the background job in hand and run it at once, so a test asserts
+	 what a run produced rather than racing it."
+	McCodeEvaluator executor: aBlock.
+	McCodeEvaluator jobRunner: [ :job | job value ]!
+
+documentAfterRunning: aSource
+	"Press the block's Run button and answer the document it wrote."
+	| owner text button |
+	owner := McRecordingOwner new.
+	text := self styleDocument: aSource trusted: true owner: owner.
+	button := self runButtonIn: text.
+	self assert: button notNil description: 'a trusted block should carry a Run button'.
+	button action value.
+	owner replaceCalls isEmpty ifTrue: [ ^ aSource ].
+	self assert: owner replaceCalls size equals: 1.
+	^ self apply: owner replaceCalls first to: aSource!
+
+apply: aCall to: aSource
+	^ aSource copyReplaceFrom: (aCall at: 1) to: (aCall at: 2) with: (aCall at: 3)!
+
+count: aSubstring in: aString
+	| count index found |
+	count := 0.
+	index := 1.
+	[ index <= aString size ] whileTrue: [
+		found := aString indexOfSubCollection: aSubstring startingAt: index.
+		found = 0 ifTrue: [ ^ count ].
+		count := count + 1.
+		index := found + aSubstring size ].
+	^ count! !
+
+!McMarkdownCodeTest methodsFor: 'tests - results fence location'!
+testABlockWithNoResultsFenceHasNoRange
+	self
+		assert: (McMarkdownCode resultsRangeIn: self blockSource after: self blockStop + 2)
+		isNil!
+
+testResultsFenceOnTheNextLineIsFound
+	| source |
+	source := '```python
+1
+```
+```results{2026-09-06T14:22:01.123Z}
+2
+```'.
+	self assert: (McMarkdownCode resultsRangeIn: source after: 15) notNil!
+
+testResultsFenceAfterOneBlankLineIsFound
+	| source |
+	source := '```python
+1
+```
+
+```results{2026-09-06T14:22:01.123Z}
+2
+```'.
+	self assert: (McMarkdownCode resultsRangeIn: source after: 15) notNil!
+
+testResultsFenceAfterTwoBlankLinesIsNotOurs
+	"Two blank lines put it far enough away that it belongs to something
+	 else, and rewriting it would destroy a result that is not this block's."
+	| source |
+	source := '```python
+1
+```
+
+
+```results{2026-09-06T14:22:01.123Z}
+2
+```'.
+	self assert: (McMarkdownCode resultsRangeIn: source after: 15) isNil!
+
+testProseBetweenMeansNoResultsFence
+	| source |
+	source := '```python
+1
+```
+
+Some prose.
+
+```results{2026-09-06T14:22:01.123Z}
+2
+```'.
+	self assert: (McMarkdownCode resultsRangeIn: source after: 15) isNil!
+
+testAnOrdinaryFenceAfterTheBlockIsNotAResultsFence
+	| source |
+	source := '```python
+1
+```
+
+```python
+2
+```'.
+	self assert: (McMarkdownCode resultsRangeIn: source after: 15) isNil!
+
+testUnterminatedResultsFenceAnswersNil
+	"Better to leave a broken document alone than to rewrite the wrong range
+	 of it."
+	| source |
+	source := '```python
+1
+```
+
+```results{2026-09-06T14:22:01.123Z}
+2'.
+	self assert: (McMarkdownCode resultsRangeIn: source after: 15) isNil!
+
+testResultsRangeStartsAtTheBlockEndSoClearingRemovesTheBlankLine
+	| source range cleared |
+	source := '```python
+1
+```
+
+```results{2026-09-06T14:22:01.123Z}
+2
+```'.
+	range := McMarkdownCode resultsRangeIn: source after: 15.
+	self assert: range first equals: 16.
+	self assert: range last equals: source size.
+	cleared := source copyReplaceFrom: range first to: range last with: ''.
+	self assert: cleared equals: '```python
+1
+```'! !
+
+!McMarkdownCodeTest methodsFor: 'tests - results fence text'!
+testResultsFenceCarriesTheTimestampAndTheOutput
+	| stamp fence |
+	stamp := DateAndTime
+		year: 2026 month: 9 day: 6
+		hour: 14 minute: 22 second: 1
+		nanoSecond: 123000000
+		offset: (Duration seconds: 0).
+	fence := McMarkdownCode resultsFenceFor: '12.0' at: stamp.
+	self assert: (fence includesSubstring: 'results{2026-09-06T14:22:01.123Z}').
+	self assert: (fence includesSubstring: '12.0')!
+
+testOutputContainingBackticksGetsALongerFence
+	"An interpreter that prints markdown must not be able to close the fence
+	 that is quoting it."
+	| fence |
+	fence := McMarkdownCode resultsFenceFor: 'a ``` b' at: DateAndTime now.
+	self assert: (fence includesSubstring: '````results{').
+	self assert: (fence includesSubstring: 'a ``` b')!
+
+testFenceWidthIsThreeForOrdinaryOutput
+	self assert: (McMarkdownCode fenceWidthFor: '12.0') equals: 3!
+
+testAWrittenResultsFenceParsesBackAsAResultsBlock
+	"The round trip that matters: what a run writes has to be recognised as
+	 output the next time the document is parsed, or the result renders as
+	 an ordinary code block forever."
+	| document parser info |
+	document := self blockSource ,
+		(McMarkdownCode resultsFenceFor: '12.0' at: DateAndTime now).
+	parser := McMarkdownParser parseSource: document.
+	info := nil.
+	parser root children do: [ :each |
+		(each class name asString = 'MicCodeBlock') ifTrue: [
+			(McMarkdownCode isResultsInfo: (each firstLine ifNil: [ '' ]))
+				ifTrue: [ info := each firstLine ] ] ].
+	self assert: info notNil description: 'the written fence should parse as a results block'! !
+
+!McMarkdownCodeTest methodsFor: 'tests - block running'!
+testUntrustedDocumentHasNoRunButton
+	"No button at all, rather than a disabled one: an untrusted document
+	 should not advertise a control it will not honour."
+	| text |
+	self evaluateInline: [ :language :expression | '12.0' ].
+	text := self styleDocument: self blockSource trusted: false owner: McRecordingOwner new.
+	self assert: (self runButtonIn: text) isNil!
+
+testTrustedDocumentHasARunButton
+	| text |
+	self evaluateInline: [ :language :expression | '12.0' ].
+	text := self styleDocument: self blockSource trusted: true owner: McRecordingOwner new.
+	self assert: (self runButtonIn: text) notNil!
+
+testABlockNeverEvaluatesUntilItsButtonIsPressed
+	"Unlike an inline expression, a fenced block is never run by rendering.
+	 That is Org Babel's rule and it is what makes a block safe to look at."
+	self evaluateInline: [ :language :expression | '12.0' ].
+	self styleDocument: self blockSource trusted: true owner: McRecordingOwner new.
+	self assert: McCodeEvaluator executionCount equals: 0!
+
+testRunWritesAResultsFenceAfterTheBlock
+	| document |
+	self evaluateInline: [ :language :expression | '12.0' ].
+	document := self documentAfterRunning: self blockSource.
+	self assert: (document includesSubstring: '```results{').
+	self assert: (document includesSubstring: '12.0').
+	self
+		assert: (document indexOfSubCollection: '```results{')
+			> (document indexOfSubCollection: '6 * 2')
+		description: 'the result belongs after the block that produced it'.
+	self
+		assert: (document indexOfSubCollection: '```results{')
+			< (document indexOfSubCollection: 'Tail para.')
+		description: 'and before whatever followed it'!
+
+testTheBlockItselfIsUntouched
+	| document |
+	self evaluateInline: [ :language :expression | '12.0' ].
+	document := self documentAfterRunning: self blockSource.
+	self assert: (document includesSubstring: '```python
+6 * 2
+```').
+	self assert: (document includesSubstring: 'Intro para.').
+	self assert: (document includesSubstring: 'Tail para.')!
+
+testRunningAgainReplacesTheFenceRatherThanAppendingASecond
+	"Otherwise a block accumulates one results fence per run."
+	| once twice |
+	self evaluateInline: [ :language :expression | '12.0' ].
+	once := self documentAfterRunning: self blockSource.
+	McCodeEvaluator clearCache.
+	self evaluateInline: [ :language :expression | '99.9' ].
+	twice := self documentAfterRunning: once.
+	self assert: (self count: '```results{' in: twice) equals: 1.
+	self assert: (twice includesSubstring: '99.9').
+	self deny: (twice includesSubstring: '12.0')!
+
+testFailedRunWritesNothing
+	| document |
+	self evaluateInline: [ :language :expression | self error: 'boom' ].
+	document := self documentAfterRunning: self blockSource.
+	self assert: document equals: self blockSource!
+
+testFailedRunRemovesAStaleResultsFence
+	"A stale success must not outlive the code that produced it."
+	| once after |
+	self evaluateInline: [ :language :expression | '12.0' ].
+	once := self documentAfterRunning: self blockSource.
+	self assert: (once includesSubstring: '```results{').
+	McCodeEvaluator clearCache.
+	self evaluateInline: [ :language :expression | self error: 'boom' ].
+	after := self documentAfterRunning: once.
+	self deny: (after includesSubstring: '```results{').
+	self assert: after equals: self blockSource!
+
+testFailureIsShownBesideTheButton
+	| text button |
+	self evaluateInline: [ :language :expression | self error: 'boom' ].
+	self documentAfterRunning: self blockSource.
+	"The failure is cached, so the next render shows it without re-running."
+	text := self styleDocument: self blockSource trusted: true owner: McRecordingOwner new.
+	button := self runButtonIn: text.
+	self assert: button notNil description: 'the button survives a failed run'.
+	self
+		assert: ((self adornmentsIn: text) anySatisfy: [ :each |
+			(self renderedTextOf: each stencil build) includesSubstring: 'boom' ])
+		description: 'the error should be visible beside the button'! !
+
+!McMarkdownCodeTest methodsFor: 'tests - re-run binding'!
+testTheRerunCommandIsRegisteredAndBound
+	"The tooltip on every rendered expression names this binding, so it has
+	 to exist -- a tooltip that names a keystroke nothing implements is worse
+	 than no tooltip."
+	| keymap |
+	keymap := McCommandKeymap richEditDefaults.
+	self assert: (keymap commandNames includes: #rerunAtCursor).
+	self assert: (keymap bindingFor: #rerunAtCursor in: #editor) notNil!
+
+testRerunFindsTheInlineExpressionUnderTheCursor
+	| editor source code |
+	source := 'radius `{python} 5 * 2` m'.
+	editor := McRichEdit new.
+	code := editor codeAt: ('radius `{python}' size) in: source.
+	self assert: code notNil.
+	self assert: code language equals: 'python'.
+	self assert: code isInline!
+
+testRerunFindsTheBlockUnderTheCursor
+	| editor code |
+	editor := McRichEdit new.
+	code := editor codeAt: (self blockSource indexOfSubCollection: '6 * 2') in: self blockSource.
+	self assert: code notNil.
+	self assert: code language equals: 'python'.
+	self assert: code isBlock!
+
+testRerunFindsNothingInOrdinaryProse
+	self
+		assert: (McRichEdit new codeAt: 3 in: 'just some prose') isNil! !

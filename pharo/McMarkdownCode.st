@@ -125,6 +125,102 @@ timestampStringFor: aDateAndTime
 			nextPutAll: (pad value: millis value: 3);
 			nextPut: $Z ]! !
 
+!McMarkdownCode class methodsFor: 'results fences'!
+resultsRangeIn: aSource after: aStop
+	"The range of the results fence belonging to a block ending at aStop,
+	 INCLUDING the newlines that separate it from the block -- or nil when
+	 the block has no results fence.
+
+	 The separator is inside the range on purpose, so that writing and
+	 clearing are the same operation over the same interval: replace it with
+	 the fence text to record a result, replace it with nothing to remove
+	 both the fence and the blank line that led to it.  That is what keeps a
+	 block from accumulating a second results fence every time it is run.
+
+	 At most one blank line may stand between the two.  Anything else -- a
+	 paragraph, a second blank line, another block -- means the fence found
+	 belongs to something else and must be left alone."
+	| size index lineStart lineEnd line blanks closeEnd |
+	aSource ifNil: [ ^ nil ].
+	size := aSource size.
+	index := aStop + 1.
+	blanks := 0.
+	[ index <= size ] whileTrue: [
+		lineStart := index.
+		lineEnd := self endOfLineIn: aSource from: lineStart.
+		line := (aSource copyFrom: lineStart to: (lineEnd max: lineStart - 1)) trimBoth.
+		line isEmpty
+			ifTrue: [
+				"Two of these: the line break ending the block, and one blank
+				 line the writer is allowed to leave in between."
+				blanks := blanks + 1.
+				blanks > 2 ifTrue: [ ^ nil ].
+				index := lineEnd + 2 ]
+			ifFalse: [
+				(line beginsWith: '```') ifFalse: [ ^ nil ].
+				(self isResultsInfo: (line allButFirst: 3)) ifFalse: [ ^ nil ].
+				closeEnd := self endOfFenceIn: aSource from: lineEnd + 2.
+				^ closeEnd ifNil: [ nil ] ifNotNil: [ aStop + 1 to: closeEnd ] ] ].
+	^ nil!
+
+endOfLineIn: aSource from: anIndex
+	"The index of the last character of the line beginning at anIndex.  For
+	 an empty line that is anIndex - 1, which is what makes the caller's
+	 lineEnd + 2 land on the line after."
+	| i |
+	i := anIndex.
+	[ i <= aSource size and: [ (aSource at: i) ~= Character lf ] ]
+		whileTrue: [ i := i + 1 ].
+	^ i - 1!
+
+endOfFenceIn: aSource from: anIndex
+	"The index of the last character of the line that closes a fence opened
+	 before anIndex, or nil when nothing closes it.  An unterminated results
+	 fence answers nil rather than a guess: better to leave a broken document
+	 alone than to rewrite the wrong range of it."
+	| size index lineStart lineEnd |
+	size := aSource size.
+	index := anIndex.
+	[ index <= size ] whileTrue: [
+		lineStart := index.
+		lineEnd := self endOfLineIn: aSource from: lineStart.
+		((aSource copyFrom: lineStart to: (lineEnd max: lineStart - 1)) trimBoth
+			beginsWith: '```') ifTrue: [ ^ lineEnd ].
+		index := lineEnd + 2 ].
+	^ nil!
+
+resultsFenceFor: anOutput at: aDateAndTime
+	"The text a successful run writes into the document, separator included.
+
+	 A results fence is real markdown, so the result survives outside this
+	 editor: another tool shows it as a code block with an unfamiliar
+	 language, which is a fair degradation of `this is output'."
+	| fence |
+	fence := String new: (self fenceWidthFor: anOutput) withAll: $`.
+	^ String streamContents: [ :out |
+		out
+			nextPut: Character lf;
+			nextPut: Character lf;
+			nextPutAll: fence;
+			nextPutAll: (self resultsInfoAt: aDateAndTime);
+			nextPut: Character lf;
+			nextPutAll: (anOutput ifNil: [ '' ]);
+			nextPut: Character lf;
+			nextPutAll: fence ]!
+
+fenceWidthFor: anOutput
+	"Three backticks, unless the output itself contains a run that long --
+	 an interpreter that prints markdown must not be able to close the fence
+	 that is quoting it."
+	| longest run |
+	longest := 0.
+	run := 0.
+	(anOutput ifNil: [ '' ]) do: [ :each |
+		each = $`
+			ifTrue: [ run := run + 1. longest := longest max: run ]
+			ifFalse: [ run := 0 ] ].
+	^ 3 max: longest + 1! !
+
 !McMarkdownCode methodsFor: 'initialization'!
 setLanguage: aLanguage expression: anExpression start: aStart stop: aStop bodyStart: aBodyStart bodyStop: aBodyStop fence: aFence isInline: aBoolean
 	language := aLanguage.

@@ -1035,6 +1035,59 @@ relativeDocumentPath
 		on: Error
 		do: [ :e | self documentFile basename ]!
 
+rerunAtCursor
+	"Drop the cached result for whatever the cursor is in and render again.
+
+	 Results never invalidate themselves -- a smalltalk expression reads live
+	 image state, and a subprocess may read a file that has changed since --
+	 so this is how a fresh one is asked for.  It is also the binding the
+	 tooltip on a rendered expression names: a cache with no visible way to
+	 clear it is a bug waiting to be reported."
+	| evaluator source code |
+	evaluator := Smalltalk at: #McCodeEvaluator ifAbsent: [ nil ].
+	evaluator ifNil: [ ^ self ].
+	source := [ editorElement editor text asString ] on: Error do: [ :e | nil ].
+	source ifNil: [ ^ self ].
+	code := self codeAt: self cursorPosition + 1 in: source.
+	code ifNil: [ ^ self showStatus: 'No labeled expression at the cursor' ].
+	evaluator forgetKey: code cacheKey.
+	code isInline
+		ifTrue: [ self showStatus: 'Re-running ' , code language ]
+		ifFalse: [
+			"A block is never run by rendering, so clearing its entry is all
+			 this can do; the Run button does the rest."
+			self showStatus: 'Cleared ' , code language , ' block -- press Run' ].
+	[ editorElement editor styleText ] on: Error do: [ :e | nil ]!
+
+codeAt: aPosition in: aSource
+	"The labeled expression or evaluable block containing aPosition, or nil.
+
+	 Inline spans come from the scanner, which reads any string; a fenced
+	 block has to come from the parser, because only it knows where a fence
+	 begins and ends."
+	| codeClass scannerClass parser |
+	codeClass := Smalltalk at: #McMarkdownCode ifAbsent: [ nil ].
+	codeClass ifNil: [ ^ nil ].
+	scannerClass := Smalltalk at: #McMarkdownCodeScanner ifAbsent: [ nil ].
+	scannerClass ifNotNil: [
+		([ scannerClass scan: aSource ] on: Error do: [ :e | #() ]) do: [ :each |
+			(aPosition between: each start and: each stop) ifTrue: [ ^ each ] ] ].
+	parser := [ self parserFor: aSource ] on: Error do: [ :e | nil ].
+	parser ifNil: [ ^ nil ].
+	parser root children do: [ :each |
+		| range language |
+		range := [ parser rangeOf: each ] on: Error do: [ :e | nil ].
+		(range notNil and: [ aPosition between: range first and: range last ]) ifTrue: [
+			language := codeClass languageFromInfo:
+				([ each firstLine ] on: Error do: [ :e | nil ]).
+			language ifNotNil: [
+				^ codeClass
+					blockLanguage: language
+					expression: ([ each body ] on: Error do: [ :e | '' ])
+					start: range first
+					stop: range last ] ] ].
+	^ nil!
+
 documentKey
 	"What trust is recorded against: the document's full path, or nil for a
 	 document that has never been saved.  A buffer with no name cannot be
