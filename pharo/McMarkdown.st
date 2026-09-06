@@ -920,7 +920,7 @@ runElementFor: aCode source: aSource
 	 results fence and rendered as one.  A failure leaves its message, taken
 	 from the evaluator's cache, so it costs the document nothing and
 	 disappears of its own accord when the next run succeeds."
-	| row button evaluator cached |
+	| row button evaluator cached tip |
 	row := BlElement new.
 	row layout: BlLinearLayout horizontal.
 	row constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
@@ -940,7 +940,34 @@ runElementFor: aCode source: aSource
 	cached := [ evaluator cachedAt: aCode cacheKey ] on: Error do: [ :e | nil ].
 	(cached notNil and: [ cached isFailed ]) ifTrue: [
 		row addChild: (self runNote: cached message colour: (self paletteAt: 'deadLink')) ].
+	tip := BrGlamorousWithExplicitTooltipAptitude new.
+	tip content: [ self runTooltipFor: aCode ].
+	row addAptitude: tip.
 	^ row!
+
+runTooltipFor: aCode
+	"What the button will run, and how to make it run afresh."
+	| container pal lines |
+	pal := palette.
+	container := BlElement new.
+	container layout: BlLinearLayout vertical.
+	container constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	container padding: (BlInsets top: 7 right: 9 bottom: 7 left: 9).
+	container background: (self paletteAt: 'codeBg').
+	container geometry: (BlRoundedRectangleGeometry cornerRadius: 4).
+	container border: (BlBorder paint: (self paletteAt: 'tableBorder') width: 1).
+	lines := OrderedCollection new.
+	lines add: 'text' -> (aCode language , ' block').
+	lines add: 'dimDelimiter' -> 'Run writes its result into the document'.
+	lines add: 'dimDelimiter' -> 'Cmd-Shift-E clears this block''s cached result'.
+	lines do: [ :each |
+		| line |
+		line := BlTextElement new.
+		line text: (each value asRopedText
+			foreground: (pal at: each key ifAbsent: [ Color gray ]);
+			fontSize: 12).
+		container addChild: line ].
+	^ container!
 
 runNote: aString colour: aColor
 	| label |

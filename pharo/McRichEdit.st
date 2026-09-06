@@ -419,7 +419,7 @@ computeVerticalScrollRange
 	^ self totalContentHeight max: self computeVerticalScrollExtent! !
 
 Object subclass: #McRichEdit
-	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel trustLabel trustCheckbox pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
+	instanceVariableNames: 'space editorElement editorFrame container titleLabel statusLabel toggleLabel trustLabel trustCheckbox reevalButton pathLabel pathTooltip searchBar searchInput searchCountLabel searchHighlightCheckbox searchWrapCheckbox commandKeymap darkMode buttonHandlers paletteCache cachedSource cachedParser lastStyledSource lastStyledCursor lastStyledBoundaries stylingSuspensionDepth pendingEditDescriptor renderSnapshot reconciler lastRenderWasPartial documentFile lastDocumentStamp watchProcess watchGeneration imageAdornmentCache imageCacheSource searchSession'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -730,6 +730,18 @@ openView
 	trustCheckbox whenCheckedDo: [ self trustDocument: true ].
 	trustCheckbox whenUncheckedDo: [ self trustDocument: false ].
 
+	"A visible door to re-evaluation.  Results are cached and never
+	 invalidate themselves, and the keystroke that clears one is not
+	 discoverable by looking at the window -- so the whole-document version
+	 gets a button rather than being folklore."
+	reevalButton := BrButton new.
+	reevalButton aptitude: BrGlamorousButtonWithLabelAptitude new.
+	reevalButton label: 'Re-eval'.
+	reevalButton beSmallSize.
+	reevalButton margin: (BlInsets right: 14).
+	reevalButton constraintsDo: [:c | c linear vertical alignCenter].
+	reevalButton action: [ self reevaluateDocument ].
+
 	toggleLabel := BrLabel new.
 	toggleLabel aptitude: BrGlamorousLabelAptitude new.
 	toggleLabel text: ('Dark Mode' asRopedText fontSize: 13).
@@ -750,6 +762,7 @@ openView
 	headerRow addChild: titleLabel.
 	headerRow addChild: trustLabel.
 	headerRow addChild: trustCheckbox.
+	headerRow addChild: reevalButton.
 	headerRow addChild: toggleLabel.
 	headerRow addChild: toggleButton.
 
@@ -1059,34 +1072,46 @@ rerunAtCursor
 			self showStatus: 'Cleared ' , code language , ' block -- press Run' ].
 	[ editorElement editor styleText ] on: Error do: [ :e | nil ]!
 
-codeAt: aPosition in: aSource
-	"The labeled expression or evaluable block containing aPosition, or nil.
+codesIn: aSource
+	"Every labeled expression and every evaluable block in aSource.
 
 	 Inline spans come from the scanner, which reads any string; a fenced
 	 block has to come from the parser, because only it knows where a fence
 	 begins and ends."
-	| codeClass scannerClass parser |
+	| codeClass scannerClass parser found |
+	found := OrderedCollection new.
 	codeClass := Smalltalk at: #McMarkdownCode ifAbsent: [ nil ].
-	codeClass ifNil: [ ^ nil ].
+	codeClass ifNil: [ ^ found ].
 	scannerClass := Smalltalk at: #McMarkdownCodeScanner ifAbsent: [ nil ].
 	scannerClass ifNotNil: [
-		([ scannerClass scan: aSource ] on: Error do: [ :e | #() ]) do: [ :each |
-			(aPosition between: each start and: each stop) ifTrue: [ ^ each ] ] ].
+		found addAll: ([ scannerClass scan: aSource ] on: Error do: [ :e | #() ]) ].
 	parser := [ self parserFor: aSource ] on: Error do: [ :e | nil ].
-	parser ifNil: [ ^ nil ].
+	parser ifNil: [ ^ found ].
 	parser root children do: [ :each |
 		| range language |
 		range := [ parser rangeOf: each ] on: Error do: [ :e | nil ].
-		(range notNil and: [ aPosition between: range first and: range last ]) ifTrue: [
+		range ifNotNil: [
 			language := codeClass languageFromInfo:
 				([ each firstLine ] on: Error do: [ :e | nil ]).
 			language ifNotNil: [
-				^ codeClass
+				found add: (codeClass
 					blockLanguage: language
 					expression: ([ each body ] on: Error do: [ :e | '' ])
 					start: range first
-					stop: range last ] ] ].
-	^ nil!
+					stop: range last) ] ] ].
+	^ found!
+
+codeAt: aPosition in: aSource
+	"The innermost labeled expression or evaluable block containing
+	 aPosition, or nil.  Innermost, so an expression written inside a block
+	 wins over the block that contains it."
+	^ (self codesIn: aSource) inject: nil into: [ :best :each |
+		(aPosition between: each start and: each stop)
+			ifFalse: [ best ]
+			ifTrue: [
+				(best isNil or: [ each stop - each start < (best stop - best start) ])
+					ifTrue: [ each ]
+					ifFalse: [ best ] ] ]!
 
 documentKey
 	"What trust is recorded against: the document's full path, or nil for a
@@ -1114,8 +1139,42 @@ trustDocument: aBoolean
 	aBoolean
 		ifTrue: [ evaluator trust: self documentKey ]
 		ifFalse: [ evaluator untrust: self documentKey ].
-	editorElement ifNotNil: [
-		[ editorElement editor styleText ] on: Error do: [ :e | nil ] ]!
+	self showStatus: (aBoolean
+		ifTrue: [ 'Trusted -- expressions evaluate; Re-eval or Cmd-Shift-E re-runs' ]
+		ifFalse: [ 'Untrusted -- nothing in this document will run' ]).
+	self restyleDocument!
+
+reevaluateDocument
+	"Forget every result this document's expressions and blocks produced,
+	 and render again.
+
+	 Toggling Trust deliberately does NOT do this: results survive a trust
+	 toggle so that turning trust off and back on does not cost a second run
+	 of everything.  This is the button for when a fresh answer is what you
+	 actually want."
+	| evaluator source codes |
+	evaluator := Smalltalk at: #McCodeEvaluator ifAbsent: [ nil ].
+	evaluator ifNil: [ ^ self ].
+	source := [ editorElement editor text asString ] on: Error do: [ :e | nil ].
+	codes := source ifNil: [ #() ] ifNotNil: [ self codesIn: source ].
+	codes do: [ :each | evaluator forgetKey: each cacheKey ].
+	self showStatus: (self isTrustedDocument
+		ifTrue: [ 'Re-evaluating ' , codes size printString , ' expression(s)' ]
+		ifFalse: [ 'Cleared ' , codes size printString
+			, ' cached result(s) -- tick Trust to evaluate' ]).
+	self restyleDocument!
+
+restyleDocument
+	"Ask for a fresh projection, on the UI process.
+
+	 Enqueued rather than sent directly, as applyPalette does: a caller may
+	 be a background job or the bus rather than a click, and styling a rope
+	 from a non-UI process fails."
+	editorElement ifNil: [ ^ self ].
+	[ editorElement enqueueTask: (BlTaskAction new action: [
+		[ editorElement editor styleText ] on: Error do: [ :e | nil ] ]) ]
+		on: Error
+		do: [ :e | [ editorElement editor styleText ] on: Error do: [ :err | nil ] ]!
 
 updateTrustComponent
 	"Trust is per document, so switching documents must re-read it rather

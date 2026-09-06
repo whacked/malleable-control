@@ -30,8 +30,12 @@ tearDown
 
 !McLauncherManifestTest methodsFor: 'helpers'!
 write: aName contents: aString
+	"Deleted first: writeStreamDo: does not truncate, so rewriting a file
+	 with shorter contents leaves the tail of the old one behind -- which
+	 reads back as a manifest that is a blend of both."
 	| ref |
 	ref := dir / aName.
+	ref ensureDelete.
 	ref writeStreamDo: [ :s | s nextPutAll: aString ].
 	^ ref!
 
@@ -188,3 +192,59 @@ testLoadAndOpenStaySeparateExpressions
 	self deny: (m loadExpression includesSubstring: 'McCorkboard open').
 	self assert: m openExpression equals: 'McCorkboard open'.
 	self deny: (m respondsTo: #launchExpression)! !
+
+!McLauncherManifestTest methodsFor: 'tests - reload freshness'!
+testLaunchingRereadsTheManifestFromDisk
+	"The card captures its manifest when the panel is built.  A source added
+	 to that manifest afterwards was never filed in, and nothing said so --
+	 every file the stale list named still existed, so there was no error
+	 anywhere; the tool just loaded an older set of sources and the new
+	 classes did not exist.  That silently cost labeled code its evaluator."
+	| captured fresh |
+	self touchSource: 'pharo/McCorkboardDocument.st'.
+	self touchSource: 'pharo/McCorkboard.st'.
+	self write: 'corkboard.json' contents: self goodJson.
+	captured := self readOne: 'corkboard.json'.
+	self assert: captured files size equals: 2.
+	"The manifest gains a source after the card was built."
+	self touchSource: 'pharo/McLate.st'.
+	self write: 'corkboard.json' contents: '{ "title": "Corkboard",
+	     "blurb": "Coordinate-addressable canvas",
+	     "files": ["pharo/McCorkboardDocument.st", "pharo/McCorkboard.st", "pharo/McLate.st"],
+	     "open": "McCorkboard open",
+	     "tests": ["McCorkboardTest"],
+	     "priority": 30 }'.
+	fresh := McLauncherSection new freshManifestFor: captured.
+	self assert: fresh files size equals: 3.
+	self assert: (fresh files includes: 'pharo/McLate.st').
+	self
+		assert: captured files size = 2
+		description: 'the captured manifest is left as it was'!
+
+testAMissingManifestFileFallsBackToTheCapturedOne
+	"A card whose file has been renamed or deleted goes on doing what it did
+	 before rather than breaking the home screen."
+	| captured fresh |
+	self touchSource: 'pharo/McCorkboardDocument.st'.
+	self touchSource: 'pharo/McCorkboard.st'.
+	self write: 'corkboard.json' contents: self goodJson.
+	captured := self readOne: 'corkboard.json'.
+	(dir / 'corkboard.json') ensureDelete.
+	fresh := McLauncherSection new freshManifestFor: captured.
+	self assert: fresh == captured!
+
+testAManifestBrokenSinceTheCardWasBuiltFallsBackToTheCapturedOne
+	"Half-saved JSON on disk must not disarm a card that was working.
+
+	 Note what makes this necessary: the JSON reader is lenient enough that
+	 a truncated file still parses, producing a manifest that reports itself
+	 valid while carrying no files and nothing to open."
+	| captured fresh |
+	self touchSource: 'pharo/McCorkboardDocument.st'.
+	self touchSource: 'pharo/McCorkboard.st'.
+	self write: 'corkboard.json' contents: self goodJson.
+	captured := self readOne: 'corkboard.json'.
+	self write: 'corkboard.json' contents: '{ "title": "Corkboard",'.
+	fresh := McLauncherSection new freshManifestFor: captured.
+	self assert: fresh == captured.
+	self assert: fresh isValid! !

@@ -218,6 +218,9 @@ style: aString cursor: anInteger trusted: aBoolean
 	"Style aString as a standalone fragment, the way a table cell is styled.
 	 owner: nil means the evaluation resolves on this process, so one pass
 	 produces the finished result and the test needs no callback."
+	^ self style: aString cursor: anInteger trusted: aBoolean owner: nil!
+
+style: aString cursor: anInteger trusted: aBoolean owner: anOwner
 	| text styler |
 	text := aString asRopedText.
 	styler := McMarkdownInlineStyler
@@ -227,7 +230,7 @@ style: aString cursor: anInteger trusted: aBoolean
 		text: text
 		cursor: anInteger
 		palette: McRichEdit new palette
-		owner: nil.
+		owner: anOwner.
 	styler trusted: aBoolean.
 	styler styleAll.
 	^ text!
@@ -678,3 +681,65 @@ testRerunFindsTheBlockUnderTheCursor
 testRerunFindsNothingInOrdinaryProse
 	self
 		assert: (McRichEdit new codeAt: 3 in: 'just some prose') isNil! !
+
+!McMarkdownCodeTest methodsFor: 'tests - the editor path'!
+testATrustedSpanWithAnOwnerActuallyEvaluates
+	"Every other rendering test styles with owner: nil, which resolves on the
+	 calling process.  The editor's real path has an owner and goes through
+	 the background job, and nothing exercised it -- so a break there would
+	 not have shown up in any of them."
+	| text adornments |
+	self evaluateInline: [ :language :expression | '10' ].
+	text := self
+		style: 'radius `{python} 5 * 2` m'
+		cursor: -1
+		trusted: true
+		owner: McRecordingOwner new.
+	self assert: McCodeEvaluator executionCount equals: 1.
+	adornments := self adornmentsIn: text.
+	self assert: adornments size equals: 1.
+	self
+		assert: ((self renderedTextOf: adornments first stencil build)
+			includesSubstring: '10')!
+
+testAnUntrustedSpanWithAnOwnerEvaluatesNothing
+	self evaluateInline: [ :language :expression | '10' ].
+	self
+		style: 'radius `{python} 5 * 2` m'
+		cursor: -1
+		trusted: false
+		owner: McRecordingOwner new.
+	self assert: McCodeEvaluator executionCount equals: 0!
+
+testTheStylerDegradesQuietlyWithoutTheScanner
+	"styleCode looks the scanner up dynamically so a partial reload cannot
+	 break rendering.  The cost is that a MISSING scanner is silent: labeled
+	 code renders as ordinary inline code and nothing says why.  That is what
+	 made a stale launcher manifest look like a broken feature, so the
+	 behaviour is pinned here deliberately rather than by accident."
+	| text |
+	text := self style: 'a `{python} 1` b' cursor: -1 trusted: true.
+	self assert: (self adornmentsIn: text) size equals: 1! !
+
+!McMarkdownCodeTest methodsFor: 'tests - whole-document re-eval'!
+testCodesInFindsBothInlineSpansAndBlocks
+	"What the Re-eval button clears."
+	| codes |
+	codes := McRichEdit new codesIn: 'a `{r} 1` b
+
+```python
+2
+```'.
+	self assert: codes size equals: 2.
+	self assert: (codes anySatisfy: [ :each | each isInline and: [ each language = 'r' ] ]).
+	self assert: (codes anySatisfy: [ :each | each isBlock and: [ each language = 'python' ] ])!
+
+testCodesInIgnoresProseAndPlainCode
+	self assert: (McRichEdit new codesIn: 'prose with `plain code` in it') isEmpty!
+
+testTheInnermostCodeWinsAtAPosition
+	"An expression written inside a block belongs to the expression."
+	| source editor |
+	editor := McRichEdit new.
+	source := 'x `{r} 1` y'.
+	self assert: (editor codeAt: 5 in: source) language equals: 'r'! !

@@ -296,19 +296,64 @@ reloadFrom: aButton
 
 !McLauncherSection methodsFor: 'launching'!
 launch: aManifest from: aButton
-	"Every click re-files the sources from disk, then opens.  Editing a .st
-	 and pressing the button reloads it, which is what keeps this card and the
-	 Emacs command the same thing rather than two things that drift.
+	"Every click re-reads the manifest and re-files the sources from disk,
+	 then opens.  Editing a .st and pressing the button reloads it, which is
+	 what keeps this card and the Emacs command the same thing rather than
+	 two things that drift.
+
+	 Re-reading the MANIFEST matters as much as re-reading the sources, and
+	 it used not to happen: the card captured its manifest when the panel was
+	 built, so a source added to a manifest afterwards was never filed in.
+	 The tool loaded its older set of files and the new classes simply did
+	 not exist -- with no error anywhere, because every file the stale list
+	 named was still there.  That silently cost labeled code its whole
+	 evaluator until the panel was rebuilt.
 
 	 A manifest that cannot run says why on the button and stops there: a
 	 raise here would open a debugger over the home screen."
-	aManifest isValid ifFalse: [
-		^ self report: aManifest parseError on: aButton ].
-	aManifest isSatisfiable ifFalse: [
+	| manifest |
+	manifest := self freshManifestFor: aManifest.
+	manifest isValid ifFalse: [
+		^ self report: manifest parseError on: aButton ].
+	manifest isSatisfiable ifFalse: [
 		^ self
-			report: 'missing: ' , (', ' join: aManifest missingFiles)
+			report: 'missing: ' , (', ' join: manifest missingFiles)
 			on: aButton ].
-	self launch: aManifest from: aButton showing: (self titleLabelUnder: aButton)!
+	self launch: manifest from: aButton showing: (self titleLabelUnder: aButton)!
+
+freshManifestFor: aManifest
+	"The manifest as it is on disk now, or the captured one when it cannot be
+	 re-read.
+
+	 Its own file, by home and name, rather than a scan of the directory:
+	 re-reading one file is what a click needs, and it keeps a card working
+	 when it came from somewhere other than the default launchers directory.
+
+	 Falling back rather than failing at every step -- a card whose file has
+	 been renamed or deleted should go on doing what it did before, not
+	 break the home screen."
+	| file fresh |
+	file := [ aManifest home asFileReference / 'launchers' / (aManifest name , '.json') ]
+		on: Error
+		do: [ :e | nil ].
+	file ifNil: [ ^ aManifest ].
+	([ file exists ] on: Error do: [ :e | false ]) ifFalse: [ ^ aManifest ].
+	fresh := [ McLauncherManifest fromFile: file home: aManifest home ]
+		on: Error
+		do: [ :e | nil ].
+	"Valid is not enough.  The JSON reader is lenient, so a half-saved file
+	 -- one write into a manifest, caught mid-flight -- parses as a manifest
+	 with no files and nothing to open, and that reads as valid.  Loading it
+	 would file nothing in and open nothing, silently.  A fresh manifest has
+	 to actually carry a tool before it is allowed to replace the one that
+	 was working."
+	^ (fresh notNil
+		and: [ fresh isValid
+		and: [ fresh files notEmpty
+		and: [ fresh openExpression notNil
+		and: [ fresh openExpression trimBoth notEmpty ] ] ] ])
+		ifTrue: [ fresh ]
+		ifFalse: [ aManifest ]!
 
 launch: aManifest from: aButton showing: aTitleLabel
 	"aTitleLabel is the card's visible caption.  It has to be driven
