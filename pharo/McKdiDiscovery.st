@@ -8,9 +8,10 @@ A context block is the `context block' step of KDI's chain
 and it is the normal slice candidate.  The class is still called McKdiBundle,
 because `bundle' is what `kdi discovery bundles' calls it and renaming the class
 would break every caller; the SCREENS say context block, which is the word the
-public model uses.  It is implemented by the generic EvidenceSet container --
-the storage word for what this explorer calls a Selection -- so its id is an
-`est-' one and the container name alone never tells you which set type you hold.
+public model uses.  During the migration it is mirrored by the generic
+EvidenceSet container, which historically represented both reading groups and
+selections.  Its compatibility id is therefore still an `est-' one; the set type,
+not the container name, says which concept it represents.
 
 The reason this file exists is the walk the Textual workbench lists as
 impossible: from a context block down into its passages and their source text.
@@ -179,7 +180,7 @@ summaryRows
 	 object rather than forwarding past it."
 	^ {
 			{ 'id'. self id }.
-			{ 'set type'. 'local-topic-bundle (a Selection container)' }.
+			{ 'set type'. 'local-topic-bundle (legacy ContextBlock mirror)' }.
 			{ 'policy'. self policy }.
 			{ 'source'. self sourceUri }.
 			{ 'revision'. self sourceRevisionId }.
