@@ -56,6 +56,13 @@ note := [ :text |
         note value: 'launcher panel loaded' ]
         on: Error
         do: [ :e | note value: 'launcher panel not loaded: ' , e messageText printString ].
+      "The bus lights.  Guarded separately from the launcher panel rather than
+       folded into it: they are two independent home-screen sections, and one
+       failing to compile must not cost you the other."
+      [ (home , '/pharo/McBusStatus.st') asFileReference fileIn.
+        note value: 'bus status panel loaded' ]
+        on: Error
+        do: [ :e | note value: 'bus status panel not loaded: ' , e messageText printString ].
       "Patches to GT's own code. Kept out of the image on purpose, so they
        are version controlled and reapplied every start. A patch that fails
        must not stop the bus connection below."
@@ -64,7 +71,14 @@ note := [ :text |
         do: [ :e | note value: 'patches failed: ' , e messageText printString ].
       "Forked: a down bus must not stall the image coming up."
       [ [ (Smalltalk at: #McGtService) start.
-          note value: 'connected' ]
+          note value: 'connected'.
+          "The home screen was built and probed BEFORE this fork got here, so
+           its lights say the bus is down -- which was true when they were
+           drawn and is not any more.  Probing again on arrival is what stops
+           every launch from showing three red lights until someone presses
+           Check."
+          (Smalltalk at: #McBusStatus ifAbsent: [ nil ])
+            ifNotNil: [ :statusClass | statusClass current probe ] ]
           on: Error
           do: [ :e | note value: 'could not connect: ' , e messageText printString ] ] fork ] ]
   on: Error
