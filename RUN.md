@@ -231,6 +231,14 @@ under `launchers/`, and three things read that directory:
 None of the three keeps a list of its own, so they cannot disagree about what
 is launchable or in what order it loads. Adding a tool is adding one file.
 
+One thing the manifest does *not* carry: where a suite's own `.st` lives. The
+runner names `pharo/Mc*Test.st` files explicitly, because a test class has to
+exist before `Smalltalk at:` can find it and the manifest only lists the classes
+to run. **A new suite is therefore two edits** — the class names in the
+manifest's `tests`, and a `fileIn` line in `test/run-pharo-tests.sh`. Forgetting
+the second is loud rather than silent: the runner reports `NO SUCH TEST CLASS`
+and fails.
+
 ```json
 {
   "title":    "Corkboard",

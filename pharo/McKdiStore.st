@@ -18,7 +18,7 @@ Chunk format: load with fileIn.
 "!
 
 Object subclass: #McKdiStore
-	instanceVariableNames: 'binding statusAnswer sources ingestPaths pipelineProfile lastPlan lastIngest lastJob previousPlan bundles discoveryAnswer recipe runningLabel inspectorPager'
+	instanceVariableNames: 'binding statusAnswer sources ingestPaths pipelineProfile lastPlan lastIngest lastJob previousPlan bundles discoveryAnswer recipe runningLabel inspectorPager graph'
 	classVariableNames: 'Session'
 	package: 'MalleableControl'!
 
@@ -278,6 +278,16 @@ recipe: aRecipe
 	recipe := aRecipe! !
 
 
+!McKdiStore methodsFor: 'graph'!
+graph
+	"One graph query per store, for the same reason there is one recipe: the
+	 seeds you searched for are still there when you come back to the tab."
+	^ graph ifNil: [ graph := McKdiGraph store: self ]!
+
+graph: aGraph
+	graph := aGraph! !
+
+
 !McKdiStore methodsFor: 'opening'!
 open
 	"Inspect this store.  The inspector is the explorer: there is no separate
@@ -399,8 +409,8 @@ bundlesTabTitle
 	 and `how many candidates does a slice choose from' is the first question the
 	 slice layer asks."
 	^ self hasBundles
-		ifTrue: [ 'Bundles (', self bundles size printString, ')' ]
-		ifFalse: [ 'Bundles' ]!
+		ifTrue: [ 'Context blocks (', self bundles size printString, ')' ]
+		ifFalse: [ 'Context blocks' ]!
 
 gtBundlesFor: aView
 	<gtView>
@@ -409,12 +419,28 @@ gtBundlesFor: aView
 		priority: 55;
 		items: [ self hasBundles ifTrue: [ self bundles ] ifFalse: [ #() ] ];
 		column: '#' text: [ :each | ((self bundles indexOf: each) ifNil: [ 0 ]) asString ] width: 44;
-		column: 'bundle' text: [ :each | each id asString ];
+		column: 'context block' text: [ :each | each id asString ];
 		column: 'source' text: [ :each | each sourceUri asString ];
 		column: 'passages' text: [ :each | each memberCount asString ] width: 100;
 		column: 'chars' text: [ :each | each chars asString ] width: 90;
 		column: 'extent' text: [ :each | each extentDescription ] width: 160;
 		send: [ :each | each ]!
+
+gtGraphFor: aView
+	<gtView>
+	"A list rather than a forward, for the reason the Slice tab gives: GT builds
+	 the action bar from the object being inspected, so a forwarded view would
+	 render the graph while the toolbar still belonged to the store, and none of
+	 the graph's own read buttons would appear.  Clicking any row opens the
+	 graph itself."
+	^ aView columnedList
+		title: 'Graph';
+		priority: 59;
+		items: [ self graph settingRows ];
+		column: 'field' text: [ :each | each first ];
+		column: 'value' text: [ :each | (each second ifNil: [ '--' ]) asString ];
+		column: 'kind' text: [ :each | each third ] width: 300;
+		send: [ :each | self graph ]!
 
 gtSliceFor: aView
 	<gtView>
@@ -438,12 +464,12 @@ gtDiscoveryFor: aView
 		title: 'Discovery';
 		priority: 58;
 		items: [ {
-			{ 'bundles'. self discoveryAt: 'bundles' }.
+			{ 'context blocks'. self discoveryAt: 'bundles' }.
 			{ 'topics'. self discoveryAt: 'topics' }.
 			{ 'boundary fields'. self discoveryAt: 'boundary_fields' }.
 			{ 'boundary observations'. self discoveryAt: 'boundary_observations' }.
 			{ 'neighborhoods'. self discoveryAt: 'neighborhoods' }.
-			{ 'bundle policies'. (self discoveryAt: 'bundle_policies')
+			{ 'context block policies'. (self discoveryAt: 'bundle_policies')
 				ifNil: [ '--' ] ifNotNil: [ :p | p isEmpty ifTrue: [ '(none)' ]
 					ifFalse: [ ', ' join: (p collect: [ :e | e asString ]) ] ] } } ];
 		column: 'field' text: [ :each | each first ];
@@ -564,7 +590,7 @@ gtDiscoveryActionFor: anAction
 	^ anAction button
 		label: (self actionLabel: 'Run discovery');
 		priority: 35;
-		tooltip: 'kdi discovery run --topics none -- derives the bundles a slice selects over; writes';
+		tooltip: 'kdi discovery run --topics none -- derives the context blocks a slice selects over; writes';
 		action: [ :aButton | self runOffUi: [ self runDiscovery. self refreshBundles ] from: aButton labelled: 'Run discovery' ]!
 
 gtInitActionFor: anAction

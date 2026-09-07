@@ -117,7 +117,7 @@ callsDescription
 summaryRows
 	^ {
 		{ 'slice'. self sliceName }.
-		{ 'slice (EvidenceSet)'. self sliceId }.
+		{ 'slice (a Selection)'. self sliceId }.
 		{ 'packet'. self packetId }.
 		{ 'inference'. self inferenceId }.
 		{ 'report'. self reportId }.

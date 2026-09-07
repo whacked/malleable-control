@@ -239,7 +239,7 @@ sources in, installs the binding from the settings above, and inspects one
 `McKdiStore` in GT. That inspector **is** the explorer.
 
 The store's own tabs are Preflight, Sources, Ingestion, Plan, Last ingest,
-Transcript and Binding, with four buttons: **Refresh**, **Plan update** (writes
+Graph, Transcript and Binding, with four buttons: **Refresh**, **Plan update** (writes
 nothing, calls nothing external), **Ingest** (canonical evidence only, no
 enrichment stage, so no provider is reachable) and **Initialize store**. Each
 button runs its subprocess off the UI process, so the image stays usable.
@@ -248,9 +248,10 @@ From there, selecting a row opens the object it names:
 
 ```text
 McKdiStore -> McKdiSource -> McKdiNode -> McKdiPassage
-                  |              |             `- Grounding, Text, Selector
-                  |              `- Children, Passages (N of M shown), Provenance
-                  `- Structure (tree), QC audit, Passages
+     |            |              |             `- Grounding, Text, Selector
+     |            |              `- Children, Passages (N of M shown), Provenance
+     |            `- Structure (tree), QC audit, Passages
+     `- McKdiGraph -> McKdiEntity / McKdiGraphNode -> McKdiPassage -> Grounding
 ```
 
 Every object also carries a **Raw** view of the JSON it was built from and a
@@ -265,23 +266,41 @@ Run things without opening a window:
 (mc-kdi-ingest)   ; kdi ingest over mc-kdi-paths
 ```
 
-### The derived layer — bundles and slices
+### Vocabulary
 
-Bundles are the *context block* step of the chain, and the normal slice
+The screens use the public model's words, not the storage schema's:
+
+| on screen | in the payload | what it is |
+|---|---|---|
+| **Passage** | `occurrence`, `occurrence_id` | one exact citable appearance of source text at one location, with a selector |
+| **Context block** | `bundle`, `bundle_id` | a derived grouping of passages; the normal slice candidate |
+| **Selection** | `EvidenceSet`, `est-…` | the immutable set a materialized slice is |
+
+The Smalltalk class names are unchanged — `McKdiBundle` is still `McKdiBundle`,
+because renaming it would break every caller and nothing about the class is a
+user-facing surface. What changed is the accessors and the labels. A passage id
+*is* an occurrence id, so `passageId`, `passageIds`, `passageCount` and
+`memberPassageIds` are now the names to use; `occurrenceId`, `occurrenceIds`,
+`occurrenceCount`, `subtreeOccurrenceCount` and `memberOccurrenceIds` remain as
+deprecated aliases that answer exactly the same thing.
+
+### The derived layer — context blocks and slices
+
+Context blocks are the *context block* step of the chain, and the normal slice
 candidate. They do not exist until discovery has derived them, which the store's
 **Run discovery** button does (`kdi discovery run --topics none` — it writes
-bundles, and reaches no provider; topics are left off because `auto` evaluates a
+blocks, and reaches no provider; topics are left off because `auto` evaluates a
 recorded grid).
 
 ```emacs-lisp
 (mc-kdi-discovery)   ; run it without opening a window
 ```
 
-The store then grows **Discovery**, **Bundles** and **Slice** tabs. Selecting a
-bundle opens it with its reconstructed **Text** and its **Passages** — and
-selecting a passage row there walks straight down to that passage's grounding.
-That walk, from a derived grouping into the exact source characters, is the one
-the Textual workbench lists under its own Known limits as impossible.
+The store then grows **Discovery**, **Context blocks** and **Slice** tabs.
+Selecting a block opens it with its reconstructed **Text** and its **Passages** —
+and selecting a passage row there walks straight down to that passage's
+grounding. That walk, from a derived grouping into the exact source characters,
+is the one the Textual workbench lists under its own Known limits as impossible.
 
 The **Slice** tab lists the recipe; **click any row to open the recipe itself**,
 which is where its buttons live. (GT builds the action bar from the object being
@@ -308,18 +327,46 @@ setters, so either surface works; nothing in the walkthrough needs Emacs.
 The loop is write-free up to the last line:
 
 ```text
-McKdiSliceRecipe  -- query, limit, set type, sources, tier ceiling, mask
+McKdiSliceRecipe  -- query, limit, set type, sources, tier ceiling, graph seeds, mask
    |  Plan matches (writes nothing)
 McKdiSlicePlan    -- Candidates, Provider coverage, Plan, Notes, Specification
    |
-McKdiSliceCandidate -- Why it ranked, Bundle, Passages, Text
+McKdiSliceCandidate -- Why it ranked, Context block, Passages, Text
    |
 McKdiBundle -> McKdiBundleMember -> McKdiPassage -> Grounding
    |  Plan packet (writes nothing)
 McKdiPacket -> McKdiPacketItem -> McKdiPassage -> Grounding
    |
-McKdiSliceRecipe -- Materialize (WRITES: the definition and one EvidenceSet)
+McKdiSliceRecipe -- Materialize (WRITES: the definition and one Selection)
 ```
+
+#### The graph aspect, and why it ranked
+
+A recipe can carry **graph seeds**. Seed it and the backend ranks candidates by
+how they sit relative to those entities in the graph — still only a *ranking*,
+because a graph aspect excludes nothing either. The recipe sends the seeds as a
+`--graph-*` block, and sends nothing at all when there are no seeds:
+
+| recipe field | flag |
+|---|---|
+| graph seeds | `--graph-seed ID`, once per seed |
+| graph max hops | `--graph-max-hops N` |
+| graph direction | `--graph-direction out\|in\|both` |
+| graph snapshot max vertices | `--graph-max-vertices N` |
+| graph traversal result limit | `--graph-traversal-limit N` |
+| graph relations | `--graph-relation NAME`, once per relation |
+| graph minimum candidate score | `--graph-minimum-score F`, omitted when unset |
+
+All six are in `Edit recipe`, and both `--plan` and `--run` carry the same block —
+they are two argvs off one base, so the preview and the write cannot mean
+different things.
+
+The payoff is on the candidate's **Why it ranked** tab, which now has a **path
+travelled** column: a graph contribution carries the arcs it travelled, and each
+one names the relation that justifies the hop. Clicking a contribution opens its
+**Path** tab, one row per arc, and an arc opens the passages that ground it. So
+"it ranked because of the graph" reads as a chain you can follow down to source
+characters rather than a number you have to trust.
 
 ### The packet -- what a report is actually built from
 
@@ -342,13 +389,13 @@ screen a bundle member does.
 ### The one write
 
 `Materialize (WRITES)` runs `slice create --run`: it saves the definition under
-the recipe's name and materializes one immutable EvidenceSet. `--plan` and
+the recipe's name and materializes one immutable Selection. `--plan` and
 `--run` are refused together by the CLI, so it is a different argv rather than a
 flag added to the plan's.
 
 It is previewable. The plan already computes the identity the slice *would*
 have, so the Recipe tab's `slice id` row reads either `prospective --
-Materialize would write this EvidenceSet` or `already exists -- materializing
+Materialize would write this Selection` or `already exists -- materializing
 would reuse it, not write` before you press anything. Afterwards the
 **Materialized** tab reports the definition id, whether that version is new or
 identical to the saved one, what it supersedes, and whether the result was
@@ -391,6 +438,47 @@ recipe's **Plan diff** tab lists gained, lost and moved candidates with their
 rank movement, and the store's **Plan diff** does the same per stage for two
 `kdi update plan` runs.
 
+
+### The entity graph — read only
+
+The store's **Graph** tab opens `McKdiGraph`. Every command in that layer is a
+read: there is no Materialize button and no argv carrying `--run`, which is what
+makes it safe to click through a corpus you have not seen yet. `McKdiGraph`'s
+**Commands** tab prints the exact argv of every verb the layer will ever run, so
+the vocabulary can be compared against `kdi --help` without reading any
+Smalltalk and without spending a subprocess.
+
+| button | command | what it answers |
+|---|---|---|
+| Search seeds | `kdi entities find Q` | the stored entities a display name might mean |
+| Preview snapshot budget | `kdi graph snapshot plan` | whether the full analytical snapshot fits its allocation budget |
+| Neighbours | `kdi graph neighbors ID` | one hop out, under the direction and relation filter |
+| Traverse | `kdi graph traverse --root ID` | ranked nodes within the hop and result budgets |
+| Path | `kdi graph path A B` | the arcs joining two entities |
+| Read the relation catalogue | `kdi graph relation-types` / `stats` / `validate` | what a relation is allowed to be, graph coverage, and integrity defects |
+
+The budget preview is the one worth pressing first. It states `REFUSED — over
+budget; no partial snapshot was built` or `FITS`, directly from the backend's
+`within_budget` result and its estimated vertices, edges, and bytes.
+
+Walking out of the graph is the point. A node whose kind is `passage` — or
+`occurrence`, both spellings are recognised — resolves through one `kdi passage
+show` to an `McKdiPassage` with its **Grounding**, the same screen a context
+block member reaches. Arcs do it too: an arc carries the passage ids that ground
+it, and an arc with none is reported as `NO — no passage is recorded for this
+arc` rather than as a blank cell.
+
+An entity also carries **Seed the slice with this**, which adds it to the slice
+recipe as a `--graph-seed` and replans — the join between finding an entity and
+ranking context blocks around it.
+
+**One place names the commands.** `McKdiGraphCommands` is the whole graph
+vocabulary this image believes the CLI publishes, as class-side methods
+returning argv; nothing else builds a graph argv. If a verb or a flag is spelled
+differently in your `kdi`, the repair is one method rather than a search across
+ten views, and a verb this `kdi` does not have fails the way every other failure
+in this explorer does: a non-zero exit, the backend's own words, and the argv
+that produced them.
 
 ### Adding a view while you are looking at the data
 

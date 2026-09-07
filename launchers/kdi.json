@@ -1,6 +1,6 @@
 {
   "title": "KDI Explorer",
-  "blurb": "Moldable alternative to kdi tui; drill down from source to grounding",
+  "blurb": "Moldable alternative to kdi tui; drill down from source to grounding, and out through the entity graph",
   "files": [
     "pharo/McKdi.st",
     "pharo/McKdiEvidence.st",
@@ -8,9 +8,16 @@
     "pharo/McKdiDiscovery.st",
     "pharo/McKdiInfer.st",
     "pharo/McKdiSlice.st",
-    "pharo/McKdiReport.st"
+    "pharo/McKdiReport.st",
+    "pharo/McKdiGraph.st"
   ],
   "open": "McKdiStore openLauncherSession",
+  "tests": [
+    "McKdiGraphCommandsTest",
+    "McKdiGraphTest",
+    "McKdiSliceGraphTest",
+    "McKdiPassageVocabularyTest"
+  ],
   "priority": 10,
-  "note": "McKdiEvidence defines McKdiObject, which every other class subclasses, so reloading it alone leaves the rest stale. Always file these in as a set. No tests key: the KDI classes have no suite yet."
+  "note": "McKdiEvidence defines McKdiObject, which every other class subclasses, so reloading it alone leaves the rest stale. Always file these in as a set. McKdiGraph is last because McKdiSlice's contributions build McKdiGraphArc; the reference is resolved at run time, so the order only has to put McKdiObject first. The suites live in pharo/McKdiGraphTest.st and run against a fake binding, so nothing here needs a live kdi."
 }

@@ -9,6 +9,12 @@ A passage is one exact citable appearance of source text at one location, with a
 selector.  Morsel and occurrence are private storage vocabulary and deliberately
 are not modelled here, even though a passage id is still an occurrence id.
 
+That applies to the ACCESSORS too, not only to the labels: McKdiNode answers
+passageCount and subtreePassageCount, and keeps occurrenceCount and
+subtreeOccurrenceCount as deprecated aliases answering the same numbers.  The
+payload keys are untouched -- occurrence_count is what the backend sends, and
+renaming it here would be inventing a contract nobody agreed to.
+
 Every object holds the McKdiAnswer it was built from, so every screen names the
 command that produced it and can be reproduced by pasting that command.  Every
 accessor tolerates a missing key and answers nil, because the point of this
@@ -234,8 +240,8 @@ gtStructureFor: aView
 		children: [ :each | each children ];
 		column: 'structure' text: [ :each | each treeLabel ];
 		column: 'type' text: [ :each | each nodeType asString ] width: 120;
-		column: 'direct' text: [ :each | each occurrenceCount asString ] width: 80;
-		column: 'subtree' text: [ :each | each subtreeOccurrenceCount asString ] width: 90!
+		column: 'direct' text: [ :each | each passageCount asString ] width: 80;
+		column: 'subtree' text: [ :each | each subtreePassageCount asString ] width: 90!
 
 gtPassagesFor: aView
 	<gtView>
@@ -312,19 +318,19 @@ title
 stableKey
 	^ self at: 'stable_key'!
 
-occurrenceCount
+passageCount
 	"Direct passages on this node only.  The tree answer's occurrence_count is
 	 not a subtree total: for a document root it is 0 while the root's subtree
 	 holds every passage in the revision."
 	^ (self at: 'occurrence_count') ifNil: [ 0 ]!
 
-subtreeOccurrenceCount
+subtreePassageCount
 	"What `kdi passage list` on this node would be scoped to, computed here
 	 because the backend answer does not carry it."
 	^ subtreeCount ifNil: [
 		subtreeCount := self children
-			inject: self occurrenceCount
-			into: [ :sum :each | sum + each subtreeOccurrenceCount ] ]!
+			inject: self passageCount
+			into: [ :sum :each | sum + each subtreePassageCount ] ]!
 
 children
 	^ source childrenOf: self id!
@@ -335,6 +341,18 @@ treeLabel
 	self title ifNotNil: [ :t | t isEmpty ifFalse: [ ^ t ] ].
 	self stableKey ifNotNil: [ :k | k isEmpty ifFalse: [ ^ k ] ].
 	^ self id asString! !
+
+
+!McKdiNode methodsFor: 'deprecated - compatibility'!
+occurrenceCount
+	"DEPRECATED -- use passageCount.  Occurrence is the storage word; passage is
+	 the public one.  Kept because the two names denote the same number and
+	 nothing written against the old one should break."
+	^ self passageCount!
+
+subtreeOccurrenceCount
+	"DEPRECATED -- use subtreePassageCount."
+	^ self subtreePassageCount! !
 
 
 !McKdiNode methodsFor: 'passages'!
@@ -384,8 +402,8 @@ gtChildrenFor: aView
 		children: [ :each | each children ];
 		column: 'structure' text: [ :each | each treeLabel ];
 		column: 'type' text: [ :each | each nodeType asString ] width: 120;
-		column: 'direct' text: [ :each | each occurrenceCount asString ] width: 80;
-		column: 'subtree' text: [ :each | each subtreeOccurrenceCount asString ] width: 90!
+		column: 'direct' text: [ :each | each passageCount asString ] width: 80;
+		column: 'subtree' text: [ :each | each subtreePassageCount asString ] width: 90!
 
 gtPassagesFor: aView
 	<gtView>
@@ -407,8 +425,8 @@ gtNodeFor: aView
 			{ 'stable key'. self stableKey }.
 			{ 'depth'. self depth }.
 			{ 'ordinal'. self ordinal }.
-			{ 'passages here'. self occurrenceCount }.
-			{ 'passages in subtree'. self subtreeOccurrenceCount }.
+			{ 'passages here'. self passageCount }.
+			{ 'passages in subtree'. self subtreePassageCount }.
 			{ 'parent'. self parentId }.
 			{ 'source'. source uri } } ];
 		column: 'field' text: [ :each | each first ];

@@ -16,15 +16,27 @@ Two distinctions this file makes visible, because the Textual form does not:
   survivors and are fused by reciprocal rank fusion.  An aspect never excludes
   anything, so a query is not a `must contain these words' boundary.
 
-A candidate is an EvidenceSet, normally a context bundle.  Slices do not select
-passages directly -- but a candidate can be walked down into its passages, which
-is what McKdiSliceCandidate>>bundle is for.
+A candidate is a context block -- a Selection member.  Slices do not select
+passages directly, but a candidate can be walked down into its passages, which
+is what McKdiSliceCandidate>>bundle is for.  The materialized result is a
+Selection; EvidenceSet is the storage word for the same container, and the
+screens deliberately do not use it.
+
+THE GRAPH ASPECT.  A recipe can carry graph seeds, and then the backend ranks
+candidates by how they sit relative to those seeds in the entity graph.  That is
+still only a ranking -- a graph aspect excludes nothing either.  What makes it
+worth surfacing separately is the provenance: a graph contribution carries the
+ARCS it travelled, each naming the relation that justifies the hop, so `it
+ranked because of the graph' can be read as a chain rather than taken on trust.
+McKdiSliceContribution>>pathArcs is that chain, and it reuses McKdiGraphArc so
+an arc reached from a slice and an arc reached from a walk are one object with
+one set of columns.
 
 Chunk format: load with fileIn.
 "!
 
 Object subclass: #McKdiSliceRecipe
-	instanceVariableNames: 'store name query limit setType sourceUris tierCeiling excludes excludeReason lastPlan previousPlan keywords keywordMode keywordMatch keywordNegate planAnswer lastRun runAnswer lastBuild buildAnswer maxTokens maxBundles maxPerSource interpret'
+	instanceVariableNames: 'store name query limit setType sourceUris tierCeiling excludes excludeReason lastPlan previousPlan keywords keywordMode keywordMatch keywordNegate planAnswer lastRun runAnswer lastBuild buildAnswer maxTokens maxBundles maxPerSource interpret graphSeeds graphDepth graphRelations graphDirection graphMaxNodes graphTraversalLimit graphMinWeight'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -44,7 +56,7 @@ McKdiObject subclass: #McKdiSliceCandidate
 	package: 'MalleableControl'!
 
 McKdiObject subclass: #McKdiSliceContribution
-	instanceVariableNames: ''
+	instanceVariableNames: 'graph'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -72,6 +84,8 @@ setStore: aStore
 	keywordMode := 'all'.
 	keywordMatch := 'token'.
 	keywordNegate := false.
+	graphSeeds := OrderedCollection new.
+	graphRelations := OrderedCollection new.
 	^ self! !
 
 
@@ -168,6 +182,74 @@ keywordDescription
 	^ (self keywordNegate ifTrue: [ 'NOT ' ] ifFalse: [ '' ]),
 		(' ', self keywordMode asUppercase, ' ') join: self keywords!
 
+graphSeeds
+	"Entity ids the graph aspect ranks from.  An ASPECT, not a filter: a
+	 candidate no seed reaches is ranked last, never removed.  The whole graph
+	 block is left off the argv when this is empty, because a graph aspect with
+	 nothing to start from would only add a flag the backend has to refuse."
+	^ graphSeeds ifNil: [ graphSeeds := OrderedCollection new ]!
+
+graphSeeds: aCollection
+	graphSeeds := aCollection asOrderedCollection!
+
+addGraphSeed: anId
+	(self graphSeeds includes: anId) ifFalse: [ self graphSeeds add: anId ].
+	^ self plan!
+
+removeGraphSeed: anId
+	self graphSeeds remove: anId ifAbsent: [ nil ].
+	^ self plan!
+
+clearGraphSeeds
+	graphSeeds := OrderedCollection new.
+	^ self plan!
+
+graphDepth
+	^ graphDepth ifNil: [ 2 ]!
+
+graphDepth: anInteger
+	graphDepth := anInteger!
+
+graphRelations
+	"Which relations the aspect may travel.  Empty means every relation."
+	^ graphRelations ifNil: [ graphRelations := OrderedCollection new ]!
+
+graphRelations: aCollection
+	graphRelations := aCollection asOrderedCollection!
+
+graphDirection
+	^ graphDirection ifNil: [ 'both' ]!
+
+graphDirection: aString
+	graphDirection := aString!
+
+graphMaxNodes
+	^ graphMaxNodes ifNil: [ 200 ]!
+
+graphMaxNodes: anInteger
+	graphMaxNodes := anInteger!
+
+graphTraversalLimit
+	^ graphTraversalLimit ifNil: [ 50 ]!
+
+graphTraversalLimit: anInteger
+	graphTraversalLimit := anInteger!
+
+graphMinWeight
+	^ graphMinWeight!
+
+graphMinWeight: aNumber
+	graphMinWeight := aNumber!
+
+hasGraphAspect
+	^ self graphSeeds notEmpty!
+
+graphDescription
+	self hasGraphAspect ifFalse: [ ^ '(none)' ].
+	^ (', ' join: (self graphSeeds collect: [ :e | e asString ])),
+		' to depth ', self graphDepth printString,
+		' (', self graphDirection, ')'!
+
 lastPlan
 	^ lastPlan!
 
@@ -201,8 +283,8 @@ lastBuild
 
 maxTokens
 	"The packet's token budget.  NOT a slice parameter: the slice chooses which
-	 bundles, this chooses how many of them the packet can afford.  A slice of
-	 five bundles under a budget that fits one produces a one-source packet, and
+	 context blocks, this chooses how many of them the packet can afford.  A
+	 slice of five blocks under a budget that fits one produces a one-source packet, and
 	 the interpretation then rejects it for being one source."
 	^ maxTokens ifNil: [ 6000 ]!
 
@@ -253,7 +335,7 @@ reportFormRows
 	^ {
 		{ 'max tokens -- the packet budget'. self maxTokens printString.
 			[ :s | maxTokens := s asInteger ifNil: [ maxTokens ] ] }.
-		{ 'max bundles'. self maxBundles printString.
+		{ 'max context blocks'. self maxBundles printString.
 			[ :s | maxBundles := s asInteger ifNil: [ maxBundles ] ] }.
 		{ 'max per source'. self maxPerSource printString.
 			[ :s | maxPerSource := s asInteger ifNil: [ maxPerSource ] ] }.
@@ -296,9 +378,28 @@ baseArguments
 	setType ifNotNil: [ :s | args add: '--set-type'; add: s ].
 	tierCeiling ifNotNil: [ :t | args add: '--tier-ceiling'; add: t ].
 	self sourceUris do: [ :each | args add: '--source'; add: each ].
+	args addAll: self graphArguments.
 	self excludes do: [ :each | args add: '--exclude'; add: each ].
 	self excludes ifNotEmpty: [ args add: '--exclude-reason'; add: excludeReason ].
 	args add: '--limit'; add: limit printString.
+	^ args asArray!
+
+graphArguments
+	"The --graph-* block, or nothing at all.  Kept as its own method because it
+	 is the one part of the argv both modes share that can be empty for a
+	 reason rather than by omission, and because a reader asking `what does the
+	 graph aspect actually send' should find one answer rather than a branch
+	 inside a longer method."
+	| args |
+	self hasGraphAspect ifFalse: [ ^ #() ].
+	args := OrderedCollection new.
+	self graphSeeds do: [ :each | args add: '--graph-seed'; add: each asString ].
+	args add: '--graph-max-hops'; add: self graphDepth printString.
+	args add: '--graph-direction'; add: self graphDirection asString.
+	args add: '--graph-max-vertices'; add: self graphMaxNodes printString.
+	args add: '--graph-traversal-limit'; add: self graphTraversalLimit printString.
+	self graphRelations do: [ :each | args add: '--graph-relation'; add: each asString ].
+	graphMinWeight ifNotNil: [ :w | args add: '--graph-minimum-score'; add: w printString ].
 	^ args asArray!
 
 planArguments
@@ -378,7 +479,7 @@ materialize
 	"THE write.  Every other thing this recipe does -- planning, masking, cycling
 	 a keyword mode -- saves nothing.  This one saves the definition (superseding
 	 the previous version if the recipe has changed since) and materializes one
-	 immutable EvidenceSet.  It is a separate argv because the CLI refuses --plan
+	 immutable Selection.  It is a separate argv because the CLI refuses --plan
 	 and --run together."
 	| a |
 	a := self binding runJson: self materializeCommand.
@@ -435,10 +536,15 @@ recipeRows
 			{ 'keyword match'. self keywordMatch.
 				'token | substring | phrase' }.
 			{ 'limit'. limit. 'take' }.
-			{ 'set type'. setType ifNil: [ '(default: bundles)' ]. 'FILTER -- exact' }.
+			{ 'set type'. setType ifNil: [ '(default: context blocks)' ]. 'FILTER -- exact' }.
 			{ 'source URIs'. self sourceUris ifEmpty: [ '(all)' ] ifNotEmpty: [ :u | ', ' join: u ].
 				'FILTER -- exact' }.
 			{ 'tier ceiling'. tierCeiling ifNil: [ '(none)' ]. 'FILTER -- exact' }.
+			{ 'graph seeds'. self graphDescription.
+				'ASPECT -- ranks by the entity graph, never excludes' }.
+			{ 'graph relations'. self graphRelations ifEmpty: [ '(all)' ]
+				ifNotEmpty: [ :r | ', ' join: (r collect: [ :e | e asString ]) ].
+				'which relations the aspect may travel' }.
 			{ 'masked candidates'. self excludes size. 'FILTER -- exact, write-free' }.
 			{ 'slice id'. self sliceId ifNil: [ '(plan first)' ].
 				self resultDescription } }!
@@ -447,11 +553,11 @@ resultDescription
 	"Whether materializing this recipe would be new work.  The plan already
 	 computes the identity the slice WOULD have, so the one write in this loop
 	 can be described before it happens."
-	lastRun ifNotNil: [ ^ 'MATERIALIZED -- this EvidenceSet is in the store' ].
+	lastRun ifNotNil: [ ^ 'MATERIALIZED -- this Selection is in the store' ].
 	lastPlan ifNil: [ ^ 'not planned yet' ].
 	^ lastPlan exists
 		ifTrue: [ 'already exists -- materializing would reuse it, not write' ]
-		ifFalse: [ 'prospective -- Materialize would write this EvidenceSet' ]!
+		ifFalse: [ 'prospective -- Materialize would write this Selection' ]!
 
 gtPlannedFor: aView
 	<gtView>
@@ -562,7 +668,7 @@ gtReportSettingsFor: aView
 		priority: 56;
 		items: [ {
 			{ 'max tokens (packet budget)'. self maxTokens }.
-			{ 'max bundles'. self maxBundles }.
+			{ 'max context blocks'. self maxBundles }.
 			{ 'max per source'. self maxPerSource }.
 			{ 'interpret before drafting'. self interpret
 				ifTrue: [ 'yes -- judges whether the packet is worth a dossier' ]
@@ -626,7 +732,20 @@ formRows
 		{ 'tier ceiling'. tierCeiling ifNil: [ '' ].
 			[ :s | tierCeiling := s trimBoth ifEmpty: [ nil ] ] }.
 		{ 'source URIs -- space separated'. ' ' join: self sourceUris.
-			[ :s | sourceUris := (s substrings: ' ') asArray ] } }!
+			[ :s | sourceUris := (s substrings: ' ') asArray ] }.
+		{ 'graph seeds -- ASPECT, entity ids, space separated'. ' ' join: self graphSeeds.
+			[ :s | self graphSeeds: (s substrings: ' ') ] }.
+		{ 'graph max hops'. self graphDepth printString.
+			[ :s | graphDepth := s asInteger ifNil: [ graphDepth ] ] }.
+		{ 'graph direction -- out / in / both'. self graphDirection asString.
+			[ :s | graphDirection := s trimBoth ifEmpty: [ 'both' ] ] }.
+		{ 'graph snapshot max vertices'. self graphMaxNodes printString.
+			[ :s | graphMaxNodes := s asInteger ifNil: [ graphMaxNodes ] ] }.
+		{ 'graph traversal result limit'. self graphTraversalLimit printString.
+			[ :s | graphTraversalLimit := s asInteger ifNil: [ graphTraversalLimit ] ] }.
+		{ 'graph relations -- space separated, empty means all'.
+			' ' join: self graphRelations.
+			[ :s | self graphRelations: (s substrings: ' ') ] } }!
 
 formElementFrom: anElement
 	^ self formElementFrom: anElement rows: self formRows label: 'Apply and replan (writes nothing)' then: [ self plan ]!
@@ -682,7 +801,7 @@ gtEditActionFor: anAction
 	^ anAction dropdown
 		label: 'Edit recipe';
 		priority: 5;
-		tooltip: 'Set the name, query, keywords, limit, set type, tier ceiling and sources, then replan';
+		tooltip: 'Set the name, query, keywords, limit, set type, tier ceiling, sources and the graph aspect, then replan';
 		content: [ :anElement | self formElementFrom: anElement ]!
 
 gtReportSettingsActionFor: anAction
@@ -691,7 +810,7 @@ gtReportSettingsActionFor: anAction
 	^ anAction dropdown
 		label: (store actionLabel: 'Report settings');
 		priority: 55;
-		tooltip: 'The packet budget the report build resolves under. Not part of the slice: it decides how many of the slice''s bundles the packet can afford';
+		tooltip: 'The packet budget the report build resolves under. Not part of the slice: it decides how many of the slice''s context blocks the packet can afford';
 		content: [ :anElement | self reportFormElementFrom: anElement ]!
 
 gtMaterializeActionFor: anAction
@@ -702,7 +821,7 @@ gtMaterializeActionFor: anAction
 	^ anAction button
 		label: (store actionLabel: 'Materialize (WRITES)');
 		priority: 50;
-		tooltip: 'kdi slice create --run: saves the definition and materializes one immutable EvidenceSet. ',
+		tooltip: 'kdi slice create --run: saves the definition and materializes one immutable Selection. ',
 			self resultDescription;
 		action: [ :aButton | store runOffUi: [ self materialize ] from: aButton labelled: 'Materialize' ]!
 
@@ -807,7 +926,7 @@ specHash
 	^ self at: 'spec_hash'!
 
 exists
-	"Whether the store already holds the EvidenceSet this plan would produce.
+	"Whether the store already holds the Selection this plan would produce.
 	 The identity covers every input, so `true' means materializing is a reuse."
 	^ (self at: 'exists') = true!
 
@@ -903,7 +1022,7 @@ gtCandidatesFor: aView
 		column: 'state' text: [ :each | each state ] width: 90;
 		column: 'rank' text: [ :each | each rankDescription ] width: 70;
 		column: 'fused score' text: [ :each | each scoreDescription ] width: 110;
-		column: 'candidate (EvidenceSet)' text: [ :each | each candidateId asString ];
+		column: 'candidate (context block)' text: [ :each | each candidateId asString ];
 		column: 'entry reason' text: [ :each | each entryReason asString ];
 		send: [ :each | each ]!
 
@@ -1023,7 +1142,7 @@ saveRows
 
 resultRows
 	^ {
-		{ 'slice (EvidenceSet)'. self sliceId }.
+		{ 'slice (a Selection)'. self sliceId }.
 		{ 'result'. self isReuse
 			ifTrue: [ 'reused -- identical inputs, identical slice' ]
 			ifFalse: [ 'created' ] }.
@@ -1054,8 +1173,8 @@ gtRunFor: aView
 
 gtMembersFor: aView
 	<gtView>
-	"The members as materialized.  They open the bundle they name, which is the
-	 same walk the plan's candidates offer."
+	"The members as materialized.  They open the context block they name, which
+	 is the same walk the plan's candidates offer."
 	^ aView columnedList
 		title: 'Members';
 		priority: 20;
@@ -1124,13 +1243,22 @@ rankDescription
 scoreDescription
 	^ self fusedScore ifNil: [ '--' ] ifNotNil: [ :s | s printShowingDecimalPlaces: 6 ]!
 
+graph
+	"The store's graph, so a contribution's arcs can resolve their passages.
+	 Reached through the plan and the recipe, and nil when either is missing --
+	 a contribution built outside a plan still renders, it just cannot walk."
+	^ plan
+		ifNil: [ nil ]
+		ifNotNil: [ :p | p recipe ifNil: [ nil ] ifNotNil: [ :r | r store graph ] ]!
+
 contributions
 	"Every provider's contribution, including providers that measured nothing:
 	 `unrepresented' and `never ran' are different facts and the table keeps
 	 both."
 	| present measured |
 	measured := ((self at: 'contributions') ifNil: [ #() ])
-		collect: [ :each | McKdiSliceContribution json: each answer: answer ].
+		collect: [ :each | (McKdiSliceContribution json: each answer: answer)
+			setGraph: self graph ].
 	plan ifNil: [ ^ measured ].
 	present := measured collect: [ :each | each provider ].
 	^ measured, (plan coverageRows
@@ -1140,8 +1268,9 @@ contributions
 
 !McKdiSliceCandidate methodsFor: 'bundle'!
 bundle
-	"The candidate as the context bundle it actually is -- which is how you walk
-	 a planned match down into its passages and their source text."
+	"The candidate as the context block it actually is -- which is how you walk
+	 a planned match down into its passages and their source text.  The selector
+	 keeps its old name so no caller breaks; the screens say context block."
 	^ bundle ifNil: [
 		bundle := McKdiBundle store: plan recipe store id: self candidateId ]!
 
@@ -1173,16 +1302,17 @@ gtContributionsFor: aView
 		column: 'availability' text: [ :each | each availability asString ] width: 140;
 		column: 'measurement' text: [ :each | each measurementDescription ] width: 150;
 		column: 'rank' text: [ :each | each rankDescription ] width: 70;
+		column: 'path travelled' text: [ :each | each pathDescription ] width: 260;
 		column: 'reason' text: [ :each | each reason asString ];
 		send: [ :each | each ]!
 
 gtBundleFor: aView
 	<gtView>
-	"Clicking any row LANDS on the bundle.  A forward here showed the bundle's
-	 fields while leaving the bundle itself unreachable -- and with it the Plan
+	"Clicking any row LANDS on the block.  A forward here showed the block's
+	 fields while leaving the block itself unreachable -- and with it the Plan
 	 packet button, which GT builds from the object you are actually on."
 	^ aView columnedList
-		title: 'Bundle';
+		title: 'Context block';
 		priority: 20;
 		items: [ self bundle summaryRows ];
 		column: 'field' text: [ :each | each first ];
@@ -1212,7 +1342,7 @@ gtCandidateFor: aView
 		priority: 50;
 		items: [ {
 			{ 'candidate id'. self candidateId }.
-			{ 'what it is'. 'an EvidenceSet -- normally a context bundle' }.
+			{ 'what it is'. 'a context block -- the normal Selection member' }.
 			{ 'state'. self state }.
 			{ 'fused rank'. self rankDescription }.
 			{ 'fused score'. self scoreDescription }.
@@ -1247,6 +1377,13 @@ unmeasuredFor: aCoverageRow
 
 
 !McKdiSliceContribution methodsFor: 'accessing'!
+setGraph: aGraph
+	graph := aGraph.
+	^ self!
+
+graph
+	^ graph!
+
 provider
 	^ self at: 'provider'!
 
@@ -1282,9 +1419,99 @@ reason
 	^ (self at: 'reason') ifNil: [ '' ]! !
 
 
+!McKdiSliceContribution methodsFor: 'path provenance'!
+pathArcRows
+	"The arcs a graph provider travelled to reach this candidate.  The payload
+	 already carries them; nothing rendered them, so `it ranked because of the
+	 graph' was a claim with no chain behind it.
+
+	 Three keys are read because a per-arc chain is worth more than an exact
+	 spelling: `path' is what the contribution uses, and `graph_path' and `arcs'
+	 are the two other names the same list plausibly travels under.  A key that
+	 is not there costs an empty table, which is the correct answer for a
+	 lexical provider."
+	^ (self at: 'path')
+		ifNil: [ (self at: 'graph_path')
+			ifNil: [ (self at: 'arcs') ifNil: [ #() ] ] ]!
+
+pathArcs
+	"McKdiGraphArc, not a private arc class: an arc reached from a slice
+	 contribution and an arc reached from a graph walk are the same thing, and
+	 giving them one object means one set of columns and one passage walk."
+	^ self pathArcRows collect: [ :each |
+		(McKdiGraphArc json: each answer: answer) setGraph: graph ]!
+
+hasPath
+	^ self pathArcRows notEmpty!
+
+pathLength
+	^ self pathArcRows size!
+
+pathDescription
+	"The chain in one line, each hop naming the relation that justifies it.
+	 A provider that travelled no arcs says so rather than showing a blank."
+	| arcs |
+	arcs := self pathArcs.
+	arcs ifEmpty: [ ^ '--' ].
+	^ String streamContents: [ :s |
+		s nextPutAll: arcs first fromId asString.
+		arcs do: [ :each |
+			s nextPutAll: ' -['; nextPutAll: each relation asString; nextPutAll: ']-> '.
+			s nextPutAll: each toId asString ] ]!
+
+seedId
+	"Which seed this contribution was reached from, when the payload names one."
+	^ (self at: 'seed') ifNil: [ (self at: 'seed_id') ifNil: [
+		self pathArcs ifEmpty: [ nil ] ifNotEmpty: [ :a | a first fromId ] ] ]! !
+
+
+!McKdiSliceContribution methodsFor: 'rows'!
+contributionRows
+	^ {
+		{ 'provider'. self provider }.
+		{ 'provider version'. self providerVersion }.
+		{ 'availability'. self availability }.
+		{ 'measurement'. self measurementDescription }.
+		{ 'rank'. self rankDescription }.
+		{ 'score'. self score }.
+		{ 'matched role'. self matchedRole }.
+		{ 'seed'. self seedId }.
+		{ 'hops'. self hasPath ifTrue: [ self pathLength ] ifFalse: [ '(no arcs recorded)' ] }.
+		{ 'path'. self pathDescription }.
+		{ 'reason'. self reason } }! !
+
+
 !McKdiSliceContribution methodsFor: 'printing'!
 printOn: aStream
 	aStream nextPutAll: 'McKdiSliceContribution(', self provider asString, ' ', self availability asString, ')'! !
+
+
+!McKdiSliceContribution methodsFor: 'views'!
+gtPathFor: aView
+	<gtView>
+	"Per arc, in the order travelled.  An arc opens as an McKdiGraphArc, so from
+	 here you can reach the passages that justify the hop -- which is the whole
+	 difference between a ranking you can audit and a number."
+	self hasPath ifFalse: [ ^ aView empty ].
+	^ aView columnedList
+		title: 'Path';
+		priority: 10;
+		items: [ self pathArcs ];
+		column: 'hop' text: [ :each | (self pathArcs indexOf: each) asString ] width: 50;
+		column: 'relation' text: [ :each | each relation asString ] width: 180;
+		column: 'from' text: [ :each | each fromId asString ];
+		column: 'to' text: [ :each | each toId asString ];
+		column: 'grounded' text: [ :each | each isGrounded asString ] width: 90;
+		send: [ :each | each ]!
+
+gtContributionFor: aView
+	<gtView>
+	^ aView columnedList
+		title: 'Contribution';
+		priority: 20;
+		items: [ self contributionRows ];
+		column: 'field' text: [ :each | each first ];
+		column: 'value' text: [ :each | (each second ifNil: [ '--' ]) asString ]! !
 
 
 !McKdiCoverageRow methodsFor: 'accessing'!

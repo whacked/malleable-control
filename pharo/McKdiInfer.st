@@ -1,7 +1,7 @@
 "
-McKdiInfer -- the evidence packet, the step between a selection and a report.
+McKdiInfer -- the evidence packet, the step between a Selection and a report.
 
-    revision -> passage -> context block -> selection -> PROMPT PACKET -> report
+    revision -> Passage -> context block -> Selection -> PROMPT PACKET -> report
 
 `kdi infer plan' answers the packet a report would be drafted over: every item
 it holds, every candidate it REFUSED and why, the source distribution, the
@@ -9,16 +9,16 @@ overlap suppression, the tier and the token budget -- before anything could be
 sent to a model.
 
 Two things make it worth a screen of its own.  It writes nothing when asked not
-to (`--no-cache'), and it takes exactly one subject: a topic, a bundle, or a
-materialized slice.  A recipe is not a subject, so the write-free slice loop
-cannot reach a packet without first materializing something -- except through a
-bundle, which the explorer is already holding.  That is why the packet is
-reachable from McKdiBundle: it is the one crossing into this layer that costs
-nothing.
+to (`--no-cache'), and it takes exactly one subject: a topic, a context block,
+or a materialized Selection.  A recipe is not a subject, so the write-free slice
+loop cannot reach a packet without first materializing something -- except
+through a context block, which the explorer is already holding.  That is why the
+packet is reachable from McKdiBundle: it is the one crossing into this layer
+that costs nothing.
 
-The exclusions table is the point.  A packet that quietly dropped a bundle is a
-report with a hole in it, and `reason' plus `detail' name the rule that dropped
-it.
+The exclusions table is the point.  A packet that quietly dropped a context
+block is a report with a hole in it, and `reason' plus `detail' name the rule
+that dropped it.
 
 Chunk format: load with fileIn.
 "!
@@ -123,7 +123,7 @@ summaryRows
 		{ 'tier'. self tier }.
 		{ 'items'. self items size }.
 		{ 'excluded'. self exclusions size }.
-		{ 'occurrences'. self coverageAt: 'occurrences' }.
+		{ 'passages'. self coverageAt: 'occurrences' }.
 		{ 'tokens'. (self coverageAt: 'tokens_selected') asString, ' of ',
 			(self coverageAt: 'tokens_budget') asString }.
 		{ 'sources'. (self coverageAt: 'sources_represented') asString, ' of ',
@@ -148,7 +148,7 @@ gtItemsFor: aView
 		column: 'role' text: [ :each | each role asString ] width: 90;
 		column: 'relevance' text: [ :each | each relevanceDescription ] width: 90;
 		column: 'tokens' text: [ :each | each tokenEstimate asString ] width: 80;
-		column: 'passages' text: [ :each | each occurrenceIds size asString ] width: 90;
+		column: 'passages' text: [ :each | each passageIds size asString ] width: 90;
 		column: 'overlap' text: [ :each | each overlapDescription ] width: 110;
 		column: 'why it is in the packet' text: [ :each | each entryReason asString ];
 		send: [ :each | each ]!
@@ -186,10 +186,10 @@ gtCoverageFor: aView
 gtBundlesFor: aView
 	<gtView>
 	^ aView columnedList
-		title: 'Bundles';
+		title: 'Context blocks';
 		priority: 30;
 		items: [ self bundleIds ];
-		column: 'bundle (EvidenceSet)' text: [ :each | each asString ];
+		column: 'context block' text: [ :each | each asString ];
 		send: [ :each | McKdiBundle store: store id: each ]!
 
 gtLimitationsFor: aView
@@ -251,7 +251,9 @@ tokenEstimate
 entryReason
 	^ self at: 'entry_reason'!
 
-occurrenceIds
+passageIds
+	"The public name for occurrence_ids.  A packet item is passages, and this
+	 is the list the Passages tab walks down."
 	^ (self at: 'occurrence_ids') ifNil: [ #() ]!
 
 overlapDescription
@@ -275,8 +277,8 @@ itemRows
 		{ 'role'. self role }.
 		{ 'relevance'. self relevanceDescription }.
 		{ 'tokens'. self tokenEstimate }.
-		{ 'passages'. self occurrenceIds size }.
-		{ 'bundle'. self bundleId }.
+		{ 'passages'. self passageIds size }.
+		{ 'context block'. self bundleId }.
 		{ 'source'. self at: 'source_uri' }.
 		{ 'revision'. self at: 'source_revision_id' }.
 		{ 'tier'. self at: 'tier' }.
@@ -284,6 +286,12 @@ itemRows
 		{ 'has vector'. self at: 'has_vector' }.
 		{ 'member overlap'. self overlapDescription }.
 		{ 'entry reason'. self entryReason } }! !
+
+
+!McKdiPacketItem methodsFor: 'deprecated - compatibility'!
+occurrenceIds
+	"DEPRECATED -- use passageIds."
+	^ self passageIds! !
 
 
 !McKdiPacketItem methodsFor: 'printing'!
@@ -306,7 +314,7 @@ gtPassagesFor: aView
 	^ aView columnedList
 		title: 'Passages';
 		priority: 20;
-		items: [ self occurrenceIds ];
+		items: [ self passageIds ];
 		column: 'passage' text: [ :each | each asString ];
 		send: [ :each | self passageFor: each ]!
 
@@ -322,8 +330,8 @@ gtItemFor: aView
 gtBundleFor: aView
 	<gtView>
 	^ aView columnedList
-		title: 'Bundle';
+		title: 'Context block';
 		priority: 40;
 		items: [ { self bundleId } ];
-		column: 'bundle (EvidenceSet)' text: [ :each | each asString ];
+		column: 'context block' text: [ :each | each asString ];
 		send: [ :each | McKdiBundle store: packet store id: each ]! !
