@@ -586,7 +586,7 @@ import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ok, strictEqual } from "node:assert/strict";
-import { after, describe, it } from "node:test";
+import { describe, it } from "node:test";
 import { classifySshFailure, runSsh } from "../lib/ssh-run.ts";
 
 /** A stand-in for the ssh binary, so the transport is testable offline. */
@@ -601,11 +601,11 @@ function fake(name: string, body: string): string {
 const echoArgs = fake("echo-args", `for a in "$@"; do printf '%s\\n' "$a"; done`);
 const echoStdin = fake("echo-stdin", `cat`);
 const fails = fake("fails", `echo "boom" >&2; exit 42`);
-const sleeps = fake("sleeps", `sleep 30`);
+// The trailing command stops sh from exec-replacing itself, so this fixture
+// reliably has a grandchild — which is the case that breaks a naive kill.
+const sleeps = fake("sleeps", `sleep 30\necho done`);
 const floods = fake("floods", `head -c 1000000 /dev/zero`);
 const binary = fake("binary", `printf '\\000\\001\\377\\376'`);
-
-after(() => {});
 
 describe("runSsh", () => {
   it("passes argv through untouched", async () => {
@@ -627,9 +627,20 @@ describe("runSsh", () => {
     strictEqual(result.stderr.trim(), "boom");
   });
 
-  it("kills a hung call and reports it", async () => {
+  it("kills a hung call within the timeout, not when the hang ends", async () => {
+    const started = Date.now();
     const result = await runSsh({ argv: [], timeoutMs: 250, sshBin: sleeps });
+    const elapsed = Date.now() - started;
     strictEqual(result.timedOut, true);
+    // The elapsed assertion is the point. The flag alone passes even when the
+    // promise settles 30s late: killing only the immediate pid leaves the
+    // grandchild holding the stdio pipe, and `close` waits for it.
+    ok(elapsed < 5_000, `settled after ${elapsed}ms — the kill missed the grandchild`);
+  });
+
+  it("does not crash the host when the child exits before stdin is written", async () => {
+    const result = await runSsh({ argv: [], stdin: "x".repeat(100_000), sshBin: fails });
+    strictEqual(result.code, 42);
   });
 
   it("stops reading past maxBytes rather than buffering forever", async () => {
@@ -658,6 +669,11 @@ describe("classifySshFailure", () => {
     ok(/host key/i.test(
       classifySshFailure({ ...base, stderr: "Host key verification failed." }) ?? "",
     ));
+  });
+
+  it("says when it stopped reading an oversized reply", () => {
+    const message = classifySshFailure({ ...base, code: null, truncated: true, stderr: "" });
+    ok(/too large/i.test(message ?? ""), message ?? "(null)");
   });
 
   it("says nothing about a successful call", () => {
@@ -713,7 +729,22 @@ export function runSsh(opts: {
   return new Promise<SshResult>((resolve) => {
     const child = spawn(opts.sshBin ?? "ssh", opts.argv, {
       stdio: ["pipe", "pipe", "pipe"],
+      // Its own process group. ssh is routinely reached through a wrapper
+      // script or a ProxyCommand, and killing only the immediate pid leaves
+      // the grandchild alive holding the stdio pipe — so `close` never fires
+      // and the timeout we are enforcing waits out the hang it exists to cut.
+      detached: true,
     });
+
+    /** Kill the whole group. An already-dead child is not an error. */
+    const killTree = () => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    };
 
     const chunks: Buffer[] = [];
     let total = 0;
@@ -724,7 +755,7 @@ export function runSsh(opts: {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      killTree();
     }, timeoutMs);
 
     const finish = (code: number | null) => {
@@ -744,7 +775,7 @@ export function runSsh(opts: {
       total += chunk.length;
       if (total > maxBytes) {
         truncated = true;
-        child.kill("SIGKILL");
+        killTree();
         return;
       }
       chunks.push(chunk);
@@ -762,6 +793,10 @@ export function runSsh(opts: {
     });
     child.on("close", (code) => finish(code));
 
+    // A child that exits before stdin is fully written raises EPIPE. With no
+    // listener Node rethrows it as an unhandled error event and takes the whole
+    // plugin host down; the exit code already tells the caller what happened.
+    child.stdin.on("error", () => {});
     if (opts.stdin !== undefined) child.stdin.end(opts.stdin);
     else child.stdin.end();
   });
@@ -775,6 +810,9 @@ export function runSsh(opts: {
 export function classifySshFailure(result: SshResult): string | null {
   if (result.code === 0 && !result.timedOut && !result.truncated) return null;
   if (result.timedOut) return "The host did not answer in time.";
+  if (result.truncated) {
+    return "The reply was too large to read, and was stopped part-way.";
+  }
   const stderr = result.stderr.trim();
   if (/permission denied|no supported authentication/i.test(stderr)) {
     return (
