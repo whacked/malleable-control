@@ -1558,6 +1558,13 @@ const BSD = [
 ].join("\n");
 
 describe("listCommand", () => {
+  // An empty directory must produce an empty listing, not a fabricated one.
+  it("never lets stat run with zero operands", () => {
+    const text = listCommand("gnu", "/srv/data", ".").join(" ");
+    ok(!text.includes("xargs"), text);
+    ok(text.includes("-exec"), text);
+  });
+
   it("uses the GNU stat format on a GNU host", () => {
     const argv = listCommand("gnu", "/srv/data", "sub");
     ok(argv.join(" ").includes("-c"), "GNU stat takes -c");
@@ -1638,6 +1645,21 @@ describe("confinement", () => {
     strictEqual(parseConfinement("/srv/data\n/srv/data-other/x\n").ok, false);
   });
 
+  // A root of "/" is legitimate, and `${root}/` would be "//" — which no real
+  // path starts with, so every child would be refused.
+  it("accepts children of a root of /", () => {
+    strictEqual(parseConfinement("/\n/etc\n").ok, true);
+    strictEqual(parseConfinement("/\n/\n").ok, true);
+  });
+
+  it("tolerates a root given with a trailing slash", () => {
+    strictEqual(parseConfinement("/srv/data/\n/srv/data/sub\n").ok, true);
+  });
+
+  it("survives CRLF line endings", () => {
+    strictEqual(parseConfinement("/srv/data\r\n/srv/data/sub\r\n").ok, true);
+  });
+
   it("refuses a resolved path outside the root", () => {
     const result = parseConfinement("/srv/data\n/etc\n");
     strictEqual(result.ok, false);
@@ -1650,8 +1672,12 @@ describe("confinement", () => {
 });
 
 describe("SHELL_TIER_CAVEAT", () => {
-  it("names the limitation the UI has to admit to", () => {
+  // The caveat is shown to the user, and an inaccurate caveat is worse than
+  // none. Every limitation it names must be one this tier actually has.
+  it("names each limitation this tier actually has", () => {
     ok(/newline/i.test(SHELL_TIER_CAVEAT));
+    ok(/symlink/i.test(SHELL_TIER_CAVEAT));
+    ok(/python/i.test(SHELL_TIER_CAVEAT), "must say why resizing is unavailable");
   });
 });
 ```
@@ -1685,7 +1711,9 @@ export type Entry = {
  */
 export const SHELL_TIER_CAVEAT =
   "This host has no python3, so listings come from find and stat. Files whose " +
-  "names contain a newline are not shown, and large images transfer whole.";
+  "names contain a newline are not shown, symlink targets are not resolved, " +
+  "and large images transfer whole — remote resizing runs inside the python " +
+  "helper, so it is unavailable here even if the host has ImageMagick.";
 
 /**
  * `find | xargs stat`, with the stat format the probe says this host takes.
@@ -1701,8 +1729,13 @@ export function listCommand(flavor: StatFlavor, root: string, rel: string): stri
   return [
     "sh",
     "-c",
-    `cd -- "$1" && cd -- "$2" && find . -maxdepth 1 -mindepth 1 -print0 | ` +
-      `xargs -0 stat ${flag} '${format}'`,
+    // `-exec ... {} +` rather than a pipe into xargs. With no matches xargs
+    // still runs stat once with zero operands, and BSD stat then stats its
+    // own stdin and prints a record for a file called "(stdin)" — a phantom
+    // entry in every empty directory, with a zero exit code to hide it.
+    // find's -exec simply does not invoke the utility when nothing matched.
+    `cd -- "$1" && cd -- "$2" && find . -maxdepth 1 -mindepth 1 ` +
+      `-exec stat ${flag} '${format}' {} +`,
     "sh",
     root,
     rel,
@@ -1739,6 +1772,7 @@ export function parseListing(_flavor: StatFlavor, stdout: string): Entry[] {
     const size = Number(sizeText);
     const mtime = Number(mtimeText);
     if (!Number.isFinite(size) || !Number.isFinite(mtime)) continue;
+    if (size < 0 || mtime < 0) continue;
     entries.push({
       name,
       type: typeOf(modeHex ?? ""),
@@ -1773,13 +1807,18 @@ export function confinementCommand(root: string, rel: string): string[] {
 export function parseConfinement(
   stdout: string,
 ): { ok: true; root: string; realpath: string } | { ok: false; error: string } {
-  const [root, realpath] = stdout.split("\n");
+  // \r is stripped in case a host's shell terminates lines with CRLF; the
+  // whole check is a string comparison and a stray \r would fail it.
+  const [root, realpath] = stdout.split("\n").map((line) => line.replace(/\r$/, ""));
   if (!root || !realpath) {
     return { ok: false, error: "The host did not resolve the path." };
   }
-  // The separator matters: without it "/srv/data-other" passes as a child of
-  // "/srv/data".
-  if (realpath !== root && !realpath.startsWith(`${root}/`)) {
+  // The trailing separator is what makes this a path-segment comparison:
+  // without it "/srv/data-other" passes as a child of "/srv/data". Building
+  // it by hand rather than concatenating also handles a root of "/", where
+  // `${root}/` would be "//" and no real path could ever match it.
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  if (realpath !== root && !realpath.startsWith(prefix)) {
     return { ok: false, error: `Path resolves outside the root: ${realpath}` };
   }
   return { ok: true, root, realpath };
@@ -2318,6 +2357,19 @@ describe("planFetch", () => {
     );
   });
 
+  // The probe reports what the host has; this reports what the plugin can
+  // reach. A shell-tier host with ImageMagick has the tool and no way to use it.
+  it("does not claim a remote resize the shell tier cannot reach", () => {
+    const shellWithMagick: Capabilities = {
+      ...withResize, tier: "shell", python3: false, pil: false,
+      magick: "convert", resize: "magick",
+    };
+    deepStrictEqual(
+      plan({ name: "a.jpg", size: SMALL_FILE_BYTES + 1, capabilities: shellWithMagick }),
+      { kind: "whole-then-resize-locally", maxDim: 2048 },
+    );
+  });
+
   it("heads a large text file", () => {
     deepStrictEqual(plan({ name: "huge.log", size: 2e9 }), {
       kind: "head",
@@ -2416,11 +2468,15 @@ export function planFetch(input: {
   switch (guessKind(input.name)) {
     case "image":
       // Resizing on the far side is the whole point: only the resized bytes
-      // cross the wire. Without the tooling we still show the image, we just
-      // pay for it once.
-      return input.capabilities.resize === "none"
-        ? { kind: "whole-then-resize-locally", maxDim: IMAGE_MAX_DIM }
-        : { kind: "resize", maxDim: IMAGE_MAX_DIM };
+      // cross the wire. But it runs inside the python helper, so it needs the
+      // python tier AND Pillow. A shell-tier host with ImageMagick still
+      // reports resize: "magick" from the probe and nothing here can reach
+      // it — calling that remote-capable would label a full-size transfer
+      // "downscaled" in the UI. Without a reachable remote resize we still
+      // show the image, we just pay for it once.
+      return input.capabilities.tier === "python" && input.capabilities.resize === "pil"
+        ? { kind: "resize", maxDim: IMAGE_MAX_DIM }
+        : { kind: "whole-then-resize-locally", maxDim: IMAGE_MAX_DIM };
     case "text":
       return { kind: "head", limit: TEXT_HEAD_BYTES };
     default:
