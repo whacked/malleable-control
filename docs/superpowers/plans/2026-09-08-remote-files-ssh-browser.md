@@ -2206,7 +2206,11 @@ export class RemoteClient {
       const remote =
         opts.limit === undefined
           ? ["sh", "-c", `cd -- "$1" && cat -- "$2"`, "sh", this.config.rootDir, rel]
-          : ["sh", "-c", `cd -- "$1" && dd if="$2" bs=1 count=$3 2>/dev/null`, "sh", this.config.rootDir, rel, String(opts.limit)];
+          // `head -c`, not `dd bs=1 count=N`: bs=1 costs one read syscall per
+          // byte, so a 256KB text preview would make a quarter of a million
+          // of them. head -c is not in POSIX but is present on GNU coreutils
+          // and BSD alike, which is the whole population of this tier.
+          : ["sh", "-c", `cd -- "$1" && head -c "$3" -- "$2"`, "sh", this.config.rootDir, rel, String(opts.limit)];
       const confined = await this.run({ remote: confinementCommand(this.config.rootDir, rel) });
       if (!confined.ok) return confined;
       const check = parseConfinement(confined.stdout.toString("utf8"));
