@@ -1854,6 +1854,8 @@ One object the rest of the plugin talks to. It owns the ssh target, the probe re
 **Files:**
 - Create: `lib/remote.ts`
 - Create: `test/remote.test.ts`
+- Modify: `lib/shell-tier.ts` (add `statCommand` and `parseStat`)
+- Modify: `test/shell-tier.test.ts` (cover them)
 
 **Interfaces:**
 - Consumes: `lib/target.ts`, `lib/ssh-argv.ts`, `lib/ssh-run.ts`, `lib/probe.ts`, `lib/shell-tier.ts`, `lib/helper.py`.
@@ -1961,11 +1963,14 @@ describe("RemoteClient", () => {
     if (result.ok) strictEqual(result.entries[0]?.name, "b.txt");
   });
 
-  it("refuses to escape the root", async () => {
-    const remote = client();
-    await remote.connect();
-    const result = await remote.list("../..");
-    strictEqual(result.ok, false);
+  it("refuses to list outside the root, on either tier", async () => {
+    for (const tier of ["python", "shell"] as const) {
+      const remote = client();
+      await remote.connect();
+      if (remote.capabilities !== null) remote.capabilities.tier = tier;
+      strictEqual((await remote.list("../..")).ok, false, `${tier}: ..`);
+      strictEqual((await remote.list("escape")).ok, false, `${tier}: symlink`);
+    }
   });
 
   it("fetches whole bytes", async () => {
@@ -2002,10 +2007,41 @@ describe("RemoteClient", () => {
     }
   });
 
-  it("refuses to stat a path outside the root", async () => {
-    const remote = client();
-    await remote.connect();
-    strictEqual((await remote.stat("escape/secret.txt")).ok, false);
+  it("refuses to stat a path outside the root, on either tier", async () => {
+    for (const tier of ["python", "shell"] as const) {
+      const remote = client();
+      await remote.connect();
+      if (remote.capabilities !== null) remote.capabilities.tier = tier;
+      strictEqual(
+        (await remote.stat("escape/secret.txt")).ok,
+        false,
+        `${tier}: symlink escaped the root`,
+      );
+    }
+  });
+
+  // The root is not among its own children, so a stat built from the parent's
+  // listing could never answer for it.
+  it("stats the root itself, on either tier", async () => {
+    for (const tier of ["python", "shell"] as const) {
+      const remote = client();
+      await remote.connect();
+      if (remote.capabilities !== null) remote.capabilities.tier = tier;
+      const result = await remote.stat(".");
+      strictEqual(result.ok, true, `${tier}: stat(".") failed`);
+      if (result.ok) strictEqual(result.type, "dir", `${tier}: root is a dir`);
+    }
+  });
+
+  it("stats a file in the root, on either tier", async () => {
+    for (const tier of ["python", "shell"] as const) {
+      const remote = client();
+      await remote.connect();
+      if (remote.capabilities !== null) remote.capabilities.tier = tier;
+      const result = await remote.stat("a.txt");
+      strictEqual(result.ok, true, `${tier}: stat("a.txt") failed`);
+      if (result.ok) strictEqual(result.size, 6, `${tier}: size`);
+    }
   });
 
   it("refuses every operation before connect", async () => {
@@ -2020,6 +2056,77 @@ describe("RemoteClient", () => {
 
 Run: `npm test`
 Expected: FAIL — `Cannot find module '../lib/remote.ts'`
+
+- [ ] **Step 2b: Add `statCommand` and `parseStat` to `lib/shell-tier.ts`**
+
+The shell tier needs to stat one path directly. Append to `lib/shell-tier.ts`:
+
+```ts
+/**
+ * stat one path, rather than hunting for it in its parent's listing. A
+ * directory never appears among its own children, so a listing-derived stat
+ * cannot answer for "." — which is the root, the first thing anything asks
+ * about.
+ *
+ * The path is prefixed with `./` inside the script so a name beginning with
+ * `-` cannot be read as an option, and `--` is avoided because BSD stat does
+ * not accept it.
+ */
+export function statCommand(flavor: StatFlavor, root: string, rel: string): string[] {
+  const format = flavor === "bsd" ? "%Xp|%z|%m|%N" : "%f|%s|%Y|%n";
+  const flag = flavor === "bsd" ? "-f" : "-c";
+  return [
+    "sh",
+    "-c",
+    `cd -- "$1" && stat ${flag} '${format}' "./$2"`,
+    "sh",
+    root,
+    rel,
+  ];
+}
+
+/** The type, size, and mtime from one `statCommand` line. */
+export function parseStat(
+  flavor: StatFlavor,
+  stdout: string,
+): { type: Entry["type"]; size: number; mtime: number } | null {
+  const line = stdout.split("\n").find((candidate) => candidate.trim() !== "");
+  if (line === undefined) return null;
+  const parts = line.split("|");
+  if (parts.length < 4) return null;
+  const size = Number(parts[1]);
+  const mtime = Number(parts[2]);
+  if (!Number.isFinite(size) || !Number.isFinite(mtime)) return null;
+  if (size < 0 || mtime < 0) return null;
+  return { type: typeOf(parts[0] ?? ""), size, mtime };
+}
+```
+
+Add to `test/shell-tier.test.ts`:
+
+```ts
+describe("statCommand and parseStat", () => {
+  it("neutralises a leading dash without using --", () => {
+    const text = statCommand("gnu", "/srv/data", "-weird").join(" ");
+    ok(text.includes(`"./$2"`), text);
+    ok(!text.includes("--  "), "BSD stat does not accept --");
+  });
+
+  it("reads one stat line", () => {
+    deepStrictEqual(parseStat("gnu", "41ed|4096|1757260700|./sub\n"), {
+      type: "dir",
+      size: 4096,
+      mtime: 1757260700,
+    });
+  });
+
+  it("returns null on empty or malformed output", () => {
+    strictEqual(parseStat("gnu", ""), null);
+    strictEqual(parseStat("gnu", "garbage\n"), null);
+    strictEqual(parseStat("gnu", "41ed|x|y|./sub\n"), null);
+  });
+});
+```
 
 - [ ] **Step 3: Implement `lib/remote.ts`**
 
@@ -2036,6 +2143,8 @@ import {
   listCommand,
   parseConfinement,
   parseListing,
+  parseStat,
+  statCommand,
   type Entry,
 } from "./shell-tier.ts";
 import { buildSshArgv, controlSocketPath } from "./ssh-argv.ts";
@@ -2068,7 +2177,11 @@ export function splitHeader(
   if (newline === -1) return null;
   try {
     const header = JSON.parse(stdout.subarray(0, newline).toString("utf8"));
-    if (header === null || typeof header !== "object") return null;
+    // typeof [] is "object", and an array header would pass every later
+    // property read as undefined rather than failing here.
+    if (header === null || typeof header !== "object" || Array.isArray(header)) {
+      return null;
+    }
     return { header, body: stdout.subarray(newline + 1) };
   } catch {
     return null;
@@ -2187,22 +2300,26 @@ export class RemoteClient {
     { ok: true; realpath: string; type: string; size: number; mtime: number } | Failure
   > {
     if (this.capabilities?.tier === "shell") {
-      // The shell tier has no per-file stat command of its own: read the
-      // parent's listing and pick the row out, which costs the same two calls.
-      const slash = rel.lastIndexOf("/");
-      const parent = slash === -1 ? "." : rel.slice(0, slash);
-      const name = slash === -1 ? rel : rel.slice(slash + 1);
-      const listing = await this.list(parent);
-      if (!listing.ok) return listing;
-      const entry = listing.entries.find((candidate) => candidate.name === name);
-      if (entry === undefined) return { ok: false, error: `No such path: ${rel}` };
-      return {
-        ok: true,
-        realpath: `${listing.realpath}/${name}`,
-        type: entry.type,
-        size: entry.size,
-        mtime: entry.mtime,
-      };
+      const flavor = this.capabilities.statFlavor;
+      const confined = await this.run({
+        remote: confinementCommand(this.config.rootDir, rel),
+      });
+      if (!confined.ok) return confined;
+      const check = parseConfinement(confined.stdout.toString("utf8"));
+      if (!check.ok) return check;
+
+      // stat the path itself rather than hunting for it in its parent's
+      // listing. The listing approach cannot answer for "." — no directory
+      // appears among its own children — so it failed on the root, and on any
+      // path with a trailing slash, on exactly the hosts where the python
+      // helper is unavailable to cover for it.
+      const statted = await this.run({
+        remote: statCommand(flavor, this.config.rootDir, rel),
+      });
+      if (!statted.ok) return statted;
+      const info = parseStat(flavor, statted.stdout.toString("utf8"));
+      if (info === null) return { ok: false, error: `No such path: ${rel}` };
+      return { ok: true, realpath: check.realpath, ...info };
     }
     const result = await this.run({ remote: this.helper("stat", rel), stdin: HELPER_SOURCE });
     if (!result.ok) return result;
