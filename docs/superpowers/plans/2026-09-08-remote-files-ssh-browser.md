@@ -2786,12 +2786,19 @@ Content-addressed blobs in `.cache/`, with a SQLite index and LRU eviction.
     - `clear(): void`
     - `close(): void`
 
+The index is a JSON file rather than SQLite: bb externalizes `better-sqlite3`
+from the server bundle because it expects plugins to reach SQLite through
+`bb.storage.database()`, which would put the index in bb's data directory.
+Importing the package directly loads under plain `node` and fails under bb's
+loader. `better-sqlite3` stays a devDependency — `@get-bb/plugin-sdk/testing`
+needs it — but nothing in `lib/` imports it.
+
 - [ ] **Step 1: Write the failing tests**
 
 Create `test/cache.test.ts`:
 
 ```ts
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { notStrictEqual, ok, strictEqual } from "node:assert/strict";
@@ -2920,6 +2927,21 @@ describe("BlobCache", () => {
     strictEqual(existsSync(path), false);
   });
 
+  it("discards an index it cannot read, rather than failing to open", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rf-cache-corrupt-"));
+    const first = new BlobCache(dir);
+    first.put("a".repeat(64), Buffer.from("kept"), { mime: null, remotePath: "/a" });
+    first.close();
+    writeFileSync(join(dir, "index.json"), "{not json");
+    const second = new BlobCache(dir);
+    strictEqual(second.get("a".repeat(64)), null, "a corrupt index is a cold cache");
+    strictEqual(second.totalBytes(), 0);
+    // The blobs go with it, so the index and the disk cannot disagree.
+    second.put("b".repeat(64), Buffer.from("new"), { mime: null, remotePath: "/b" });
+    ok(second.get("b".repeat(64)));
+    second.close();
+  });
+
   it("survives being reopened on the same directory", () => {
     const dir = mkdtempSync(join(tmpdir(), "rf-cache-reopen-"));
     const first = new BlobCache(dir);
@@ -2949,11 +2971,28 @@ Expected: FAIL — `Cannot find module '../lib/cache.ts'`
 
 ```ts
 // The local blob cache. Lives in the plugin directory under .cache/, which is
-// gitignored. better-sqlite3 is externalized by `bb plugin build` and resolved
-// against bb's own copy at runtime.
-import Database from "better-sqlite3";
+// gitignored.
+//
+// The index is a JSON file, not SQLite. bb externalizes better-sqlite3 from
+// the server bundle precisely because it expects plugins to reach SQLite
+// through bb.storage.database(), which would put the index in bb's data
+// directory and split the cache across two places. Importing the package
+// directly loads under plain node and fails under bb's loader
+// ("_betterSqlite.default is not a constructor"), so the choice was between
+// splitting the cache and dropping the dependency. This drops it: the index
+// holds one small row per cached blob, it is read once at construction and
+// held in memory, and every mutation rewrites it atomically. At the sizes a
+// preview cache reaches that costs less than the native module did.
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -2989,60 +3028,69 @@ export function cacheKey(input: {
 }
 
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
+const INDEX_VERSION = 1;
 
-type Row = { key: string; bytes: number; mime: string | null };
+type Row = {
+  bytes: number;
+  mime: string | null;
+  remotePath: string;
+  accessedAt: number;
+  /** Monotonic use counter. See `touch()`. */
+  seq: number;
+};
+type IndexFile = { version: number; seq: number; rows: Record<string, Row> };
 
 export class BlobCache {
-  private readonly db: Database.Database;
   private readonly dir: string;
+  private readonly indexPath: string;
   private readonly maxBytes: number;
+  private rows: Record<string, Row>;
+  private seq: number;
 
   constructor(dir: string, opts?: { maxBytes?: number }) {
     this.dir = dir;
+    this.indexPath = join(dir, "index.json");
     this.maxBytes = opts?.maxBytes ?? DEFAULT_MAX_BYTES;
     mkdirSync(join(dir, "blobs"), { recursive: true });
-    this.db = new Database(join(dir, "index.db"));
-    this.db.pragma("journal_mode = WAL");
 
-    // A cache written by an older version of this file lacks `seq`. It is a
-    // cache: discarding it costs a re-fetch, and carrying a migration for
-    // disposable data costs more than that forever.
-    const columns = this.db.prepare("PRAGMA table_info(blobs)").all() as Array<{
-      name: string;
-    }>;
-    if (columns.length > 0 && !columns.some((column) => column.name === "seq")) {
-      this.db.exec("DROP TABLE blobs");
-      rmSync(join(dir, "blobs"), { recursive: true, force: true });
-      mkdirSync(join(dir, "blobs"), { recursive: true });
-    }
-
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS blobs (
-        key         TEXT PRIMARY KEY,
-        bytes       INTEGER NOT NULL,
-        mime        TEXT,
-        remote_path TEXT NOT NULL,
-        accessed_at INTEGER NOT NULL,
-        seq         INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS blobs_seq ON blobs (seq);
-    `);
-
-    // Least-recently-used has to be ordered by a counter, not by a clock.
-    // Date.now() has millisecond resolution and these sqlite calls finish in
-    // microseconds, so every entry in a burst shares one timestamp — and both
-    // obvious tiebreaks are wrong: `key` orders by sha256 digest, which is
-    // arbitrary, and ROWID survives an ON CONFLICT UPDATE unchanged, so it
-    // records insertion order rather than last use.
-    const highest = this.db
-      .prepare("SELECT COALESCE(MAX(seq), 0) AS top FROM blobs")
-      .get() as { top: number };
-    this.seq = highest.top;
+    const loaded = this.read();
+    this.rows = loaded.rows;
+    this.seq = loaded.seq;
   }
 
-  /** Monotonic within this handle, and resumed from the index on reopen. */
-  private seq: number;
+  /**
+   * An unreadable or unrecognised index is discarded rather than repaired.
+   * It is a cache: the cost is a re-fetch, and the blobs are wiped with it so
+   * the index and the disk cannot disagree.
+   */
+  private read(): { rows: Record<string, Row>; seq: number } {
+    let parsed: IndexFile | null = null;
+    try {
+      parsed = JSON.parse(readFileSync(this.indexPath, "utf8")) as IndexFile;
+    } catch {
+      parsed = null;
+    }
+    if (parsed === null || parsed.version !== INDEX_VERSION || typeof parsed.rows !== "object") {
+      rmSync(join(this.dir, "blobs"), { recursive: true, force: true });
+      mkdirSync(join(this.dir, "blobs"), { recursive: true });
+      return { rows: {}, seq: 0 };
+    }
+    return { rows: parsed.rows ?? {}, seq: Number(parsed.seq) || 0 };
+  }
 
+  /** Written through a temp file, so a crash mid-write cannot truncate it. */
+  private persist(): void {
+    const body: IndexFile = { version: INDEX_VERSION, seq: this.seq, rows: this.rows };
+    const temp = `${this.indexPath}.tmp`;
+    writeFileSync(temp, JSON.stringify(body));
+    renameSync(temp, this.indexPath);
+  }
+
+  /**
+   * Least-recently-used has to be ordered by a counter, not by a clock.
+   * Date.now() has millisecond resolution and these calls finish in
+   * microseconds, so every entry in a burst would share one timestamp.
+   */
   private touch(): number {
     this.seq += 1;
     return this.seq;
@@ -3054,9 +3102,7 @@ export class BlobCache {
   }
 
   get(key: string): { path: string; bytes: number; mime: string | null } | null {
-    const row = this.db.prepare("SELECT key, bytes, mime FROM blobs WHERE key = ?").get(key) as
-      | Row
-      | undefined;
+    const row = this.rows[key];
     if (row === undefined) return null;
     const path = this.path(key);
     // The index is not the authority on what is on disk. Someone can delete
@@ -3064,12 +3110,13 @@ export class BlobCache {
     try {
       statSync(path);
     } catch {
-      this.db.prepare("DELETE FROM blobs WHERE key = ?").run(key);
+      delete this.rows[key];
+      this.persist();
       return null;
     }
-    this.db
-      .prepare("UPDATE blobs SET accessed_at = ?, seq = ? WHERE key = ?")
-      .run(Date.now(), this.touch(), key);
+    row.accessedAt = Date.now();
+    row.seq = this.touch();
+    this.persist();
     return { path, bytes: row.bytes, mime: row.mime };
   }
 
@@ -3082,24 +3129,22 @@ export class BlobCache {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, bytes);
     try {
-      this.db
-        .prepare(
-          `INSERT INTO blobs (key, bytes, mime, remote_path, accessed_at, seq)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(key) DO UPDATE SET
-             bytes = excluded.bytes,
-             mime = excluded.mime,
-             accessed_at = excluded.accessed_at,
-             seq = excluded.seq`,
-        )
-        .run(key, bytes.length, meta.mime, meta.remotePath, Date.now(), this.touch());
+      this.rows[key] = {
+        bytes: bytes.length,
+        mime: meta.mime,
+        remotePath: meta.remotePath,
+        accessedAt: Date.now(),
+        seq: this.touch(),
+      };
+      this.persist();
     } catch (cause) {
-      // The file is written but unindexed, so nothing would ever count it or
+      // The blob is written but unindexed, so nothing would ever count it or
       // evict it. Remove it rather than leak it.
+      delete this.rows[key];
       try {
         unlinkSync(path);
       } catch {
-        /* the blob was already gone; the index write is the real failure */
+        /* already gone; the index write is the real failure */
       }
       throw cause;
     }
@@ -3108,10 +3153,9 @@ export class BlobCache {
   }
 
   totalBytes(): number {
-    const row = this.db.prepare("SELECT COALESCE(SUM(bytes), 0) AS total FROM blobs").get() as {
-      total: number;
-    };
-    return row.total;
+    let total = 0;
+    for (const row of Object.values(this.rows)) total += row.bytes;
+    return total;
   }
 
   /**
@@ -3125,31 +3169,30 @@ export class BlobCache {
   prune(keep?: string): number {
     let total = this.totalBytes();
     if (total <= this.maxBytes) return 0;
-    // .all(), not .iterate(): better-sqlite3 refuses a write on a connection
-    // with an open cursor, and this loop deletes as it goes.
-    const oldest = this.db
-      .prepare("SELECT key, bytes FROM blobs ORDER BY seq ASC")
-      .all() as Array<{ key: string; bytes: number }>;
+    const oldest = Object.entries(this.rows).sort((a, b) => a[1].seq - b[1].seq);
     let removed = 0;
-    for (const row of oldest) {
+    for (const [key, row] of oldest) {
       if (total <= this.maxBytes) break;
-      if (row.key === keep) continue;
-      rmSync(this.path(row.key), { force: true });
-      this.db.prepare("DELETE FROM blobs WHERE key = ?").run(row.key);
+      if (key === keep) continue;
+      rmSync(this.path(key), { force: true });
+      delete this.rows[key];
       total -= row.bytes;
       removed += 1;
     }
+    if (removed > 0) this.persist();
     return removed;
   }
 
   clear(): void {
     rmSync(join(this.dir, "blobs"), { recursive: true, force: true });
     mkdirSync(join(this.dir, "blobs"), { recursive: true });
-    this.db.prepare("DELETE FROM blobs").run();
+    this.rows = {};
+    this.persist();
   }
 
+  /** Kept for symmetry with a handle-based store; the index is already durable. */
   close(): void {
-    this.db.close();
+    this.persist();
   }
 }
 ```

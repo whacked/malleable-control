@@ -150,12 +150,15 @@ The cache lives in the plugin's own directory, gitignored:
 ```
 .cache/blobs/<aa>/<hash>          originals and remote-resized derivatives
 .cache/thumbs/<aa>/<hash>-<w>     locally derived thumbnails
-.cache/index.db                   better-sqlite3 index
+.cache/index.json                 the index
 ```
 
-The index is a plugin-owned `better-sqlite3` handle rather than
-`bb.storage.database()`, which would place the file in bb's data directory and
-split cache state across two locations.
+The index is a JSON file rather than SQLite. `bb.storage.database()` would
+place it in bb's data directory and split cache state across two locations, and
+bb externalizes `better-sqlite3` from the server bundle precisely because it
+expects plugins to go through that API — a direct import loads under plain
+`node` and fails under bb's own loader. Dropping the dependency keeps the whole
+cache in one place and removes a native build from the plugin.
 
 Key: `sha256(sshTarget + realpath + size + mtime)`. A changed remote file
 produces a different key, so the cache misses rather than serving stale bytes —
