@@ -3179,7 +3179,8 @@ Replaces the scaffold's todo example with the real backend. This is where the pi
 - Produces:
   - `export const rpcContract` with methods `status`, `setOverride`, `connect`, `list`, `preview`, `clearCache`
   - `export type Status`, `export type Entry`, `export type Preview` for `app.tsx`
-  - HTTP routes `GET /file` and `GET /thumb`
+  - HTTP route `GET /file` (a thumbnail is a different cache `variant` on the
+    same route, not a second route)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3254,10 +3255,16 @@ describe("byte routes", () => {
     strictEqual(response.status, 400);
   });
 
-  it("refuses a request before connect", async () => {
+  it("refuses a well-formed key before connect", async () => {
     const harness = await host({ sshTarget: "box", rootDir: "/srv" });
-    const response = await harness.behavior.fetchHttp("GET", "/file?path=a.txt");
+    const response = await harness.behavior.fetchHttp("GET", `/file?key=${"a".repeat(64)}`);
     strictEqual(response.status, 409);
+  });
+
+  it("refuses a malformed key outright", async () => {
+    const harness = await host({ sshTarget: "box", rootDir: "/srv" });
+    const response = await harness.behavior.fetchHttp("GET", "/file?key=not-a-hash");
+    strictEqual(response.status, 400);
   });
 });
 
@@ -3324,7 +3331,7 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { BlobCache, cacheKey } from "./lib/cache.ts";
-import { IMAGE_MAX_DIM, guessKind, planFetch } from "./lib/policy.ts";
+import { guessKind, planFetch } from "./lib/policy.ts";
 import { describeCapabilities } from "./lib/probe.ts";
 import { RemoteClient, type Entry } from "./lib/remote.ts";
 import { SHELL_TIER_CAVEAT } from "./lib/shell-tier.ts";
@@ -3508,7 +3515,10 @@ export default async function plugin(bb: BbPluginApi) {
   async function materialize(
     path: string,
     variant: "preview" | "raw",
-  ): Promise<{ ok: true; key: string; mime: string | null; truncated: boolean; size: number } | { ok: false; error: string }> {
+  ): Promise<
+    | { ok: true; key: string; mime: string | null; truncated: boolean; resized: boolean; size: number }
+    | { ok: false; error: string }
+  > {
     if (remote === null || remote.capabilities === null) {
       return { ok: false, error: "Not connected." };
     }
@@ -3531,9 +3541,15 @@ export default async function plugin(bb: BbPluginApi) {
       mtime: info.mtime,
       variant: `${variant}:${action.kind}`,
     });
+    // truncated and resized describe the plan, not the transfer, so a cache
+    // hit says exactly what a cache miss said. Reading them off the fetch
+    // result made a cached 2GB log lose its "showing the first part" notice.
+    const truncated = action.kind === "head";
+    const resized = action.kind === "resize";
+
     const hit = cache.get(key);
     if (hit !== null) {
-      return { ok: true, key, mime: hit.mime, truncated: false, size: info.size };
+      return { ok: true, key, mime: hit.mime, truncated, resized, size: info.size };
     }
 
     const fetched = await remote.fetch(path, {
@@ -3546,7 +3562,7 @@ export default async function plugin(bb: BbPluginApi) {
       fetched.mime ??
       (guessKind(name) === "image" ? `image/${name.split(".").pop()?.toLowerCase()}` : null);
     cache.put(key, fetched.bytes, { mime, remotePath: info.realpath });
-    return { ok: true, key, mime, truncated: fetched.truncated, size: info.size };
+    return { ok: true, key, mime, truncated, resized, size: info.size };
   }
 
   bb.rpc.register(rpcContract, {
@@ -3593,7 +3609,7 @@ export default async function plugin(bb: BbPluginApi) {
           // below and caches it by ETag.
           url: `/api/v1/plugins/${bb.pluginId}/http/file?key=${materialized.key}`,
           size: info.size,
-          resized: materialized.size > info.size ? false : materialized.mime === "image/jpeg",
+          resized: materialized.resized,
         };
       }
       if (kind === "text") {
