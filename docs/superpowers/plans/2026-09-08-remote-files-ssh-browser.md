@@ -1631,6 +1631,22 @@ describe("confinement", () => {
     ok(argv.join(" ").includes("pwd -P"));
   });
 
+  // `cd` fails on a regular file, so a cd-only script could not confine — and
+  // therefore could not read — any file on this tier.
+  it("has a path for a target that is not a directory", () => {
+    const text = confinementCommand("/srv/data", "a.txt").join(" ");
+    ok(text.includes("dirname"), text);
+    ok(text.includes("basename"), text);
+    ok(text.includes("-L"), "must detect a symlinked file");
+  });
+
+  it("passes root and rel as separate words, never interpolated", () => {
+    const argv = confinementCommand("/srv/my data", "a b.txt");
+    strictEqual(argv.at(-2), "/srv/my data");
+    strictEqual(argv.at(-1), "a b.txt");
+    ok(!argv[2]?.includes("/srv/my data"), "path must not reach the script text");
+  });
+
   it("accepts a path inside the root", () => {
     const result = parseConfinement("/srv/data\n/srv/data/sub\n");
     strictEqual(result.ok, true);
@@ -1668,6 +1684,12 @@ describe("confinement", () => {
 
   it("refuses output the shell never completed", () => {
     strictEqual(parseConfinement("/srv/data\n").ok, false);
+  });
+
+  it("explains a symlinked file rather than calling it an escape", () => {
+    const result = parseConfinement("/srv/data\n\u0000symlink\n");
+    strictEqual(result.ok, false);
+    if (!result.ok) ok(/symlinked file/i.test(result.error), result.error);
   });
 });
 
@@ -1712,8 +1734,9 @@ export type Entry = {
 export const SHELL_TIER_CAVEAT =
   "This host has no python3, so listings come from find and stat. Files whose " +
   "names contain a newline are not shown, symlink targets are not resolved, " +
-  "and large images transfer whole — remote resizing runs inside the python " +
-  "helper, so it is unavailable here even if the host has ImageMagick.";
+  "large images transfer whole — remote resizing runs inside the python " +
+  "helper, so it is unavailable here even if the host has ImageMagick — and " +
+  "a symlinked file cannot be opened, only a real one.";
 
 /**
  * `find | xargs stat`, with the stat format the probe says this host takes.
@@ -1796,13 +1819,34 @@ export function confinementCommand(root: string, rel: string): string[] {
   return [
     "sh",
     "-c",
-    `r=$(cd -- "$1" && pwd -P) && p=$(cd -- "$1" && cd -- "$2" && pwd -P) && ` +
-      `printf '%s\\n%s\\n' "$r" "$p"`,
+    // `cd` resolves a directory, and a symlink to a directory, which is what
+    // makes the check meaningful. But it fails outright on a regular file, so
+    // a plain `cd -- "$2"` could not confine — or therefore read — any file at
+    // all on this tier.
+    //
+    // So: try `cd` first, and fall back to resolving the parent and appending
+    // the name. A symlinked *file* is refused rather than followed: resolving
+    // one portably would mean chasing hops by hand, and this tier exists
+    // precisely because the host has no interpreter to do that safely.
+    `r=$(cd -- "$1" && pwd -P) || exit 1; ` +
+      `if p=$(cd -- "$1" && cd -- "$2" 2>/dev/null && pwd -P); then ` +
+      `printf '%s\\n%s\\n' "$r" "$p"; ` +
+      `else ` +
+      `d=$(cd -- "$1" && cd -- "$(dirname -- "$2")" && pwd -P) || exit 1; ` +
+      `b=$(basename -- "$2"); ` +
+      `if [ -L "$d/$b" ]; then printf '%s\\n%s\\n' "$r" "${SYMLINK_MARKER}"; ` +
+      `else printf '%s\\n%s/%s\\n' "$r" "$d" "$b"; fi; fi`,
     "sh",
     root,
     rel,
   ];
 }
+
+/**
+ * Stands in for a realpath the shell tier declines to resolve. Not a path any
+ * filesystem could produce, so it can never collide with a real one.
+ */
+const SYMLINK_MARKER = "\u0000symlink";
 
 export function parseConfinement(
   stdout: string,
@@ -1812,6 +1856,14 @@ export function parseConfinement(
   const [root, realpath] = stdout.split("\n").map((line) => line.replace(/\r$/, ""));
   if (!root || !realpath) {
     return { ok: false, error: "The host did not resolve the path." };
+  }
+  if (realpath === SYMLINK_MARKER) {
+    return {
+      ok: false,
+      error:
+        "This host has no python3, so a symlinked file cannot be followed " +
+        "safely. Open it through its real path instead.",
+    };
   }
   // The trailing separator is what makes this a path-segment comparison:
   // without it "/srv/data-other" passes as a child of "/srv/data". Building
