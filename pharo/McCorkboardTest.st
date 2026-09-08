@@ -243,3 +243,52 @@ testTheSampleFileProjectsAsANestedBoard
 	self assert: board document roots first children size equals: 2.
 	"The dot grid, plus the one root card."
 	self assert: board canvas children size equals: 2! !
+
+!McCorkboardTest methodsFor: 'tests - canvas gestures'!
+testTheStockLeftDragPanIsRemoved
+	"BlCanvassableElement installs a slide handler that pans on a LEFT drag.
+	 The background must ignore the left button entirely, so it comes off."
+	| board |
+	board := self floatyBoard.
+	self assert: (board canvas eventDispatcher handlers
+		noneSatisfy: [ :each | each class = BlCanvassableElementSlideHandler ])!
+
+testExactlyOneWheelHandlerSurvives
+	"The stock one zooms only on a modifier and translates on a bare wheel, so
+	 leaving it alongside ours would scroll and zoom on the same event."
+	| board wheel |
+	board := self floatyBoard.
+	wheel := board canvas eventDispatcher handlers select: [ :each |
+		(each respondsTo: #eventClass)
+			and: [ each eventClass = BlMouseWheelEvent ] ].
+	self assert: wheel size equals: 1!
+
+testOnlyTheMiddleAndRightButtonsPan
+	| board |
+	board := self floatyBoard.
+	self assert: (board isPanButton: BlMouseButton middle).
+	self assert: (board isPanButton: BlMouseButton secondary).
+	self deny: (board isPanButton: BlMouseButton primary)!
+
+testTheGridFollowsTheViewportOnWholeCells
+	"The grid covers a bounded plane and is moved to stay under the viewport.
+	 Snapping to a whole cell is what hides the move: a dot keeps landing on the
+	 document coordinate it would have had on an endless plane."
+	| board spacing position |
+	board := self floatyBoard.
+	spacing := McCorkboard gridSpacing.
+	board canvas childrenTranslationFactor: -137 @ -251.
+	board repositionGrid.
+	position := board grid constraints position.
+	self assert: position x \\ spacing equals: 0.
+	self assert: position y \\ spacing equals: 0!
+
+testTheGridMovesWithThePan
+	| board before |
+	board := self floatyBoard.
+	board canvas childrenTranslationFactor: 0 @ 0.
+	board repositionGrid.
+	before := board grid constraints position.
+	board canvas childrenTranslationFactor: -400 @ -400.
+	board repositionGrid.
+	self deny: board grid constraints position equals: before! !

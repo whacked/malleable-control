@@ -7,7 +7,7 @@ resolution and future pan/zoom independent from the component tree.
 "!
 
 Object subclass: #McCorkboard
-	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews panOrigin'
+	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid panOrigin panStart'
 	classVariableNames: 'GridForm'
 	package: 'MalleableControl'!
 
@@ -99,7 +99,34 @@ buildCanvasTitled: aString
 clearCanvas
 	"Every re-projection starts from an empty plane carrying only its grid."
 	canvas removeChildren.
-	canvas addChild: self gridElement!
+	grid := self gridElement.
+	canvas addChild: grid.
+	self repositionGrid!
+
+repositionGrid
+	"The grid is one image over a bounded plane, so instead of being large
+	 enough to cover everywhere it is kept centred under the viewport.  Snapping
+	 the move to a whole cell is what makes that invisible: the dots land on the
+	 same document coordinates they would have had if the plane really were
+	 endless."
+	| scale extent centre spacing snapped |
+	(grid isNil or: [ canvas isNil ]) ifTrue: [ ^ self ].
+	scale := canvas childrenScaleFactor.
+	(scale isNil or: [ scale = 0 ]) ifTrue: [ ^ self ].
+	"Canvas extent is only known once a layout has run; before that -- a board
+	 built headless, or the first projection -- fall back to the space, exactly
+	 as #viewportExtent does."
+	extent := canvas extent.
+	(extent x = 0 or: [ extent y = 0 ]) ifTrue: [ extent := self viewportExtent ].
+	(extent x = 0 or: [ extent y = 0 ]) ifTrue: [ ^ self ].
+	spacing := self class gridSpacing.
+	"The document point currently at the middle of the viewport.  Translation is
+	 in screen pixels and applied after the scale, which is how the slide
+	 handler this replaced used it."
+	centre := (extent / 2) - canvas childrenTranslationFactor / scale.
+	snapped := ((centre x / spacing) rounded * spacing)
+		@ ((centre y / spacing) rounded * spacing).
+	grid relocate: snapped - (self class gridExtent / 2)!
 
 gridElement
 	"The dot grid is a child of the canvas rather than its background, so it
@@ -120,28 +147,52 @@ installCanvasInteractions
 	"The wheel zooms and a middle or right drag pans; the left button does
 	 nothing on the background.
 
-	 GT's own withZoomOnScrollWheel is not usable here: it zooms only while the
-	 primary modifier is held and pans on a bare wheel, which is the opposite
-	 of what this canvas wants.
+	 BlCanvassableElement installs two gestures of its own in #initialize, and
+	 both are wrong here, so both are taken off first.  Its
+	 BlCanvassableElementSlideHandler pans on a LEFT drag, and its
+	 #withZoomOnScrollWheel zooms only while the primary modifier is held and
+	 translates on a bare wheel.  Leaving them on does not merely add
+	 behaviour: the stock wheel handler and ours would both answer the same
+	 event, scrolling and zooming at once.
 
 	 TODO: trackpad pinch-to-zoom and two-finger pan.  This image has no
 	 BlPinchEvent or BlZoomEvent, so a trackpad arrives as ordinary wheel
 	 events and cannot be told from a mouse; doing it properly needs host-level
 	 gesture events first.  Mouse is fine for now."
-	canvas when: BlMouseWheelEvent do: [ :event |
-		event isPrimarilyVertical ifTrue: [
+	canvas removeEventHandlersSuchThat: [ :each |
+		each class = BlCanvassableElementSlideHandler
+			or: [ (each respondsTo: #eventClass)
+				and: [ each eventClass = BlMouseWheelEvent ] ] ].
+
+	canvas addEventHandlerOn: BlMouseWheelEvent do: [ :event |
+		(event isPrimarilyVertical and: [ self isBackgroundEvent: event ]) ifTrue: [
 			event consumed: true.
 			self zoomOnWheel: event ] ].
-	canvas when: BlMouseDownEvent do: [ :event |
-		(self isPanButton: event button) ifTrue: [
-			panOrigin := event position.
-			event consumed: true ] ].
-	canvas when: BlMouseMoveEvent do: [ :event |
+
+	"A drag continues only if its start was consumed -- see
+	 BlMouseProcessor>>tryDragStart: -- so consuming here is what arms the pan
+	 rather than merely marking it handled."
+	canvas addEventHandlerOn: BlDragStartEvent do: [ :event |
+		((self isPanButton: event button) and: [ self isBackgroundEvent: event ])
+			ifTrue: [
+				event consumed: true.
+				panOrigin := event position.
+				panStart := canvas childrenTranslationFactor ]
+			ifFalse: [ panOrigin := nil ] ].
+	canvas addEventHandlerOn: BlDragEvent do: [ :event |
 		panOrigin ifNotNil: [ :origin |
-			canvas translate: event position - origin.
-			panOrigin := event position.
-			event consumed: true ] ].
-	canvas when: BlMouseUpEvent do: [ :event | panOrigin := nil ]!
+			event consumed: true.
+			canvas childrenTranslationFactor: panStart + (event position - origin).
+			self repositionGrid ] ].
+	canvas addEventHandlerOn: BlDragEndEvent do: [ :event | panOrigin := nil ]!
+
+isBackgroundEvent: anEvent
+	"True only when the pointer is over bare canvas.  A card swallows its own
+	 wheel events this way: the editor inside it scrolls, and the board does
+	 not also zoom underneath it."
+	| target |
+	target := anEvent target.
+	^ target == canvas or: [ target == grid ]!
 
 isPanButton: aButton
 	"Compared by class: the button objects are not identical across events."
@@ -159,7 +210,8 @@ zoomOnWheel: anEvent
 				canvas zoomLevel: level withTranslate: anEvent ] ]
 		ifFalse: [
 			level := canvas zoomLevel / canvas zoomStep.
-			level >= self class minimumZoom ifTrue: [ canvas zoomLevel: level ] ]!
+			level >= self class minimumZoom ifTrue: [ canvas zoomLevel: level ] ].
+	self repositionGrid!
 
 model
 	^ model!
@@ -319,6 +371,9 @@ loadDocument: aFileReference
 
 document
 	^ document!
+
+grid
+	^ grid!
 
 viewportExtent
 	"The parent box a root card's percentages resolve against.  Space extent

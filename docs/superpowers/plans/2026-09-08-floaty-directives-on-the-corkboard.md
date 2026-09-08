@@ -138,8 +138,20 @@ would sit still and say nothing about where the origin went. It is also one
 stamped `Form` rather than a repeating cell, because `BlImagePatternPaint` does
 not tile in this image — `#matchExtent:` is a stub that says so outright, and
 `#asSpartaPaintOn:` hands Sparta the bare form, which paints it once at the
-element's origin. So the plane is bounded (2400×1600 about the origin) and that
-bound is what the grid costs.
+element's origin. So the plane is bounded (2400×1600) and that bound is what the
+grid costs.
+
+Cairo underneath *does* support tiling — `SpartaCairoExtendMode` has
+`CAIRO_EXTEND_REPEAT` — but nothing in Bloc or Sparta's public API reaches it:
+`SpartaCairoSurfacePattern` exposes no instance-side setter, so turning it on
+means an FFI call into the Cairo backend from a `drawOnSpartaCanvas:` override.
+That is real, backend-locked work rather than a flag.
+
+Instead the bounded grid is **kept centred under the viewport**, snapped to a
+whole cell on every pan and zoom. Snapping is what makes the move invisible: a
+dot lands on the same document coordinate it would have had on an endless
+plane. The limit is zoom-out — once the viewport is wider than 2400 document
+pixels the grid stops covering it.
 
 Card **chrome** separates the two things a card is: the frame and title bar are
 light grey, the text area is white. Bodies use `BrGlamorousCodeEditorAptitude`
@@ -147,10 +159,24 @@ for the system monospace font — a card whose first line is
 `<!-- f@45%x42%+40%+11% -->` wants digits that line up.
 
 **Interaction on the background:** the wheel zooms (clamped to 0.15–6×), and a
-middle- or right-button drag pans. The left button does nothing on the
-background. GT's own `withZoomOnScrollWheel` is not usable here: it zooms only
-while the primary modifier is held and pans on a bare wheel, which is backwards
-for a canvas, so the handler is ours.
+middle- or right-button drag pans. The left button does nothing.
+
+`BlCanvassableElement` installs two gestures of its own in `initialize`, and
+both are removed first. Its `BlCanvassableElementSlideHandler` pans on a *left*
+drag, and its `withZoomOnScrollWheel` zooms only while the primary modifier is
+held and translates on a bare wheel. Leaving them on did not merely add
+behaviour — the stock wheel handler and ours both answered the same event, so a
+scroll zoomed and scrolled at once.
+
+Pan is built on drag events rather than raw mouse events because they carry
+`button` and are the path Bloc actually supports. The drag-start handler
+**must** consume its event: `BlMouseProcessor>>tryDragStart:` keeps the drag
+alive only if the start was consumed, so consuming is what arms the pan rather
+than merely marking it handled.
+
+A card **swallows its own wheel events**: the board zooms only when the event's
+target is bare canvas, so scrolling inside a panel scrolls that panel and the
+board does not zoom underneath it.
 
 Trackpad pinch-to-zoom and two-finger pan are a **TODO in the code**. This image
 has no `BlPinchEvent` or `BlZoomEvent`, so a trackpad arrives as ordinary wheel
