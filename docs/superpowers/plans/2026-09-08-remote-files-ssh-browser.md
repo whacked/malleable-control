@@ -2779,7 +2779,7 @@ Create `test/cache.test.ts`:
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ok, strictEqual, notStrictEqual } from "node:assert/strict";
+import { notStrictEqual, ok, strictEqual } from "node:assert/strict";
 import { describe, it } from "node:test";
 import { BlobCache, cacheKey } from "../lib/cache.ts";
 
@@ -2809,6 +2809,17 @@ describe("cacheKey", () => {
 
   it("is filesystem-safe hex", () => {
     ok(/^[0-9a-f]{64}$/.test(cacheKey(base)));
+  });
+
+  // A POSIX filename may contain any byte but NUL, so any separator we joined
+  // on could also appear inside a field and let one identity impersonate
+  // another. Length prefixes are what make the encoding unambiguous.
+  it("cannot be collided by a field containing the separator", () => {
+    for (const separator of [" ", "\n", "\t", "|", ":"]) {
+      const left = cacheKey({ ...base, sshTarget: "host", realpath: `a${separator}b` });
+      const right = cacheKey({ ...base, sshTarget: `host${separator}a`, realpath: "b" });
+      notStrictEqual(left, right, `collided on ${JSON.stringify(separator)}`);
+    }
   });
 });
 
@@ -2849,6 +2860,30 @@ describe("BlobCache", () => {
     cache.put("a".repeat(64), Buffer.alloc(10), { mime: null, remotePath: "/a" });
     cache.put("b".repeat(64), Buffer.alloc(20), { mime: null, remotePath: "/b" });
     strictEqual(cache.totalBytes(), 30);
+  });
+
+  // Date.now() is milliseconds and these calls take microseconds, so a burst
+  // of writes shares one timestamp. The ordering must come from a counter.
+  it("evicts by last use even when every write lands in the same millisecond", () => {
+    const cache = freshCache(100);
+    cache.put("a".repeat(64), Buffer.alloc(40), { mime: null, remotePath: "/a" });
+    cache.put("b".repeat(64), Buffer.alloc(40), { mime: null, remotePath: "/b" });
+    cache.get("a".repeat(64));
+    cache.put("c".repeat(64), Buffer.alloc(40), { mime: null, remotePath: "/c" });
+    strictEqual(cache.get("b".repeat(64)), null, "b was least recently used");
+    ok(cache.get("a".repeat(64)), "a was touched after b and must survive");
+  });
+
+  // A blob bigger than the whole cache used to evict itself on the way in and
+  // hand back a path to a file that no longer existed.
+  it("keeps a blob larger than the cap rather than deleting what it just wrote", () => {
+    const cache = freshCache(50);
+    const { path } = cache.put("a".repeat(64), Buffer.alloc(200), {
+      mime: null,
+      remotePath: "/big",
+    });
+    ok(existsSync(path), "put returned a path to a file it had already deleted");
+    ok(cache.get("a".repeat(64)), "the entry it just wrote must be readable");
   });
 
   it("evicts least-recently-used entries past the cap", () => {
@@ -2903,7 +2938,7 @@ Expected: FAIL — `Cannot find module '../lib/cache.ts'`
 // against bb's own copy at runtime.
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -2921,11 +2956,21 @@ export function cacheKey(input: {
   mtime: number;
   variant: string;
 }): string {
-  return createHash("sha256")
-    .update(
-      [input.sshTarget, input.realpath, input.size, input.mtime, input.variant].join(" "),
-    )
-    .digest("hex");
+  // Length-prefixed, not joined by a separator. A POSIX filename may contain
+  // any byte but NUL — including whatever separator we might pick — so a plain
+  // join lets two different identities produce one key: a realpath of "a b"
+  // and a target ending in " a" with realpath "b" hash identically.
+  const hash = createHash("sha256");
+  for (const field of [
+    input.sshTarget,
+    input.realpath,
+    String(input.size),
+    String(input.mtime),
+    input.variant,
+  ]) {
+    hash.update(`${Buffer.byteLength(field)}:${field}`);
+  }
+  return hash.digest("hex");
 }
 
 const DEFAULT_MAX_BYTES = 1024 * 1024 * 1024;
@@ -2943,16 +2988,49 @@ export class BlobCache {
     mkdirSync(join(dir, "blobs"), { recursive: true });
     this.db = new Database(join(dir, "index.db"));
     this.db.pragma("journal_mode = WAL");
+
+    // A cache written by an older version of this file lacks `seq`. It is a
+    // cache: discarding it costs a re-fetch, and carrying a migration for
+    // disposable data costs more than that forever.
+    const columns = this.db.prepare("PRAGMA table_info(blobs)").all() as Array<{
+      name: string;
+    }>;
+    if (columns.length > 0 && !columns.some((column) => column.name === "seq")) {
+      this.db.exec("DROP TABLE blobs");
+      rmSync(join(dir, "blobs"), { recursive: true, force: true });
+      mkdirSync(join(dir, "blobs"), { recursive: true });
+    }
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS blobs (
         key         TEXT PRIMARY KEY,
         bytes       INTEGER NOT NULL,
         mime        TEXT,
         remote_path TEXT NOT NULL,
-        accessed_at INTEGER NOT NULL
+        accessed_at INTEGER NOT NULL,
+        seq         INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS blobs_accessed ON blobs (accessed_at);
+      CREATE INDEX IF NOT EXISTS blobs_seq ON blobs (seq);
     `);
+
+    // Least-recently-used has to be ordered by a counter, not by a clock.
+    // Date.now() has millisecond resolution and these sqlite calls finish in
+    // microseconds, so every entry in a burst shares one timestamp — and both
+    // obvious tiebreaks are wrong: `key` orders by sha256 digest, which is
+    // arbitrary, and ROWID survives an ON CONFLICT UPDATE unchanged, so it
+    // records insertion order rather than last use.
+    const highest = this.db
+      .prepare("SELECT COALESCE(MAX(seq), 0) AS top FROM blobs")
+      .get() as { top: number };
+    this.seq = highest.top;
+  }
+
+  /** Monotonic within this handle, and resumed from the index on reopen. */
+  private seq: number;
+
+  private touch(): number {
+    this.seq += 1;
+    return this.seq;
   }
 
   /** Sharded by the first byte of the key: 256 directories, not one. */
@@ -2974,7 +3052,9 @@ export class BlobCache {
       this.db.prepare("DELETE FROM blobs WHERE key = ?").run(key);
       return null;
     }
-    this.db.prepare("UPDATE blobs SET accessed_at = ? WHERE key = ?").run(Date.now(), key);
+    this.db
+      .prepare("UPDATE blobs SET accessed_at = ?, seq = ? WHERE key = ?")
+      .run(Date.now(), this.touch(), key);
     return { path, bytes: row.bytes, mime: row.mime };
   }
 
@@ -2986,17 +3066,29 @@ export class BlobCache {
     const path = this.path(key);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, bytes);
-    this.db
-      .prepare(
-        `INSERT INTO blobs (key, bytes, mime, remote_path, accessed_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET
-           bytes = excluded.bytes,
-           mime = excluded.mime,
-           accessed_at = excluded.accessed_at`,
-      )
-      .run(key, bytes.length, meta.mime, meta.remotePath, Date.now());
-    this.prune();
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO blobs (key, bytes, mime, remote_path, accessed_at, seq)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             bytes = excluded.bytes,
+             mime = excluded.mime,
+             accessed_at = excluded.accessed_at,
+             seq = excluded.seq`,
+        )
+        .run(key, bytes.length, meta.mime, meta.remotePath, Date.now(), this.touch());
+    } catch (cause) {
+      // The file is written but unindexed, so nothing would ever count it or
+      // evict it. Remove it rather than leak it.
+      try {
+        unlinkSync(path);
+      } catch {
+        /* the blob was already gone; the index write is the real failure */
+      }
+      throw cause;
+    }
+    this.prune(key);
     return { path };
   }
 
@@ -3007,16 +3099,26 @@ export class BlobCache {
     return row.total;
   }
 
-  /** Drop least-recently-used entries until the cache fits. Returns the count. */
-  prune(): number {
+  /**
+   * Drop least-recently-used entries until the cache fits. Returns the count.
+   *
+   * `keep` is the key just written, which is never evicted: a blob larger than
+   * the whole cap would otherwise delete itself on the way in and hand its
+   * caller a path to a file that no longer exists. The cache is then over its
+   * cap by at most one blob, until the next put.
+   */
+  prune(keep?: string): number {
     let total = this.totalBytes();
     if (total <= this.maxBytes) return 0;
-    const oldest = this.db.prepare(
-      "SELECT key, bytes FROM blobs ORDER BY accessed_at ASC, key ASC",
-    );
+    // .all(), not .iterate(): better-sqlite3 refuses a write on a connection
+    // with an open cursor, and this loop deletes as it goes.
+    const oldest = this.db
+      .prepare("SELECT key, bytes FROM blobs ORDER BY seq ASC")
+      .all() as Array<{ key: string; bytes: number }>;
     let removed = 0;
-    for (const row of oldest.iterate() as Iterable<{ key: string; bytes: number }>) {
+    for (const row of oldest) {
       if (total <= this.maxBytes) break;
+      if (row.key === keep) continue;
       rmSync(this.path(row.key), { force: true });
       this.db.prepare("DELETE FROM blobs WHERE key = ?").run(row.key);
       total -= row.bytes;
