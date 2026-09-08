@@ -130,6 +130,33 @@ projection: nesting, relative placement, paint order, host-drag carrying
 children without touching their directives, a percent child rewritten in
 percent, and that the demo's sample file exists and projects.
 
+## The board itself
+
+A **dot grid** every 40px marks the plane. It is a child of the canvas rather
+than the canvas background, so it pans and zooms with the cards; a background
+would sit still and say nothing about where the origin went. It is also one
+stamped `Form` rather than a repeating cell, because `BlImagePatternPaint` does
+not tile in this image — `#matchExtent:` is a stub that says so outright, and
+`#asSpartaPaintOn:` hands Sparta the bare form, which paints it once at the
+element's origin. So the plane is bounded (2400×1600 about the origin) and that
+bound is what the grid costs.
+
+Card **chrome** separates the two things a card is: the frame and title bar are
+light grey, the text area is white. Bodies use `BrGlamorousCodeEditorAptitude`
+for the system monospace font — a card whose first line is
+`<!-- f@45%x42%+40%+11% -->` wants digits that line up.
+
+**Interaction on the background:** the wheel zooms (clamped to 0.15–6×), and a
+middle- or right-button drag pans. The left button does nothing on the
+background. GT's own `withZoomOnScrollWheel` is not usable here: it zooms only
+while the primary modifier is held and pans on a bare wheel, which is backwards
+for a canvas, so the handler is ours.
+
+Trackpad pinch-to-zoom and two-finger pan are a **TODO in the code**. This image
+has no `BlPinchEvent` or `BlZoomEvent`, so a trackpad arrives as ordinary wheel
+events and cannot be told apart from a mouse; doing it properly needs
+host-level gesture events first.
+
 ## Demonstrating it
 
 The launcher card *is* the demo. `McCorkboard open` projects

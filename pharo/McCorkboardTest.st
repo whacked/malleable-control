@@ -174,7 +174,8 @@ testSectionWithoutADirectiveIsNotProjected
 	| board |
 	board := self floatyBoard.
 	self assert: (board document directiveLabelled: 'Plain') isNil.
-	self assert: board canvas children size equals: 1!
+	"The dot grid, plus the one root card."
+	self assert: board canvas children size equals: 2!
 
 testDraggingTheHostRewritesItsOwnDirectiveOnly
 	| board host child |
@@ -240,4 +241,5 @@ testTheSampleFileProjectsAsANestedBoard
 	board := McCorkboard new buildDocumentView: McCorkboard sampleDocument.
 	self assert: board document roots size equals: 1.
 	self assert: board document roots first children size equals: 2.
-	self assert: board canvas children size equals: 1! !
+	"The dot grid, plus the one root card."
+	self assert: board canvas children size equals: 2! !

@@ -7,8 +7,8 @@ resolution and future pan/zoom independent from the component tree.
 "!
 
 Object subclass: #McCorkboard
-	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews'
-	classVariableNames: ''
+	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews panOrigin'
+	classVariableNames: 'GridForm'
 	package: 'MalleableControl'!
 
 !McCorkboard class methodsFor: 'opening'!
@@ -63,7 +63,7 @@ refreshView
 	canvas ifNil: [ ^ self ].
 	document ifNotNil: [ ^ self projectDocument ].
 	self discardAllDrafts.
-	canvas removeChildren.
+	self clearCanvas.
 	panelViews := Dictionary new.
 	model panels do: [ :each | self addPanelViewFor: each ].
 	^ self!
@@ -91,8 +91,75 @@ buildCanvasTitled: aString
 	canvas disableAutoScale.
 	canvas constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ].
 	canvas background: (Color fromHexString: '#20232a').
+	self installCanvasInteractions.
+	self clearCanvas.
 	space root addChild: canvas.
 	^ canvas!
+
+clearCanvas
+	"Every re-projection starts from an empty plane carrying only its grid."
+	canvas removeChildren.
+	canvas addChild: self gridElement!
+
+gridElement
+	"The dot grid is a child of the canvas rather than its background, so it
+	 pans and zooms with the cards.  A background would stay put and say
+	 nothing about where the document's origin went."
+	| element extent |
+	extent := self class gridExtent.
+	element := BlElement new.
+	element size: extent.
+	element constraintsDo: [ :c | c ignoreByLayout ].
+	"Half the extent, and both halves are whole multiples of the spacing, so a
+	 dot lands exactly on the document origin."
+	element relocate: (extent / 2) negated.
+	element background: (BlImagePatternPaint form: self class gridForm).
+	^ element!
+
+installCanvasInteractions
+	"The wheel zooms and a middle or right drag pans; the left button does
+	 nothing on the background.
+
+	 GT's own withZoomOnScrollWheel is not usable here: it zooms only while the
+	 primary modifier is held and pans on a bare wheel, which is the opposite
+	 of what this canvas wants.
+
+	 TODO: trackpad pinch-to-zoom and two-finger pan.  This image has no
+	 BlPinchEvent or BlZoomEvent, so a trackpad arrives as ordinary wheel
+	 events and cannot be told from a mouse; doing it properly needs host-level
+	 gesture events first.  Mouse is fine for now."
+	canvas when: BlMouseWheelEvent do: [ :event |
+		event isPrimarilyVertical ifTrue: [
+			event consumed: true.
+			self zoomOnWheel: event ] ].
+	canvas when: BlMouseDownEvent do: [ :event |
+		(self isPanButton: event button) ifTrue: [
+			panOrigin := event position.
+			event consumed: true ] ].
+	canvas when: BlMouseMoveEvent do: [ :event |
+		panOrigin ifNotNil: [ :origin |
+			canvas translate: event position - origin.
+			panOrigin := event position.
+			event consumed: true ] ].
+	canvas when: BlMouseUpEvent do: [ :event | panOrigin := nil ]!
+
+isPanButton: aButton
+	"Compared by class: the button objects are not identical across events."
+	^ aButton class = BlMouseMiddleButton
+		or: [ aButton class = BlMouseSecondaryButton ]!
+
+zoomOnWheel: anEvent
+	"Zoom towards the pointer on the way in, which is what makes a wheel feel
+	 like a magnifier rather than a slider."
+	| level |
+	anEvent vector y positive
+		ifTrue: [
+			level := canvas zoomLevel * canvas zoomStep.
+			level <= self class maximumZoom ifTrue: [
+				canvas zoomLevel: level withTranslate: anEvent ] ]
+		ifFalse: [
+			level := canvas zoomLevel / canvas zoomStep.
+			level >= self class minimumZoom ifTrue: [ canvas zoomLevel: level ] ]!
 
 model
 	^ model!
@@ -260,7 +327,7 @@ viewportExtent
 	^ space ifNil: [ 1000 @ 700 ] ifNotNil: [ :each | each extent ]!
 
 projectDocument
-	canvas removeChildren.
+	self clearCanvas.
 	cardViews := IdentityDictionary new.
 	document roots do: [ :each |
 		self addCardViewFor: each in: canvas parentExtent: self viewportExtent ].
@@ -286,7 +353,9 @@ addCardViewFor: aDirective in: aParentElement parentExtent: anExtent
 	card layout: BlLinearLayout vertical.
 	card size: extent.
 	card padding: (BlInsets all: 8).
-	card background: (Color fromHexString: '#f8f9fb').
+	"The frame is grey and the text area below is white, so the title bar stops
+	 somewhere visible instead of bleeding into the body."
+	card background: (Color fromHexString: '#dfe3e8').
 	card border: (BlBorder paint: (Color fromHexString: '#6c7280') width: 1).
 	card geometry: (BlRoundedRectangleGeometry cornerRadius: 6).
 	card constraintsDo: [ :c | c ignoreByLayout ].
@@ -322,7 +391,11 @@ headerFor: aDirective card: aCardElement
 bodyFor: aDirective
 	| body |
 	body := BrEditor new.
-	body aptitude: BrGlamorousRegularEditorAptitude new.
+	"The code aptitude rather than the regular one: it carries the system
+	 monospace font, which is what a directive full of digits wants."
+	body aptitude: BrGlamorousCodeEditorAptitude new.
+	body background: Color white.
+	body padding: (BlInsets all: 4).
 	"Read-only for now: this iteration projects the text and owns the geometry.
 	 Editing a card back into the host rope is the next piece of work."
 	body beReadOnlyWithSelection.
@@ -362,3 +435,44 @@ cardViewFor: aDirective
 
 cardBodyFor: aDirective
 	^ (cardViews at: aDirective) second! !
+
+!McCorkboard class methodsFor: 'grid'!
+gridSpacing
+	^ 40!
+
+gridExtent
+	"Finite, and a whole number of cells each way about the origin.  The grid is
+	 one image rather than a repeating pattern, so the plane it covers is what
+	 it costs; this is far larger than anything the demo places."
+	^ 2400 @ 1600!
+
+minimumZoom
+	^ 0.15!
+
+maximumZoom
+	^ 6!
+
+gridForm
+	"Built once and kept: every board projects the same plane."
+	^ GridForm ifNil: [ GridForm := self buildGridForm ]!
+
+buildGridForm
+	"The dot grid, stamped into a single Form.
+
+	 Not a repeating pattern: BlImagePatternPaint does not tile in this image.
+	 Its #matchExtent: is a stub that says so in as many words, and
+	 #asSpartaPaintOn: hands Sparta the bare Form, which paints it once at the
+	 element's origin.  So the grid is one image covering a bounded plane
+	 rather than a cell repeated over an unbounded one."
+	| form dot spacing extent |
+	spacing := self gridSpacing.
+	extent := self gridExtent.
+	form := Form extent: extent depth: 32.
+	form fillColor: (Color fromHexString: '#20232a').
+	dot := Color fromHexString: '#454b58'.
+	0 to: extent x - 1 by: spacing do: [ :x |
+		0 to: extent y - 1 by: spacing do: [ :y |
+			0 to: 1 do: [ :dx |
+				0 to: 1 do: [ :dy |
+					form colorAt: (x + dx) @ (y + dy) put: dot ] ] ] ].
+	^ form! !
