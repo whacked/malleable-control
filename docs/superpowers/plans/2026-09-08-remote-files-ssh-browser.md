@@ -1686,8 +1686,15 @@ describe("confinement", () => {
     strictEqual(parseConfinement("/srv/data\n").ok, false);
   });
 
+  // The marker is spliced into an argv, so it must survive spawn(). A NUL
+  // byte cannot: POSIX exec() argv elements are NUL-terminated.
+  it("uses a marker that can actually travel in an argv", () => {
+    const text = confinementCommand("/srv/data", "a.txt").join(" ");
+    strictEqual(text.includes("\u0000"), false, "a NUL byte cannot reach spawn()");
+  });
+
   it("explains a symlinked file rather than calling it an escape", () => {
-    const result = parseConfinement("/srv/data\n\u0000symlink\n");
+    const result = parseConfinement("/srv/data\n!symlink\n");
     strictEqual(result.ok, false);
     if (!result.ok) ok(/symlinked file/i.test(result.error), result.error);
   });
@@ -1843,10 +1850,15 @@ export function confinementCommand(root: string, rel: string): string[] {
 }
 
 /**
- * Stands in for a realpath the shell tier declines to resolve. Not a path any
- * filesystem could produce, so it can never collide with a real one.
+ * Stands in for a realpath the shell tier declines to resolve.
+ *
+ * It has no leading slash, and the value it is compared against always comes
+ * from `pwd -P`, which is always absolute — so this can never collide with a
+ * real answer. Deliberately not a NUL byte: this string is spliced into an
+ * argv, and POSIX exec() argv elements are NUL-terminated, so Node refuses to
+ * spawn at all if one appears.
  */
-const SYMLINK_MARKER = "\u0000symlink";
+const SYMLINK_MARKER = "!symlink";
 
 export function parseConfinement(
   stdout: string,
