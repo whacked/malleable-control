@@ -4014,6 +4014,7 @@ fetched, and the route only reads what this plugin put in the cache."
   - `columnsFor(segments: string[]): string[]`
   - `moveSelection(column: Column, delta: number | "start" | "end"): number`
   - `filterEntries(entries: Entry[], query: string): Entry[]`
+  - `shouldHandleKey(event: { metaKey; ctrlKey; altKey }, target: { tagName?; isContentEditable? } | null): boolean`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4022,7 +4023,13 @@ Create `test/columns.test.ts`. The navigation arithmetic is where off-by-ones li
 ```ts
 import { deepStrictEqual, strictEqual } from "node:assert/strict";
 import { describe, it } from "node:test";
-import { columnsFor, filterEntries, moveSelection, pathOf } from "../lib/columns.ts";
+import {
+  columnsFor,
+  filterEntries,
+  moveSelection,
+  pathOf,
+  shouldHandleKey,
+} from "../lib/columns.ts";
 import type { Entry } from "../lib/shell-tier.ts";
 
 const entry = (name: string, type: Entry["type"] = "file"): Entry => ({
@@ -4076,6 +4083,37 @@ describe("moveSelection", () => {
   it("stays at zero in an empty column", () => {
     strictEqual(moveSelection({ path: ".", entries: [], selected: 0 }, 1), 0);
     strictEqual(moveSelection({ path: ".", entries: [], selected: 0 }, "end"), 0);
+  });
+});
+
+describe("shouldHandleKey", () => {
+  const asInput = (tagName: string) => ({ tagName, isContentEditable: false });
+
+  it("declines a key typed into a text field", () => {
+    strictEqual(shouldHandleKey({ metaKey: false, ctrlKey: false, altKey: false }, asInput("INPUT")), false);
+    strictEqual(shouldHandleKey({ metaKey: false, ctrlKey: false, altKey: false }, asInput("TEXTAREA")), false);
+    strictEqual(
+      shouldHandleKey({ metaKey: false, ctrlKey: false, altKey: false }, { tagName: "DIV", isContentEditable: true }),
+      false,
+    );
+  });
+
+  it("declines a modified key so the host keeps its shortcuts", () => {
+    for (const modifier of ["metaKey", "ctrlKey", "altKey"] as const) {
+      strictEqual(
+        shouldHandleKey({ metaKey: false, ctrlKey: false, altKey: false, [modifier]: true }, asInput("DIV")),
+        false,
+        modifier,
+      );
+    }
+  });
+
+  it("handles an unmodified key outside a text field", () => {
+    strictEqual(shouldHandleKey({ metaKey: false, ctrlKey: false, altKey: false }, asInput("DIV")), true);
+  });
+
+  it("handles a key when there is no target at all", () => {
+    strictEqual(shouldHandleKey({ metaKey: false, ctrlKey: false, altKey: false }, null), true);
   });
 });
 
@@ -4135,6 +4173,23 @@ export function moveSelection(column: Column, delta: number | "start" | "end"): 
   return Math.min(last, Math.max(0, column.selected + delta));
 }
 
+/**
+ * Whether a keystroke is ours to act on.
+ *
+ * Two things it protects: a modified key belongs to the host's shortcuts, and
+ * a key typed into a text field belongs to that field — without the second,
+ * typing "github.com" into the SSH target box navigates the browser instead
+ * of inserting text.
+ */
+export function shouldHandleKey(
+  event: { metaKey: boolean; ctrlKey: boolean; altKey: boolean },
+  target: { tagName?: string; isContentEditable?: boolean } | null,
+): boolean {
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (target?.isContentEditable === true) return false;
+  return target?.tagName !== "INPUT" && target?.tagName !== "TEXTAREA";
+}
+
 export function filterEntries(entries: Entry[], query: string): Entry[] {
   const needle = query.trim().toLowerCase();
   if (needle === "") return entries;
@@ -4155,7 +4210,13 @@ import { definePluginApp, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { columnsFor, filterEntries, moveSelection, pathOf } from "@/lib/columns";
+import {
+  columnsFor,
+  filterEntries,
+  moveSelection,
+  pathOf,
+  shouldHandleKey,
+} from "@/lib/columns";
 import type { Entry } from "@/lib/shell-tier";
 import type { Preview, Status, rpcContract } from "./server";
 
@@ -4358,13 +4419,17 @@ export default definePluginApp(() => {
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
-      if (filtering) {
+      const target = event.target as HTMLElement | null;
+      if (!shouldHandleKey(event, target)) {
+        // Escape still leaves the filter box, which is itself a text field.
         if (event.key === "Escape") {
           setFiltering(false);
           setFilter("");
+          target?.blur();
         }
         return;
       }
+
       const column = { path: currentPath, entries, selected };
       const set = (next: number) =>
         setSelection((prior) => ({ ...prior, [currentPath]: next }));
@@ -4385,7 +4450,7 @@ export default definePluginApp(() => {
       }
       event.preventDefault();
     },
-    [filtering, currentPath, entries, selected, descend, ascend],
+    [currentPath, entries, selected, descend, ascend],
   );
 
   return (
