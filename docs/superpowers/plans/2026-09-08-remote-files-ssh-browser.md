@@ -2108,6 +2108,21 @@ describe("RemoteClient", () => {
     }
   });
 
+  // The state that used to fool server.ts's status(): the probe succeeded, so
+  // the tier is known, but the connection is not usable. Deriving "connected"
+  // from `capabilities !== null` reported success for exactly this case.
+  it("knows the tier but reports failure when the root is unusable", async () => {
+    const remote = new RemoteClient({
+      sshTarget: "fake-host",
+      rootDir: join(root, "no-such-directory"),
+      sshBin: fakeSsh,
+    });
+    const result = await remote.connect();
+    strictEqual(result.ok, false, "an unusable root must not connect");
+    ok(remote.capabilities !== null, "the probe ran, so the tier is known");
+    if (!result.ok) ok(/start directory/i.test(result.error), result.error);
+  });
+
   it("refuses every operation before connect", async () => {
     const result = await client().list(".");
     strictEqual(result.ok, false);
@@ -3256,22 +3271,23 @@ describe("connect", () => {
   // populated. Deriving "connected" from that reported success while `error`
   // held the failure, and `bb remote connect` printed "Connected." and exited
   // 0 while dropping the message.
-  it("does not report connected when connect returned an error", async () => {
+  // These hold whichever way the connection failed, so they do not depend on
+  // this machine being able to reach anything. The discriminating case — a
+  // reachable host with an unusable root, where `capabilities` is populated
+  // and the old expression still said "connected" — is proved one layer down,
+  // in test/remote.test.ts.
+  it("never reports connected alongside an error", async () => {
     const harness = await host({ sshTarget: "box", rootDir: "/srv" });
     const result = (await harness.behavior.callRpc("connect", null)) as any;
-    if (result.error !== null) {
-      strictEqual(result.connected, false, "connected must not be true alongside an error");
-    }
+    ok(result.error !== null, "this environment cannot reach 'box'; the test needs a failure");
+    strictEqual(result.connected, false, "connected must never be true alongside an error");
   });
 
-  it("exits non-zero from the CLI whenever connect reported an error", async () => {
+  it("exits non-zero from the CLI when connect failed", async () => {
     const harness = await host({ sshTarget: "box", rootDir: "/srv" });
-    const status = (await harness.behavior.callRpc("connect", null)) as any;
     const cli = await harness.behavior.runCli(["connect"]);
-    if (status.error !== null) {
-      strictEqual(cli.exitCode, 1, "a failed connect must not exit 0");
-      ok(cli.stderr.length > 0, "a failed connect must say why");
-    }
+    strictEqual(cli.exitCode, 1, "a failed connect must not exit 0");
+    ok(cli.stderr.length > 0, "a failed connect must say why");
   });
 });
 
