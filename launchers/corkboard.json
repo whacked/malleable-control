@@ -2,12 +2,25 @@
   "title": "Corkboard",
   "blurb": "Coordinate-addressable canvas, independent of the rich editor",
   "files": [
+    "pharo/McCache.st",
+    "pharo/McRelation.st",
+    "pharo/McMarkdownLink.st",
+    "pharo/McMarkdownCode.st",
+    "pharo/McCodeEval.st",
+    "pharo/McMarkdownInline.st",
+    "pharo/McMarkdownTable.st",
+    "pharo/McSqlite.st",
+    "pharo/McMarkdown.st",
+    "pharo/McFloaty.st",
     "pharo/McCorkboardPanelModel.st",
     "pharo/McCorkboardDocument.st",
     "pharo/McCorkboard.st"
   ],
   "open": "McCorkboard open",
-  "tests": ["McCorkboardTest"],
+  "tests": [
+    "McCorkboardTest",
+    "McFloatyTest"
+  ],
   "priority": 30,
-  "note": "McCorkboard projects a McCorkboardDocument, which holds McCorkboardPanelModel instances."
+  "note": "McCorkboard projects a McCorkboardDocument, which holds McCorkboardPanelModel instances. It also projects a McFloatyDocument, whose cards come from floaty directives in a file; McFloaty reads headings with McMarkdownParser, which is why the markdown chain is loaded here in the same order rich-edit needs it."
 }

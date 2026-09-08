@@ -308,7 +308,7 @@ if -- the class implements it:
 
 | tool | on a second click |
 |---|---|
-| Corkboard | front, then re-project the cards from the model |
+| Corkboard | front, then re-project the cards from the model, or from the floaty document when one is loaded |
 | Weather | front, then re-fetch |
 | KDI Explorer | front, then fire the inspector's update wish |
 | Rich Edit | front only -- it may hold unsaved text |

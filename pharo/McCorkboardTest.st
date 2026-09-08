@@ -125,3 +125,102 @@ testRefreshViewKeepsCommittedCoordinatesAndDropsDrafts
 	self assert: (board panelControlsFor: #noteTwo) first constraints position equals: -90 @ 240.
 	self assert: (board model coordinateOf: #noteOne) equals: 0 @ 0.
 	self deny: (board model panelAt: #noteOne) isDirty! !
+
+!McCorkboardTest methodsFor: 'tests - floaty document'!
+floatySource
+	^ String lf join: #(
+		'# Host'
+		'<!!-- f@800x600+40-60 -->'
+		'host body'
+		''
+		'## Child'
+		'<!!-- f@50%x25%+10%+20% -->'
+		'child body'
+		''
+		'## Plain'
+		'plain body')!
+
+floatyBoard
+	^ McCorkboard new buildDocumentViewOn: self floatySource markdown: true!
+
+testDocumentBoardNestsEachCardInsideItsHost
+	"Bloc nesting mirrors the document, which is what makes relative placement
+	 and move-together fall out of the projection rather than be maintained."
+	| board host child |
+	board := self floatyBoard.
+	host := board document roots first.
+	child := board document directiveLabelled: 'Child'.
+	self assert: (board cardViewFor: child) parent == (board cardViewFor: host).
+	self assert: (board cardViewFor: host) parent == board canvas!
+
+testChildSitsAtItsPercentageOfTheHostBox
+	| board host child |
+	board := self floatyBoard.
+	host := board document roots first.
+	child := board document directiveLabelled: 'Child'.
+	self assert: (board cardViewFor: host) constraints position equals: 40 @ -60.
+	"10% of 800 and 20% of 600, in the host's own coordinates."
+	self assert: (board cardViewFor: child) constraints position equals: 80 @ 120!
+
+testChildPaintsAboveItsHost
+	"Children are added after the body, so the paint order needs no elevation."
+	| board child hostCard |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	hostCard := board cardViewFor: board document roots first.
+	self assert: hostCard children last == (board cardViewFor: child)!
+
+testSectionWithoutADirectiveIsNotProjected
+	| board |
+	board := self floatyBoard.
+	self assert: (board document directiveLabelled: 'Plain') isNil.
+	self assert: board canvas children size equals: 1!
+
+testDraggingTheHostRewritesItsOwnDirectiveOnly
+	| board host child |
+	board := self floatyBoard.
+	host := board document roots first.
+	child := board document directiveLabelled: 'Child'.
+	(board cardViewFor: host) relocate: 123 @ -45.
+	board commitDraggedCard: host
+		view: (board cardViewFor: host)
+		parentExtent: board viewportExtent.
+	self assert: (board document renderedSource includesSubstring: 'f@800x600+123-45').
+	self assert: (board document renderedSource includesSubstring: 'f@50%x25%+10%+20%')!
+
+testDraggingTheHostLeavesChildrenWhereTheyWereRelativeToIt
+	"The child is a Bloc child, so the host carries it; its own coordinates --
+	 and so its own directive -- must not move."
+	| board host child |
+	board := self floatyBoard.
+	host := board document roots first.
+	child := board document directiveLabelled: 'Child'.
+	(board cardViewFor: host) relocate: 300 @ 200.
+	board commitDraggedCard: host
+		view: (board cardViewFor: host)
+		parentExtent: board viewportExtent.
+	self assert: (board cardViewFor: child) constraints position equals: 80 @ 120.
+	self assert: child geometry asDirectiveString equals: 'f@50%x25%+10%+20%'!
+
+testDraggingAChildRewritesItInThePercentItWasWrittenIn
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	(board cardViewFor: child) relocate: 88 @ 132.
+	board commitDraggedCard: child
+		view: (board cardViewFor: child)
+		parentExtent: 800 @ 600.
+	self assert: child geometry asDirectiveString equals: 'f@50%x25%+11%+22%'!
+
+testHostBodyShowsTheDirectiveADragJustRewrote
+	"Each body is a view onto a range of the one document, so the host -- which
+	 shows the whole of it -- has to reflect a child's new directive too."
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	(board cardViewFor: child) relocate: 88 @ 132.
+	board commitDraggedCard: child
+		view: (board cardViewFor: child)
+		parentExtent: 800 @ 600.
+	self assert: ((board cardBodyFor: board document roots first) text asString
+		includesSubstring: 'f@50%x25%+11%+22%')! !

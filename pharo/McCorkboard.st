@@ -7,7 +7,7 @@ resolution and future pan/zoom independent from the component tree.
 "!
 
 Object subclass: #McCorkboard
-	instanceVariableNames: 'model space canvas panelViews'
+	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -35,6 +35,7 @@ refreshView
 	 reloading anything: committed coordinates survive and drafts still in
 	 flight are dropped, which is what Escape already does."
 	canvas ifNil: [ ^ self ].
+	document ifNotNil: [ ^ self projectDocument ].
 	self discardAllDrafts.
 	canvas removeChildren.
 	panelViews := Dictionary new.
@@ -46,8 +47,17 @@ buildView
 	 its real Bloc children without a window-manager dependency."
 	model := self class exampleModel.
 	panelViews := Dictionary new.
+	self buildCanvasTitled: 'Corkboard — coordinate canvas prototype'.
+	"Editors consume Escape. Capture it at the canvas so discard is reliable
+	 even while a numeric field has focus."
+	canvas addEventFilter: (BlEventHandler on: BlKeyDownEvent do: [ :event |
+		event key isEscape ifTrue: [ self discardAllDrafts. event consumed: true ] ]).
+	model panels do: [ :each | self addPanelViewFor: each ].
+	^ self!
+
+buildCanvasTitled: aString
 	space := BlSpace new.
-	space title: 'Corkboard — coordinate canvas prototype'.
+	space title: aString.
 	space extent: 1000 @ 700.
 	canvas := BlCanvassableElement new.
 	"Without this, the first layout zooms to fit the cards and document
@@ -55,13 +65,8 @@ buildView
 	canvas disableAutoScale.
 	canvas constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ].
 	canvas background: (Color fromHexString: '#20232a').
-	"Editors consume Escape. Capture it at the canvas so discard is reliable
-	 even while a numeric field has focus."
-	canvas addEventFilter: (BlEventHandler on: BlKeyDownEvent do: [ :event |
-		event key isEscape ifTrue: [ self discardAllDrafts. event consumed: true ] ]).
 	space root addChild: canvas.
-	model panels do: [ :each | self addPanelViewFor: each ].
-	^ self!
+	^ canvas!
 
 model
 	^ model!
@@ -183,3 +188,151 @@ discardAllDrafts
 		aPanelModel discardDraft.
 		views := panelViews at: aPanelModel id.
 		self updatePanel: aPanelModel view: views first xEditor: views second yEditor: views third dirty: views fourth ]! !
+
+!McCorkboard class methodsFor: 'opening'!
+openDocument: aFileReference
+	"Project a floaty document onto the board.  A board that is already up
+	 takes the new document rather than opening a second window."
+	^ (McWindow front: self)
+		ifNil: [ self new openDocumentView: aFileReference ]
+		ifNotNil: [ :board | board loadDocument: aFileReference ]! !
+
+!McCorkboard methodsFor: 'floaty document'!
+openDocumentView: aFileReference
+	self buildDocumentView: aFileReference.
+	space show.
+	^ self!
+
+buildDocumentView: aFileReference
+	"The document counterpart of #buildView, and the same test seam."
+	documentFile := aFileReference asFileReference asAbsolute.
+	self buildCanvasTitled: 'Corkboard — ' , documentFile basename.
+	document := McFloatyDocument onFile: documentFile.
+	self projectDocument.
+	^ self!
+
+buildDocumentViewOn: aString markdown: aBoolean
+	"Build a document board from source text, with no file behind it."
+	self buildCanvasTitled: 'Corkboard — floaty'.
+	document := McFloatyDocument on: aString markdown: aBoolean.
+	self projectDocument.
+	^ self!
+
+loadDocument: aFileReference
+	documentFile := aFileReference asFileReference asAbsolute.
+	document := McFloatyDocument onFile: documentFile.
+	self projectDocument.
+	^ self!
+
+document
+	^ document!
+
+viewportExtent
+	"The parent box a root card's percentages resolve against.  Space extent
+	 rather than canvas extent: the canvas matches its parent, but only once a
+	 layout has run, and a board built headless has not had one."
+	^ space ifNil: [ 1000 @ 700 ] ifNotNil: [ :each | each extent ]!
+
+projectDocument
+	canvas removeChildren.
+	cardViews := IdentityDictionary new.
+	document roots do: [ :each |
+		self addCardViewFor: each in: canvas parentExtent: self viewportExtent ].
+	^ self!
+
+saveDocument
+	documentFile ifNil: [ ^ self ].
+	documentFile ensureDelete.
+	documentFile writeStreamDo: [ :stream |
+		stream nextPutAll: document renderedSource ].
+	^ self! !
+
+!McCorkboard methodsFor: 'floaty projection'!
+addCardViewFor: aDirective in: aParentElement parentExtent: anExtent
+	"A card is a Bloc child of the card it nests in, which is what makes the
+	 three things the document asks for cost nothing: a child's constraints
+	 position is already relative to its host, dragging the host carries its
+	 children along with their relative positions intact, and a child painted
+	 after its parent is painted above it."
+	| card body extent |
+	extent := aDirective geometry extentIn: anExtent.
+	card := BlElement new.
+	card layout: BlLinearLayout vertical.
+	card size: extent.
+	card padding: (BlInsets all: 8).
+	card background: (Color fromHexString: '#f8f9fb').
+	card border: (BlBorder paint: (Color fromHexString: '#6c7280') width: 1).
+	card geometry: (BlRoundedRectangleGeometry cornerRadius: 6).
+	card constraintsDo: [ :c | c ignoreByLayout ].
+	card relocate: (aDirective geometry positionIn: anExtent).
+	card when: BlPullEvent do: [ :event |
+		self commitDraggedCard: aDirective view: card parentExtent: anExtent ].
+	body := self bodyFor: aDirective.
+	card addChild: (self headerFor: aDirective card: card).
+	card addChild: body.
+	aParentElement addChild: card.
+	cardViews at: aDirective put: { card. body }.
+	"After the body, so every descendant paints over it."
+	aDirective children do: [ :each |
+		self addCardViewFor: each in: card parentExtent: extent ].
+	^ card!
+
+headerFor: aDirective card: aCardElement
+	| header title |
+	header := BlElement new layout: BlLinearLayout horizontal.
+	header constraintsDo: [ :c | c horizontal matchParent. c vertical exact: 26 ].
+	title := BrLabel new.
+	title text: (aDirective label asRopedText fontSize: 13; bold).
+	title constraintsDo: [ :c | c horizontal fitContent ].
+	header addChild: title.
+	(aDirective isRoot and: [ documentFile notNil ])
+		ifTrue: [ header addChild: self saveButton ].
+	"Only the header pulls, so the body keeps ordinary selection semantics."
+	header addEventHandler: (BlPullHandler new
+		targetElement: aCardElement;
+		allowOutOfBounds).
+	^ header!
+
+bodyFor: aDirective
+	| body |
+	body := BrEditor new.
+	body aptitude: BrGlamorousRegularEditorAptitude new.
+	"Read-only for now: this iteration projects the text and owns the geometry.
+	 Editing a card back into the host rope is the next piece of work."
+	body beReadOnlyWithSelection.
+	body text: (document renderRange: aDirective regionRange) asRopedText.
+	body constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ].
+	^ body!
+
+saveButton
+	| button |
+	button := BrButton new.
+	button label: 'Save'.
+	button aptitude: BrGlamorousButtonWithLabelAptitude new.
+	button constraintsDo: [ :c | c horizontal exact: 58 ].
+	button action: [ self saveDocument ].
+	^ button! !
+
+!McCorkboard methodsFor: 'floaty interaction'!
+commitDraggedCard: aDirective view: aCardElement parentExtent: anExtent
+	"A dropped card keeps constraints position in its parent's coordinates,
+	 which is exactly what the directive means, so the only conversion is back
+	 into the unit the author wrote."
+	aDirective geometry: (aDirective geometry
+		withPosition: aCardElement constraints position
+		in: anExtent).
+	self refreshCardTexts.
+	^ aDirective!
+
+refreshCardTexts
+	"Every body is a view onto a range of the one document, so a directive a
+	 drag has just rewritten must reappear in each card whose region covers it,
+	 the host included."
+	cardViews keysAndValuesDo: [ :directive :views |
+		views second text: (document renderRange: directive regionRange) asRopedText ]!
+
+cardViewFor: aDirective
+	^ (cardViews at: aDirective) first!
+
+cardBodyFor: aDirective
+	^ (cardViews at: aDirective) second! !
