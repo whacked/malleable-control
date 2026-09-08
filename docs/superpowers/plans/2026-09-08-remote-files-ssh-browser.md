@@ -4794,6 +4794,15 @@ Expected: `connect` prints the tier and resize path; `ls` prints the directory.
 In the Remote Files panel, enter the same host and directory and press Connect. Check each:
 
 - Columns appear, and clicking a directory opens a new column to its right.
+- **Clicking a directory in an *earlier* column walks into that directory**,
+  rather than merely backing up to the column it lives in. This is the one
+  Miller-column gesture with no automated coverage — `app.tsx` has none — so
+  it is checked by hand here.
+- **A directory you cannot read shows its error in the column**, not an empty
+  listing. Make one: `chmod 000` a directory on the remote host, browse to its
+  parent, select it, then `chmod` it back. Also untested automatically.
+- Typing a host containing letters into the SSH-target field inserts text
+  rather than moving the selection.
 - `j`/`k` move the selection, `l` descends, `h` ascends, `/` filters.
 - Selecting a directory shows its contents in the right-hand pane.
 - Selecting a text file shows its text.
