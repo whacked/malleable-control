@@ -4642,9 +4642,136 @@ and put this in its place:
 
 ```tsx
 /**
+ * An image, and what to say when its bytes have gone.
+ *
+ * The cache is LRU, so a blob can be evicted between the preview being built
+ * and the browser asking for it. Without onError the pane renders nothing at
+ * all — `alt=""` means several browsers draw no broken-image glyph either —
+ * and a blank pane reads as a bug rather than as a stale cache.
+ */
+function ImagePreview({
+  url,
+  size,
+  resized,
+  name,
+}: {
+  url: string;
+  size: number;
+  resized: boolean;
+  name: string;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return (
+      <div className="p-4 text-sm text-muted-foreground">
+        The cached copy of this image is gone. Select it again to refetch it.
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full flex-col">
+      <img
+        src={url}
+        alt={name}
+        onError={() => setFailed(true)}
+        className="max-h-full max-w-full self-center object-contain p-2"
+      />
+      {resized && (
+        <div className="px-3 pb-2 text-xs text-muted-foreground">
+          Downscaled for preview — the original is {formatSize(size)}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One rendered branch per Preview kind.
+ *
+ * A switch with a `never` fallthrough rather than a ternary chain, because
+ * only the former actually makes the compiler enforce exhaustiveness: a chain
+ * ending in `else` compiles happily with a branch missing, and typechecks
+ * clean while silently rendering nothing for it.
+ */
+function PreviewBody({ preview, name }: { preview: Preview; name: string }) {
+  switch (preview.kind) {
+    case "dir":
+      // One level ahead of the selection, as in ranger and yazi.
+      return (
+        <div className="py-1">
+          {preview.entries.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-muted-foreground">empty directory</div>
+          ) : (
+            preview.entries.map((child) => (
+              <div key={child.name} className="flex items-baseline gap-2 px-3 py-0.5 text-sm">
+                <span className="w-3 shrink-0 opacity-60">
+                  {child.type === "dir" ? "/" : child.type === "link" ? "@" : ""}
+                </span>
+                <span className="truncate">{child.name}</span>
+                <span className="ml-auto shrink-0 text-xs opacity-60">
+                  {child.type === "dir" ? "" : formatSize(child.size)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      );
+
+    case "image":
+      // Keyed on the url so a new selection starts without the old one's
+      // error state.
+      return (
+        <ImagePreview
+          key={preview.url}
+          url={preview.url}
+          size={preview.size}
+          resized={preview.resized}
+          name={name}
+        />
+      );
+
+    case "text":
+      return (
+        <div>
+          <pre className="whitespace-pre-wrap px-3 py-2 font-mono text-xs leading-relaxed">
+            {preview.text}
+          </pre>
+          {preview.truncated && (
+            <div className="border-t px-3 py-1 text-xs text-muted-foreground">
+              Showing the first part of {formatSize(preview.size)}.
+            </div>
+          )}
+        </div>
+      );
+
+    case "none":
+      return (
+        <div className="p-4 text-sm text-muted-foreground">
+          <div>{preview.reason}</div>
+          <div className="mt-1 text-xs">{formatSize(preview.size)}</div>
+        </div>
+      );
+
+    case "error":
+      return (
+        <pre className="whitespace-pre-wrap p-4 text-xs text-destructive">
+          {preview.error}
+        </pre>
+      );
+
+    default: {
+      // Adding a Preview kind without a case above fails to compile here.
+      const unhandled: never = preview;
+      return unhandled;
+    }
+  }
+}
+
+/**
  * The right-hand pane. Every branch of Preview is rendered, including the
- * ones that are not content: "too large" and "cannot preview" are states worth
- * showing, not blanks to leave the user staring at.
+ * ones that are not content: "too large" and "cannot preview" are states
+ * worth showing, not blanks to leave the user staring at.
  */
 function PreviewPane({
   preview,
@@ -4654,7 +4781,7 @@ function PreviewPane({
   entry: Entry | null;
 }) {
   return (
-    <div className="flex w-[28rem] shrink-0 flex-col border-l">
+    <div className="flex w-[28rem] max-w-[45%] shrink-0 flex-col border-l">
       {entry !== null && (
         <div className="truncate border-b px-3 py-1 text-xs text-muted-foreground">
           {entry.name}
@@ -4668,59 +4795,8 @@ function PreviewPane({
           <div className="p-4 text-sm text-muted-foreground">
             {entry === null ? "Nothing selected." : "Loading…"}
           </div>
-        ) : preview.kind === "dir" ? (
-          // One level ahead of the selection, as in ranger and yazi.
-          <div className="py-1">
-            {preview.entries.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-muted-foreground">empty directory</div>
-            ) : (
-              preview.entries.map((child) => (
-                <div key={child.name} className="flex items-baseline gap-2 px-3 py-0.5 text-sm">
-                  <span className="w-3 shrink-0 opacity-60">
-                    {child.type === "dir" ? "/" : child.type === "link" ? "@" : ""}
-                  </span>
-                  <span className="truncate">{child.name}</span>
-                  <span className="ml-auto shrink-0 text-xs opacity-60">
-                    {child.type === "dir" ? "" : formatSize(child.size)}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        ) : preview.kind === "image" ? (
-          <div className="flex h-full flex-col">
-            {/* Real bytes from the plugin's HTTP route, cached by ETag. */}
-            <img
-              src={preview.url}
-              alt=""
-              className="max-h-full max-w-full self-center object-contain p-2"
-            />
-            {preview.resized && (
-              <div className="px-3 pb-2 text-xs text-muted-foreground">
-                Downscaled for preview — the original is {formatSize(preview.size)}.
-              </div>
-            )}
-          </div>
-        ) : preview.kind === "text" ? (
-          <div>
-            <pre className="whitespace-pre-wrap px-3 py-2 font-mono text-xs leading-relaxed">
-              {preview.text}
-            </pre>
-            {preview.truncated && (
-              <div className="border-t px-3 py-1 text-xs text-muted-foreground">
-                Showing the first part of {formatSize(preview.size)}.
-              </div>
-            )}
-          </div>
-        ) : preview.kind === "none" ? (
-          <div className="p-4 text-sm text-muted-foreground">
-            <div>{preview.reason}</div>
-            <div className="mt-1 text-xs">{formatSize(preview.size)}</div>
-          </div>
         ) : (
-          <pre className="whitespace-pre-wrap p-4 text-xs text-destructive">
-            {preview.error}
-          </pre>
+          <PreviewBody preview={preview} name={entry?.name ?? ""} />
         )}
       </div>
     </div>
