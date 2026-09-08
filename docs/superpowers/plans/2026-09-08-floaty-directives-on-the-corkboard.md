@@ -132,26 +132,23 @@ percent, and that the demo's sample file exists and projects.
 
 ## The board itself
 
-A **dot grid** every 40px marks the plane. It is a child of the canvas rather
-than the canvas background, so it pans and zooms with the cards; a background
-would sit still and say nothing about where the origin went. It is also one
-stamped `Form` rather than a repeating cell, because `BlImagePatternPaint` does
-not tile in this image — `#matchExtent:` is a stub that says so outright, and
-`#asSpartaPaintOn:` hands Sparta the bare form, which paints it once at the
-element's origin. So the plane is bounded (2400×1600) and that bound is what the
-grid costs.
+A **grid of lines** every 40 document pixels marks the plane, with the lines
+through the origin brighter — on a plane with signed coordinates, knowing where
+zero is matters more than the rest of the grid. It is a child of the canvas
+rather than the canvas background, so it pans and zooms with the cards.
 
-Cairo underneath *does* support tiling — `SpartaCairoExtendMode` has
-`CAIRO_EXTEND_REPEAT` — but nothing in Bloc or Sparta's public API reaches it:
-`SpartaCairoSurfacePattern` exposes no instance-side setter, so turning it on
-means an FFI call into the Cairo backend from a `drawOnSpartaCanvas:` override.
-That is real, backend-locked work rather than a flag.
+It is **redrawn, not tiled**, because Bloc has no repeating paint:
+`BlImagePatternPaint` paints its form once at the element's origin, and
+`matchExtent:` is a stub that says as much. Cairo underneath does have
+`CAIRO_EXTEND_REPEAT`, but no Bloc or Sparta API reaches it, so using it would
+mean an FFI call from a `drawOnSpartaCanvas:` override — deliberately not taken.
 
-Instead the bounded grid is **kept centred under the viewport**, snapped to a
-whole cell on every pan and zoom. Snapping is what makes the move invisible: a
-dot lands on the same document coordinate it would have had on an endless
-plane. The limit is zoom-out — once the viewport is wider than 2400 document
-pixels the grid stops covering it.
+Redrawing is cheap enough to make the grid genuinely unbounded. Only the lines
+the viewport can see are built (about fifty elements), and the **spacing doubles
+whenever a cell would render finer than 16 screen pixels**, so zooming out never
+multiplies the line count. A rebuild is skipped unless the covered region or the
+spacing actually changed, so a drag costs one rebuild per cell crossed rather
+than one per mouse move.
 
 Card **chrome** separates the two things a card is: the frame and title bar are
 light grey, the text area is white. Bodies use `BrGlamorousCodeEditorAptitude`
@@ -161,18 +158,27 @@ for the system monospace font — a card whose first line is
 **Interaction on the background:** the wheel zooms (clamped to 0.15–6×), and a
 middle- or right-button drag pans. The left button does nothing.
 
-`BlCanvassableElement` installs two gestures of its own in `initialize`, and
-both are removed first. Its `BlCanvassableElementSlideHandler` pans on a *left*
-drag, and its `withZoomOnScrollWheel` zooms only while the primary modifier is
-held and translates on a bare wheel. Leaving them on did not merely add
-behaviour — the stock wheel handler and ours both answered the same event, so a
-scroll zoomed and scrolled at once.
+`BlCanvassableElement` installs two gestures in `initialize`, and both are
+removed first. Its `BlCanvassableElementSlideHandler` pans on a *left* drag, and
+its `withZoomOnScrollWheel` zooms only while the primary modifier is held and
+translates on a bare wheel — so the stock wheel handler and ours both answered
+every scroll.
 
-Pan is built on drag events rather than raw mouse events because they carry
-`button` and are the path Bloc actually supports. The drag-start handler
-**must** consume its event: `BlMouseProcessor>>tryDragStart:` keeps the drag
-alive only if the start was consumed, so consuming is what arms the pan rather
-than merely marking it handled.
+Pan is assembled from **raw mouse events, not drag events**, and this is forced:
+`BlMouseProcessor>>canStartDrag:` opens with
+`(pressedButtons includes: BlMouseButton primary)`, so Bloc never raises a drag
+for a middle or right button and no drag-based pan can fire however it is
+written.
+
+Zoom keeps the document point under the cursor fixed **in both directions**.
+GT's `calculateTranslationFactorOnMouseWheelZoom:` cannot: its
+`translateScalingFactor` is hard-coded to `1/2`, so it only ever describes a
+doubling, and zooming out drifted to the viewport centre. The replacement is a
+plain inverse of the children transformation, written against
+`childrenScaleFactor:`/`childrenTranslationFactor:` rather than `zoomLevel:` —
+because `zoomLevel:`, `zoomLevel:withTranslate:` and `translate:` all move
+`childrenTransformationOrigin` to the element's centre as a side effect, which
+would change the arithmetic underneath it.
 
 A card **swallows its own wheel events**: the board zooms only when the event's
 target is bare canvas, so scrolling inside a panel scrolls that panel and the

@@ -270,25 +270,81 @@ testOnlyTheMiddleAndRightButtonsPan
 	self assert: (board isPanButton: BlMouseButton secondary).
 	self deny: (board isPanButton: BlMouseButton primary)!
 
-testTheGridFollowsTheViewportOnWholeCells
-	"The grid covers a bounded plane and is moved to stay under the viewport.
-	 Snapping to a whole cell is what hides the move: a dot keeps landing on the
-	 document coordinate it would have had on an endless plane."
+testPanFollowsThePointerAndStopsOnRelease
+	"Pan is assembled from raw mouse events because Bloc raises drag events for
+	 the primary button only, so this is the whole gesture under test."
+	| board before |
+	board := self floatyBoard.
+	board canvas childrenTranslationFactor: 0 @ 0.
+	before := board canvas childrenTranslationFactor.
+	board beginPanAt: 100 @ 100.
+	board panTo: 140 @ 130.
+	self assert: board canvas childrenTranslationFactor equals: before + (40 @ 30).
+	board endPan.
+	board panTo: 400 @ 400.
+	self assert: board canvas childrenTranslationFactor equals: before + (40 @ 30)!
+
+testZoomKeepsTheDocumentPointUnderTheCursorBothWays
+	"Zooming out used to drift to the viewport centre, because GT's translation
+	 helper hard-codes a factor of 1/2 and so only ever describes a doubling."
+	| board cursor before |
+	board := self floatyBoard.
+	board canvas childrenScaleFactor: 1.
+	board canvas childrenTranslationFactor: 0 @ 0.
+	cursor := 300 @ 200.
+	before := board documentPointAt: cursor.
+	board zoomTo: 2 towards: cursor.
+	self assert: ((board documentPointAt: cursor) - before) r < 0.001.
+	board zoomTo: 0.5 towards: cursor.
+	self assert: ((board documentPointAt: cursor) - before) r < 0.001!
+
+testZoomingOffCentreDoesNotDriftToTheMiddle
+	| board cursor before |
+	board := self floatyBoard.
+	board canvas childrenScaleFactor: 1.
+	board canvas childrenTranslationFactor: 37 @ -12.
+	cursor := 90 @ 640.
+	before := board documentPointAt: cursor.
+	board zoomTo: 0.25 towards: cursor.
+	self assert: ((board documentPointAt: cursor) - before) r < 0.001!
+
+testGridLinesCoverTheViewportOnWholeCells
 	| board spacing position |
 	board := self floatyBoard.
-	spacing := McCorkboard gridSpacing.
+	board canvas childrenScaleFactor: 1.
 	board canvas childrenTranslationFactor: -137 @ -251.
-	board repositionGrid.
+	board rebuildGrid.
+	spacing := board gridSpacingAt: 1.
 	position := board grid constraints position.
 	self assert: position x \\ spacing equals: 0.
-	self assert: position y \\ spacing equals: 0!
+	self assert: position y \\ spacing equals: 0.
+	self assert: board grid children notEmpty!
 
 testTheGridMovesWithThePan
 	| board before |
 	board := self floatyBoard.
+	board canvas childrenScaleFactor: 1.
 	board canvas childrenTranslationFactor: 0 @ 0.
-	board repositionGrid.
+	board rebuildGrid.
 	before := board grid constraints position.
-	board canvas childrenTranslationFactor: -400 @ -400.
-	board repositionGrid.
-	self deny: board grid constraints position equals: before! !
+	board canvas childrenTranslationFactor: -4000 @ -4000.
+	board rebuildGrid.
+	self deny: board grid constraints position equals: before!
+
+testGridSpacingWidensAsTheBoardZoomsOut
+	"An unbounded grid without an unbounded number of lines: the cell doubles
+	 whenever it would render too fine to read."
+	| board |
+	board := self floatyBoard.
+	self assert: (board gridSpacingAt: 1) equals: McCorkboard gridSpacing.
+	self assert: (board gridSpacingAt: 0.1) > (board gridSpacingAt: 1).
+	self assert: (board gridSpacingAt: 0.1) * 0.1 >= McCorkboard minimumCellPixels!
+
+testGridDrawsOnlyAScreenfulHoweverFarItIsZoomedOut
+	"The reason the grid can be unbounded at all."
+	| board |
+	board := self floatyBoard.
+	board canvas childrenScaleFactor: McCorkboard minimumZoom.
+	board canvas childrenTranslationFactor: 0 @ 0.
+	board rebuildGrid.
+	self assert: board grid children size < 200! !

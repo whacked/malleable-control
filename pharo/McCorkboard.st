@@ -7,8 +7,8 @@ resolution and future pan/zoom independent from the component tree.
 "!
 
 Object subclass: #McCorkboard
-	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid panOrigin panStart'
-	classVariableNames: 'GridForm'
+	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid gridKey panOrigin panStart'
+	classVariableNames: ''
 	package: 'MalleableControl'!
 
 !McCorkboard class methodsFor: 'opening'!
@@ -101,54 +101,101 @@ clearCanvas
 	canvas removeChildren.
 	grid := self gridElement.
 	canvas addChild: grid.
-	self repositionGrid!
+	gridKey := nil.
+	self rebuildGrid!
 
-repositionGrid
-	"The grid is one image over a bounded plane, so instead of being large
-	 enough to cover everywhere it is kept centred under the viewport.  Snapping
-	 the move to a whole cell is what makes that invisible: the dots land on the
-	 same document coordinates they would have had if the plane really were
-	 endless."
-	| scale extent centre spacing snapped |
+gridElement
+	"A bare container.  The grid is a child of the canvas rather than its
+	 background so that it pans and zooms with the cards; a background would sit
+	 still and say nothing about where the origin went."
+	| element |
+	element := BlElement new.
+	element constraintsDo: [ :c | c ignoreByLayout ].
+	^ element!
+
+documentPointAt: aLocalPoint
+	"The document coordinate currently under a point of the viewport.  The
+	 children transformation is origin 0@0, then translate, then scale, so this
+	 inverts it directly."
+	^ (aLocalPoint - canvas childrenTranslationFactor) / canvas childrenScaleFactor!
+
+gridSpacingAt: aScale
+	"Widen the cell as the board shrinks, so the grid stays a cue rather than a
+	 fog of lines.  This is what lets the grid be unbounded without ever drawing
+	 more than a screenful of it."
+	| spacing |
+	spacing := self class gridSpacing.
+	[ spacing * aScale < self class minimumCellPixels ]
+		whileTrue: [ spacing := spacing * 2 ].
+	^ spacing!
+
+rebuildGrid
+	"Draw only the lines the viewport can actually see.
+
+	 Lines rather than dots, and rebuilt rather than tiled.  Bloc has no
+	 repeating paint to tile with: BlImagePatternPaint paints its form once at
+	 the element's origin, and #matchExtent: is a stub that says as much.  The
+	 repeat Cairo does have is not reachable from any Bloc or Sparta API.
+	 Redrawing a screenful is about fifty elements, which is cheaper than
+	 carrying an image big enough to pretend the plane is endless.
+
+	 The rebuild is skipped unless the covered region or the spacing actually
+	 changed, so a drag costs one rebuild per cell crossed rather than one per
+	 mouse move."
+	| scale extent spacing topLeft bottomRight first last key thickness |
 	(grid isNil or: [ canvas isNil ]) ifTrue: [ ^ self ].
 	scale := canvas childrenScaleFactor.
-	(scale isNil or: [ scale = 0 ]) ifTrue: [ ^ self ].
-	"Canvas extent is only known once a layout has run; before that -- a board
-	 built headless, or the first projection -- fall back to the space, exactly
-	 as #viewportExtent does."
+	(scale isNil or: [ scale <= 0 ]) ifTrue: [ ^ self ].
+	"Canvas extent is known only once a layout has run; before that -- a board
+	 built headless, or the first projection -- fall back to the space."
 	extent := canvas extent.
 	(extent x = 0 or: [ extent y = 0 ]) ifTrue: [ extent := self viewportExtent ].
 	(extent x = 0 or: [ extent y = 0 ]) ifTrue: [ ^ self ].
-	spacing := self class gridSpacing.
-	"The document point currently at the middle of the viewport.  Translation is
-	 in screen pixels and applied after the scale, which is how the slide
-	 handler this replaced used it."
-	centre := (extent / 2) - canvas childrenTranslationFactor / scale.
-	snapped := ((centre x / spacing) rounded * spacing)
-		@ ((centre y / spacing) rounded * spacing).
-	grid relocate: snapped - (self class gridExtent / 2)!
+	spacing := self gridSpacingAt: scale.
+	topLeft := self documentPointAt: 0 @ 0.
+	bottomRight := self documentPointAt: extent.
+	first := (((topLeft x / spacing) floor - 1) * spacing)
+		@ (((topLeft y / spacing) floor - 1) * spacing).
+	last := (((bottomRight x / spacing) ceiling + 1) * spacing)
+		@ (((bottomRight y / spacing) ceiling + 1) * spacing).
+	key := { spacing. first. last }.
+	key = gridKey ifTrue: [ ^ self ].
+	gridKey := key.
+	grid removeChildren.
+	grid relocate: first.
+	grid size: last - first.
+	"About one screen pixel however far the board is zoomed."
+	thickness := (1 / scale) max: 0.2.
+	first x to: last x by: spacing do: [ :x |
+		grid addChild: (self
+			gridLineAt: (x - first x) @ 0
+			extent: thickness @ (last y - first y)
+			axis: x = 0) ].
+	first y to: last y by: spacing do: [ :y |
+		grid addChild: (self
+			gridLineAt: 0 @ (y - first y)
+			extent: (last x - first x) @ thickness
+			axis: y = 0) ]!
 
-gridElement
-	"The dot grid is a child of the canvas rather than its background, so it
-	 pans and zooms with the cards.  A background would stay put and say
-	 nothing about where the document's origin went."
-	| element extent |
-	extent := self class gridExtent.
-	element := BlElement new.
-	element size: extent.
-	element constraintsDo: [ :c | c ignoreByLayout ].
-	"Half the extent, and both halves are whole multiples of the spacing, so a
-	 dot lands exactly on the document origin."
-	element relocate: (extent / 2) negated.
-	element background: (BlImagePatternPaint form: self class gridForm).
-	^ element!
+gridLineAt: aPoint extent: anExtent axis: aBoolean
+	"The lines through the document origin are brighter: on a plane with signed
+	 coordinates, knowing where zero is matters more than the rest of the grid."
+	| line |
+	line := BlElement new.
+	line background: (aBoolean
+		ifTrue: [ Color fromHexString: '#4a5364' ]
+		ifFalse: [ Color fromHexString: '#2f3542' ]).
+	line constraintsDo: [ :c | c ignoreByLayout ].
+	line size: anExtent.
+	line relocate: aPoint.
+	^ line!
 
 installCanvasInteractions
 	"The wheel zooms and a middle or right drag pans; the left button does
 	 nothing on the background.
 
 	 BlCanvassableElement installs two gestures of its own in #initialize, and
-	 both are wrong here, so both are taken off first.  Its
+	 both are wrong here, so both come off first.  Its
 	 BlCanvassableElementSlideHandler pans on a LEFT drag, and its
 	 #withZoomOnScrollWheel zooms only while the primary modifier is held and
 	 translates on a bare wheel.  Leaving them on does not merely add
@@ -169,49 +216,85 @@ installCanvasInteractions
 			event consumed: true.
 			self zoomOnWheel: event ] ].
 
-	"A drag continues only if its start was consumed -- see
-	 BlMouseProcessor>>tryDragStart: -- so consuming here is what arms the pan
-	 rather than merely marking it handled."
-	canvas addEventHandlerOn: BlDragStartEvent do: [ :event |
+	"Assembled from raw mouse events, not from drag events: Bloc raises a drag
+	 for the primary button only.  BlMouseProcessor>>canStartDrag: opens with
+	 (pressedButtons includes: BlMouseButton primary), so a middle or right
+	 drag never produces a BlDragStartEvent at all and a drag-based pan cannot
+	 fire however it is written."
+	canvas addEventHandlerOn: BlMouseDownEvent do: [ :event |
 		((self isPanButton: event button) and: [ self isBackgroundEvent: event ])
 			ifTrue: [
 				event consumed: true.
-				panOrigin := event position.
-				panStart := canvas childrenTranslationFactor ]
-			ifFalse: [ panOrigin := nil ] ].
-	canvas addEventHandlerOn: BlDragEvent do: [ :event |
-		panOrigin ifNotNil: [ :origin |
+				self beginPanAt: event position ] ].
+	canvas addEventHandlerOn: BlMouseMoveEvent do: [ :event |
+		self isPanning ifTrue: [
 			event consumed: true.
-			canvas childrenTranslationFactor: panStart + (event position - origin).
-			self repositionGrid ] ].
-	canvas addEventHandlerOn: BlDragEndEvent do: [ :event | panOrigin := nil ]!
+			self panTo: event position ] ].
+	canvas addEventHandlerOn: BlMouseUpEvent do: [ :event | self endPan ]!
 
 isBackgroundEvent: anEvent
-	"True only when the pointer is over bare canvas.  A card swallows its own
-	 wheel events this way: the editor inside it scrolls, and the board does
-	 not also zoom underneath it."
+	"True only when the pointer is over bare canvas or the grid drawn on it.
+	 A card swallows its own wheel events this way: the editor inside it
+	 scrolls, and the board does not also zoom underneath it."
 	| target |
 	target := anEvent target.
-	^ target == canvas or: [ target == grid ]!
+	^ target == canvas
+		or: [ target == grid or: [ target parent == grid ] ]!
 
 isPanButton: aButton
 	"Compared by class: the button objects are not identical across events."
 	^ aButton class = BlMouseMiddleButton
 		or: [ aButton class = BlMouseSecondaryButton ]!
 
+isPanning
+	^ panOrigin notNil!
+
+beginPanAt: aPoint
+	panOrigin := aPoint.
+	panStart := canvas childrenTranslationFactor!
+
+panTo: aPoint
+	panOrigin ifNil: [ ^ self ].
+	canvas childrenTranslationFactor: panStart + (aPoint - panOrigin).
+	self rebuildGrid!
+
+endPan
+	panOrigin := nil!
+
 zoomOnWheel: anEvent
-	"Zoom towards the pointer on the way in, which is what makes a wheel feel
-	 like a magnifier rather than a slider."
-	| level |
-	anEvent vector y positive
-		ifTrue: [
-			level := canvas zoomLevel * canvas zoomStep.
-			level <= self class maximumZoom ifTrue: [
-				canvas zoomLevel: level withTranslate: anEvent ] ]
-		ifFalse: [
-			level := canvas zoomLevel / canvas zoomStep.
-			level >= self class minimumZoom ifTrue: [ canvas zoomLevel: level ] ].
-	self repositionGrid!
+	| current target |
+	current := canvas childrenScaleFactor.
+	current <= 0 ifTrue: [ ^ self ].
+	target := anEvent vector y positive
+		ifTrue: [ current * canvas zoomStep ]
+		ifFalse: [ current / canvas zoomStep ].
+	target := (target min: self class maximumZoom) max: self class minimumZoom.
+	self zoomTo: target towards: (canvas globalPointToLocal: anEvent position)!
+
+zoomTo: aScale towards: aLocalPoint
+	"Keep the document point under the cursor where it is, zooming in AND out.
+
+	 GT's calculateTranslationFactorOnMouseWheelZoom: cannot do this: its
+	 translateScalingFactor is hard-coded to 1/2, so it only ever describes a
+	 doubling, and zooming out drifted towards the viewport centre instead.
+
+	 Written against childrenScaleFactor: and childrenTranslationFactor: rather
+	 than zoomLevel:, because zoomLevel:, zoomLevel:withTranslate: and
+	 translate: each move childrenTransformationOrigin to the element's centre
+	 as a side effect.  Left alone it keeps the 0@0 it was initialised with,
+	 which is what makes the arithmetic here a plain inverse."
+	| current start actual |
+	current := canvas childrenScaleFactor.
+	current <= 0 ifTrue: [ ^ self ].
+	start := canvas childrenTranslationFactor.
+	"Set the scale first and read it back: childrenScaleFactor: snaps a nearly
+	 whole factor to the integer, and the translation must answer to what the
+	 canvas actually took."
+	canvas childrenScaleFactor: aScale.
+	actual := canvas childrenScaleFactor.
+	canvas childrenTranslationFactor:
+		aLocalPoint - ((aLocalPoint - start) * actual / current).
+	self rebuildGrid!
 
 model
 	^ model!
@@ -493,41 +576,16 @@ cardBodyFor: aDirective
 
 !McCorkboard class methodsFor: 'grid'!
 gridSpacing
+	"Document pixels between grid lines at 1:1."
 	^ 40!
 
-gridExtent
-	"Finite, and a whole number of cells each way about the origin.  The grid is
-	 one image rather than a repeating pattern, so the plane it covers is what
-	 it costs; this is far larger than anything the demo places."
-	^ 2400 @ 1600!
+minimumCellPixels
+	"A cell finer than this on screen reads as noise, so the spacing doubles
+	 instead."
+	^ 16!
 
 minimumZoom
 	^ 0.15!
 
 maximumZoom
-	^ 6!
-
-gridForm
-	"Built once and kept: every board projects the same plane."
-	^ GridForm ifNil: [ GridForm := self buildGridForm ]!
-
-buildGridForm
-	"The dot grid, stamped into a single Form.
-
-	 Not a repeating pattern: BlImagePatternPaint does not tile in this image.
-	 Its #matchExtent: is a stub that says so in as many words, and
-	 #asSpartaPaintOn: hands Sparta the bare Form, which paints it once at the
-	 element's origin.  So the grid is one image covering a bounded plane
-	 rather than a cell repeated over an unbounded one."
-	| form dot spacing extent |
-	spacing := self gridSpacing.
-	extent := self gridExtent.
-	form := Form extent: extent depth: 32.
-	form fillColor: (Color fromHexString: '#20232a').
-	dot := Color fromHexString: '#454b58'.
-	0 to: extent x - 1 by: spacing do: [ :x |
-		0 to: extent y - 1 by: spacing do: [ :y |
-			0 to: 1 do: [ :dx |
-				0 to: 1 do: [ :dy |
-					form colorAt: (x + dx) @ (y + dy) put: dot ] ] ] ].
-	^ form! !
+	^ 6! !
