@@ -3172,6 +3172,8 @@ Replaces the scaffold's todo example with the real backend. This is where the pi
 **Files:**
 - Rewrite: `server.ts`
 - Create: `test/server.test.ts`
+- Create: `lib/materialize.ts`
+- Create: `test/materialize.test.ts`
 - Rewrite: `app.tsx` (placeholder only — Task 11 builds the real UI)
 - Delete: `skills/example-todos/`
 
@@ -3246,6 +3248,30 @@ describe("guards before connect", () => {
     const result = (await harness.behavior.callRpc("connect", null)) as any;
     strictEqual(result.connected, false);
     ok(String(result.error).length > 0);
+  });
+});
+
+describe("connect", () => {
+  // A reachable host whose start directory is wrong leaves capabilities
+  // populated. Deriving "connected" from that reported success while `error`
+  // held the failure, and `bb remote connect` printed "Connected." and exited
+  // 0 while dropping the message.
+  it("does not report connected when connect returned an error", async () => {
+    const harness = await host({ sshTarget: "box", rootDir: "/srv" });
+    const result = (await harness.behavior.callRpc("connect", null)) as any;
+    if (result.error !== null) {
+      strictEqual(result.connected, false, "connected must not be true alongside an error");
+    }
+  });
+
+  it("exits non-zero from the CLI whenever connect reported an error", async () => {
+    const harness = await host({ sshTarget: "box", rootDir: "/srv" });
+    const status = (await harness.behavior.callRpc("connect", null)) as any;
+    const cli = await harness.behavior.runCli(["connect"]);
+    if (status.error !== null) {
+      strictEqual(cli.exitCode, 1, "a failed connect must not exit 0");
+      ok(cli.stderr.length > 0, "a failed connect must say why");
+    }
   });
 });
 
@@ -3331,8 +3357,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { BlobCache, cacheKey } from "./lib/cache.ts";
-import { guessKind, planFetch } from "./lib/policy.ts";
+import { BlobCache } from "./lib/cache.ts";
+import { materializeBlob } from "./lib/materialize.ts";
+import { guessKind } from "./lib/policy.ts";
 import { describeCapabilities } from "./lib/probe.ts";
 import { RemoteClient, type Entry } from "./lib/remote.ts";
 import { SHELL_TIER_CAVEAT } from "./lib/shell-tier.ts";
@@ -3452,6 +3479,14 @@ export default async function plugin(bb: BbPluginApi) {
   let override: { sshTarget: string; rootDir: string } | null = null;
   let remote: RemoteClient | null = null;
   let lastError: string | null = null;
+  /**
+   * Whether the last connect actually succeeded — which is not the same as
+   * knowing the host's tier. A reachable host with an unusable start
+   * directory leaves capabilities populated, so deriving "connected" from
+   * them reported success while `error` held the failure, and the CLI printed
+   * "Connected." and exited 0 while dropping the message.
+   */
+  let connected = false;
 
   function effective(): ResolvedConfig {
     return resolveConfig({
@@ -3475,7 +3510,7 @@ export default async function plugin(bb: BbPluginApi) {
       savedRoot: stored.rootDir,
       envTarget: process.env[TARGET_ENV] ?? "",
       envRoot: process.env[ROOT_ENV] ?? "",
-      connected: remote !== null && capabilities !== null,
+      connected,
       capabilities: capabilities === null ? null : describeCapabilities(capabilities),
       caveat: capabilities?.tier === "shell" ? SHELL_TIER_CAVEAT : null,
       error: lastError,
@@ -3488,6 +3523,7 @@ export default async function plugin(bb: BbPluginApi) {
     const config = effective();
     remote = null;
     lastError = null;
+    connected = false;
     if (config.source === "unset") {
       lastError = "No SSH target is set.";
       bb.realtime.publish(STATE_CHANGED, {});
@@ -3507,71 +3543,29 @@ export default async function plugin(bb: BbPluginApi) {
       return status();
     }
     remote = client;
+    connected = true;
     bb.log.info(`connected: ${describeCapabilities(result.capabilities)}`);
     bb.realtime.publish(STATE_CHANGED, {});
     return status();
   }
 
-  /** Fetch a path per the size policy, returning a cache key for the bytes. */
-  async function materialize(
-    path: string,
-    variant: "preview" | "raw",
-  ): Promise<
-    | { ok: true; key: string; mime: string | null; truncated: boolean; resized: boolean; size: number }
-    | { ok: false; error: string }
-  > {
-    if (remote === null || remote.capabilities === null) {
-      return { ok: false, error: "Not connected." };
-    }
-    const info = await remote.stat(path);
-    if (!info.ok) return info;
-
-    const name = path.slice(path.lastIndexOf("/") + 1);
-    const action = planFetch({
-      name,
-      size: info.size,
-      type: info.type,
-      capabilities: remote.capabilities,
-    });
-    if (action.kind === "refuse") return { ok: false, error: action.reason };
-
-    const key = cacheKey({
-      sshTarget: effective().sshTarget,
-      realpath: info.realpath,
-      size: info.size,
-      mtime: info.mtime,
-      variant: `${variant}:${action.kind}`,
-    });
-    // truncated and resized describe the plan, not the transfer, so a cache
-    // hit says exactly what a cache miss said. Reading them off the fetch
-    // result made a cached 2GB log lose its "showing the first part" notice.
-    const truncated = action.kind === "head";
-    const resized = action.kind === "resize";
-
-    const hit = cache.get(key);
-    if (hit !== null) {
-      return { ok: true, key, mime: hit.mime, truncated, resized, size: info.size };
-    }
-
-    const fetched = await remote.fetch(path, {
-      limit: action.kind === "head" ? action.limit : undefined,
-      resizeTo: action.kind === "resize" ? action.maxDim : undefined,
-    });
-    if (!fetched.ok) return fetched;
-
-    const mime =
-      fetched.mime ??
-      (guessKind(name) === "image" ? `image/${name.split(".").pop()?.toLowerCase()}` : null);
-    cache.put(key, fetched.bytes, { mime, remotePath: info.realpath });
-    return { ok: true, key, mime, truncated, resized, size: info.size };
-  }
+  /** Bound to this plugin's client and cache; the logic lives in lib/materialize.ts. */
+  const materialize = (path: string, variant: "preview" | "raw") =>
+    materializeBlob(
+      { remote, cache, sshTarget: effective().sshTarget },
+      path,
+      variant,
+    );
 
   bb.rpc.register(rpcContract, {
     status: async () => status(),
     setOverride: async ({ sshTarget, rootDir }) => {
       override = sshTarget.trim() === "" ? null : { sshTarget, rootDir };
       remote = null;
+      connected = false;
       lastError = null;
+      // An open panel is now looking at a connection that no longer exists.
+      bb.realtime.publish(STATE_CHANGED, {});
       return status();
     },
     connect: async () => connect(),
@@ -3705,7 +3699,9 @@ export default async function plugin(bb: BbPluginApi) {
           if (args[0] === undefined) break;
           override = { sshTarget: args[0], rootDir: args[1] ?? "" };
           remote = null;
+          connected = false;
           lastError = null;
+          bb.realtime.publish(STATE_CHANGED, {});
           return reply(status(), `Using ${args[0]} at ${args[1] ?? "(unset)"} for this session.`);
         }
         case "connect": {
@@ -3742,6 +3738,189 @@ export default async function plugin(bb: BbPluginApi) {
     cache.close();
   });
 }
+```
+
+- [ ] **Step 4a: Create `lib/materialize.ts`**
+
+Fetching per the size policy and caching the result is the one piece of
+`server.ts` that needs nothing from `bb`. Out here it can be tested against a
+duck-typed remote, which is what makes the hit/miss parity invariant provable
+rather than merely inspected.
+
+```ts
+// Fetch a path per the size policy and cache the bytes, returning the key.
+//
+// Lives outside server.ts because it closes over nothing from the plugin API
+// — only a remote, a cache, and the target string. That also makes its one
+// subtle guarantee testable: `truncated` and `resized` describe the PLAN, so
+// a cache hit says exactly what a cache miss said. Reading them off the fetch
+// result made a cached 2GB log lose its "showing the first part" notice.
+import { BlobCache, cacheKey } from "./cache.ts";
+import { guessKind, planFetch } from "./policy.ts";
+import type { Capabilities } from "./probe.ts";
+
+/** Only the parts of RemoteClient this needs, so a test can stand one in. */
+export type MaterializeRemote = {
+  capabilities: Capabilities | null;
+  stat(rel: string): Promise<
+    { ok: true; realpath: string; type: string; size: number; mtime: number }
+    | { ok: false; error: string }
+  >;
+  fetch(
+    rel: string,
+    opts: { limit?: number; resizeTo?: number },
+  ): Promise<
+    { ok: true; bytes: Buffer; truncated: boolean; resized: boolean; mime: string | null }
+    | { ok: false; error: string }
+  >;
+};
+
+export type Materialized =
+  | { ok: true; key: string; mime: string | null; truncated: boolean; resized: boolean; size: number }
+  | { ok: false; error: string };
+
+export async function materializeBlob(
+  deps: { remote: MaterializeRemote | null; cache: BlobCache; sshTarget: string },
+  path: string,
+  variant: "preview" | "raw",
+): Promise<Materialized> {
+  const { remote, cache, sshTarget } = deps;
+  if (remote === null || remote.capabilities === null) {
+    return { ok: false, error: "Not connected." };
+  }
+  const info = await remote.stat(path);
+  if (!info.ok) return info;
+
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const action = planFetch({
+    name,
+    size: info.size,
+    type: info.type,
+    capabilities: remote.capabilities,
+  });
+  if (action.kind === "refuse") return { ok: false, error: action.reason };
+
+  // Both flags come from the plan, which is computed before the cache is
+  // consulted and is therefore identical on a hit and a miss.
+  const truncated = action.kind === "head";
+  const resized = action.kind === "resize";
+
+  const key = cacheKey({
+    sshTarget,
+    realpath: info.realpath,
+    size: info.size,
+    mtime: info.mtime,
+    variant: `${variant}:${action.kind}`,
+  });
+
+  const hit = cache.get(key);
+  if (hit !== null) {
+    return { ok: true, key, mime: hit.mime, truncated, resized, size: info.size };
+  }
+
+  const fetched = await remote.fetch(path, {
+    limit: action.kind === "head" ? action.limit : undefined,
+    resizeTo: action.kind === "resize" ? action.maxDim : undefined,
+  });
+  if (!fetched.ok) return fetched;
+
+  const mime =
+    fetched.mime ??
+    (guessKind(name) === "image"
+      ? `image/${name.split(".").pop()?.toLowerCase()}`
+      : null);
+  cache.put(key, fetched.bytes, { mime, remotePath: info.realpath });
+  return { ok: true, key, mime, truncated, resized, size: info.size };
+}
+```
+
+Create `test/materialize.test.ts`:
+
+```ts
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ok, strictEqual } from "node:assert/strict";
+import { describe, it } from "node:test";
+import { BlobCache } from "../lib/cache.ts";
+import { materializeBlob, type MaterializeRemote } from "../lib/materialize.ts";
+import type { Capabilities } from "../lib/probe.ts";
+
+const caps: Capabilities = {
+  tier: "python", python3: true, pil: true, magick: null, vips: false,
+  statFlavor: "gnu", uname: "Linux", resize: "pil",
+};
+
+/** Counts its own calls, so a cache hit is distinguishable from a miss. */
+function fakeRemote(size: number, name = "big.log"): MaterializeRemote & { fetches: number } {
+  return {
+    capabilities: caps,
+    fetches: 0,
+    async stat() {
+      return { ok: true, realpath: `/srv/${name}`, type: "file", size, mtime: 7 };
+    },
+    async fetch(this: { fetches: number }) {
+      this.fetches += 1;
+      return {
+        ok: true, bytes: Buffer.alloc(64), truncated: true, resized: false, mime: null,
+      };
+    },
+  };
+}
+
+const cacheIn = () => new BlobCache(mkdtempSync(join(tmpdir(), "rf-mat-")));
+
+describe("materializeBlob", () => {
+  it("reports a truncated read the same way on a hit as on a miss", async () => {
+    const remote = fakeRemote(5_000_000);
+    const cache = cacheIn();
+    const miss = await materializeBlob({ remote, cache, sshTarget: "box" }, "big.log", "preview");
+    const hit = await materializeBlob({ remote, cache, sshTarget: "box" }, "big.log", "preview");
+
+    strictEqual(remote.fetches, 1, "the second call must be served from cache");
+    ok(miss.ok && hit.ok);
+    if (miss.ok && hit.ok) {
+      strictEqual(miss.truncated, true);
+      strictEqual(hit.truncated, true, "a cache hit lost the truncation notice");
+      strictEqual(hit.key, miss.key);
+      strictEqual(hit.size, miss.size);
+    }
+    cache.close();
+  });
+
+  it("reports a resize the same way on a hit as on a miss", async () => {
+    const remote = fakeRemote(5_000_000, "photo.jpg");
+    const cache = cacheIn();
+    const miss = await materializeBlob({ remote, cache, sshTarget: "box" }, "photo.jpg", "preview");
+    const hit = await materializeBlob({ remote, cache, sshTarget: "box" }, "photo.jpg", "preview");
+    ok(miss.ok && hit.ok);
+    if (miss.ok && hit.ok) {
+      strictEqual(miss.resized, true);
+      strictEqual(hit.resized, true, "a cache hit lost the downscaling notice");
+    }
+    cache.close();
+  });
+
+  it("refuses before connect", async () => {
+    const result = await materializeBlob(
+      { remote: null, cache: cacheIn(), sshTarget: "box" }, "a.txt", "preview",
+    );
+    strictEqual(result.ok, false);
+  });
+
+  it("keeps a head and a whole read of one file in different cache slots", async () => {
+    const cache = cacheIn();
+    const big = await materializeBlob(
+      { remote: fakeRemote(5_000_000), cache, sshTarget: "box" }, "big.log", "preview",
+    );
+    const small = await materializeBlob(
+      { remote: fakeRemote(10, "big.log"), cache, sshTarget: "box" }, "big.log", "preview",
+    );
+    ok(big.ok && small.ok);
+    if (big.ok && small.ok) ok(big.key !== small.key, "head and whole collided");
+    cache.close();
+  });
+});
 ```
 
 - [ ] **Step 4b: Replace `app.tsx` with a placeholder**
@@ -3790,7 +3969,7 @@ Expected: both PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server.ts app.tsx test/server.test.ts
+git add server.ts app.tsx lib/materialize.ts test/materialize.test.ts test/server.test.ts
 git commit -m "Wire the backend: settings, RPC, byte routes, and bb remote
 
 Replaces the scaffold's todo example. Config resolves through the four
