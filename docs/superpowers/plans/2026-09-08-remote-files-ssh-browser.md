@@ -3766,7 +3766,7 @@ export default definePluginApp(() => {
   const [status, setStatus] = useState<Status | null>(null);
 
   useEffect(() => {
-    void rpc.status(null).then(setStatus);
+    void rpc.call("status", null).then(setStatus);
   }, [rpc]);
 
   if (status === null) {
@@ -3997,8 +3997,8 @@ function ConnectionBar({
     async (connect: boolean) => {
       setBusy(true);
       try {
-        await rpc.setOverride({ sshTarget: target, rootDir: root });
-        if (connect) await rpc.connect(null);
+        await rpc.call("setOverride", { sshTarget: target, rootDir: root });
+        if (connect) await rpc.call("connect", null);
       } finally {
         setBusy(false);
         onChanged();
@@ -4095,7 +4095,7 @@ export default definePluginApp(() => {
   const stripRef = useRef<HTMLDivElement>(null);
 
   const refreshStatus = useCallback(() => {
-    void rpc.status(null).then(setStatus);
+    void rpc.call("status", null).then(setStatus);
   }, [rpc]);
 
   useEffect(refreshStatus, [refreshStatus]);
@@ -4116,7 +4116,7 @@ export default definePluginApp(() => {
     if (status?.connected !== true) return;
     for (const path of paths) {
       if (listings[path] !== undefined) continue;
-      void rpc.list({ path }).then((result) => {
+      void rpc.call("list", { path }).then((result) => {
         if (result.ok) setListings((prior) => ({ ...prior, [path]: result.entries }));
       });
     }
@@ -4137,7 +4137,7 @@ export default definePluginApp(() => {
     }
     const path = pathOf([...segments, selectedEntry.name]);
     let stale = false;
-    void rpc.preview({ path }).then((result) => {
+    void rpc.call("preview", { path }).then((result) => {
       if (!stale) setPreview(result);
     });
     return () => {
