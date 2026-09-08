@@ -2539,6 +2539,18 @@ describe("guessKind", () => {
     }
   });
 
+  // A dotfile's name IS its extension. These are in the text list for this
+  // reason, so treating a leading dot as "no extension" would waste the entry.
+  it("recognises a bare dotfile whose name is a known extension", () => {
+    for (const name of [".gitignore", ".env", ".ts"]) {
+      strictEqual(guessKind(name), "text", name);
+    }
+  });
+
+  it("treats a trailing dot as no extension", () => {
+    strictEqual(guessKind("archive."), "other");
+  });
+
   it("calls everything else other", () => {
     for (const name of ["a.zip", "a.mp4", "a.so", "a.pdf"]) {
       strictEqual(guessKind(name), "other", name);
@@ -2565,6 +2577,21 @@ describe("planFetch", () => {
   it("falls back to a local resize when the host cannot", () => {
     deepStrictEqual(
       plan({ name: "a.jpg", size: SMALL_FILE_BYTES + 1, capabilities: withoutResize }),
+      { kind: "whole-then-resize-locally", maxDim: 2048 },
+    );
+  });
+
+  // The tier gate has to be load-bearing on its own. parseProbe only ever
+  // sets pil when python3 is present, so a test using a probe-shaped value
+  // passes just as well without the tier check — this uses the out-of-band
+  // combination the type permits but the probe never emits, which is the only
+  // input that can tell the two implementations apart.
+  it("gates on the tier, not only on pil", () => {
+    const impossibleFromProbe: Capabilities = {
+      ...withResize, tier: "shell", python3: false, resize: "pil",
+    };
+    deepStrictEqual(
+      plan({ name: "a.jpg", size: SMALL_FILE_BYTES + 1, capabilities: impossibleFromProbe }),
       { kind: "whole-then-resize-locally", maxDim: 2048 },
     );
   });
@@ -2649,7 +2676,11 @@ const TEXT_NAMES = new Set([
 export function guessKind(name: string): "image" | "text" | "other" {
   const lower = name.toLowerCase();
   const dot = lower.lastIndexOf(".");
-  const extension = dot <= 0 ? "" : lower.slice(dot + 1);
+  // A leading dot is an extension here, not the absence of one: ".gitignore"
+  // and ".env" are both in the text list precisely so they read as text, and
+  // treating them as extensionless would leave them classified "other". A
+  // trailing dot really is no extension.
+  const extension = dot < 0 || dot === lower.length - 1 ? "" : lower.slice(dot + 1);
   if (IMAGE_EXTENSIONS.has(extension)) return "image";
   if (TEXT_EXTENSIONS.has(extension)) return "text";
   if (extension === "" && TEXT_NAMES.has(lower)) return "text";
