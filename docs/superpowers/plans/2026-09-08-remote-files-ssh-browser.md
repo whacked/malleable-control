@@ -333,7 +333,7 @@ Create `test/ssh-argv.test.ts`:
 
 ```ts
 import { execFileSync } from "node:child_process";
-import { deepStrictEqual, ok, strictEqual } from "node:assert/strict";
+import { deepStrictEqual, ok, strictEqual, throws } from "node:assert/strict";
 import { describe, it } from "node:test";
 import { buildSshArgv, controlSocketPath, shellQuote } from "../lib/ssh-argv.ts";
 
@@ -371,6 +371,13 @@ describe("controlSocketPath", () => {
     ok(Buffer.byteLength(path) < 104, `too long (${path.length}): ${path}`);
   });
 
+  it("throws rather than returning a path ssh cannot bind", () => {
+    throws(
+      () => controlSocketPath({ user: null, host: "box", port: null }, `/${"x".repeat(120)}`),
+      /104-byte limit/,
+    );
+  });
+
   it("is stable per target and distinct across targets", () => {
     const a = controlSocketPath({ user: "alice", host: "box", port: null });
     const b = controlSocketPath({ user: "alice", host: "box", port: null });
@@ -399,7 +406,7 @@ describe("buildSshArgv", () => {
         "-o", "ControlPersist=300",
         "-p", "2222",
         "alice@box",
-        "ls -a",
+        "'ls' '-a'",
       ],
     );
   });
@@ -423,8 +430,22 @@ describe("buildSshArgv", () => {
       controlPath: "/tmp/s",
       remote: ["cat", "/data/my files/a;b.txt"],
     });
-    strictEqual(argv.at(-1), `cat '/data/my files/a;b.txt'`);
+    strictEqual(argv.at(-1), `'cat' '/data/my files/a;b.txt'`);
     strictEqual(argv.filter((a) => a.includes("a;b.txt")).length, 1);
+  });
+
+  // Every remote word is quoted unconditionally. A denylist of "dangerous"
+  // characters is not good enough: ~ tilde-expands and # opens a comment,
+  // and neither looks dangerous until the remote shell reads it.
+  it("quotes words a character denylist would let through", () => {
+    for (const word of ["~private", "~root/x", "#notacomment", "plain"]) {
+      const argv = buildSshArgv({
+        target: { user: null, host: "box", port: null },
+        controlPath: "/tmp/s",
+        remote: ["cat", word],
+      });
+      strictEqual(argv.at(-1), `'cat' '${word}'`, word);
+    }
   });
 
   it("honours overridden timeouts", () => {
@@ -480,7 +501,16 @@ export function shellQuote(value: string): string {
 export function controlSocketPath(target: SshTarget, tmpDir = tmpdir()): string {
   const identity = `${target.user ?? ""}@${target.host}:${target.port ?? ""}`;
   const digest = createHash("sha256").update(identity).digest("hex").slice(0, 12);
-  return join(tmpDir, `bb-rf-${digest}`);
+  const path = join(tmpDir, `bb-rf-${digest}`);
+  // Checked here rather than left to ssh, which fails at bind with an error
+  // that names neither the limit nor TMPDIR.
+  if (Buffer.byteLength(path) >= 104) {
+    throw new Error(
+      `The control socket path is ${Buffer.byteLength(path)} bytes, over the ` +
+        `104-byte limit for a Unix socket. Point TMPDIR at a shorter path.`,
+    );
+  }
+  return path;
 }
 
 export function buildSshArgv(opts: {
