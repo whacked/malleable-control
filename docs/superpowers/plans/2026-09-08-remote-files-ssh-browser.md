@@ -1874,7 +1874,7 @@ One object the rest of the plugin talks to. It owns the ssh target, the probe re
 Create `test/remote.test.ts`. It drives a fake `ssh` that executes the remote command locally, so both tiers run end to end without a network.
 
 ```ts
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ok, strictEqual } from "node:assert/strict";
@@ -1898,6 +1898,12 @@ const root = mkdtempSync(join(tmpdir(), "rf-remote-"));
 mkdirSync(join(root, "sub"));
 writeFileSync(join(root, "a.txt"), "alpha\n");
 writeFileSync(join(root, "sub", "b.txt"), "beta\n");
+// A directory outside the root, and a symlink into it. Confinement exists for
+// this case: the link resolves on the far side, so only a check performed
+// there can catch it.
+const outside = mkdtempSync(join(tmpdir(), "rf-remote-outside-"));
+writeFileSync(join(outside, "secret.txt", ), "no\n");
+symlinkSync(outside, join(root, "escape"));
 
 function client() {
   return new RemoteClient({ sshTarget: "fake-host", rootDir: root, sshBin: fakeSsh });
@@ -1979,6 +1985,27 @@ describe("RemoteClient", () => {
       strictEqual(result.bytes.toString("utf8"), "alp");
       strictEqual(result.truncated, true);
     }
+  });
+
+  // Confinement on the read path, not just the list path. Both tiers are
+  // forced explicitly, because a machine with python3 would otherwise only
+  // ever exercise one of the two branches.
+  it("refuses to fetch a path outside the root, on either tier", async () => {
+    for (const tier of ["python", "shell"] as const) {
+      const remote = client();
+      await remote.connect();
+      if (remote.capabilities !== null) remote.capabilities.tier = tier;
+      const viaDots = await remote.fetch("../../etc/passwd", {});
+      strictEqual(viaDots.ok, false, `${tier}: .. escaped the root`);
+      const viaLink = await remote.fetch("escape/secret.txt", {});
+      strictEqual(viaLink.ok, false, `${tier}: symlink escaped the root`);
+    }
+  });
+
+  it("refuses to stat a path outside the root", async () => {
+    const remote = client();
+    await remote.connect();
+    strictEqual((await remote.stat("escape/secret.txt")).ok, false);
   });
 
   it("refuses every operation before connect", async () => {
