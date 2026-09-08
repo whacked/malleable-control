@@ -892,10 +892,26 @@ describe("PROBE_SCRIPT", () => {
     ok(["gnu", "bsd", "none"].includes(caps.statFlavor));
   });
 
-  // The whole point of the design is that the far side is left untouched.
-  it("contains no redirection to a file and no mktemp", () => {
-    ok(!/mktemp/.test(PROBE_SCRIPT), "probe must not create files");
-    ok(!/>\s*\/(?!dev\/null)/.test(PROBE_SCRIPT), "probe must not write to a path");
+  // The whole point of the design is that the far side is left untouched,
+  // and this assertion is that constraint's only automated enforcement — so
+  // it is written to fail closed. Matching `> /absolute/path` would miss
+  // `> relative`, and would miss every write that is not a redirection.
+  it("writes nowhere but stdout", () => {
+    const stripped = PROBE_SCRIPT
+      .replaceAll(">/dev/null", "")
+      .replaceAll("> /dev/null", "")
+      .replaceAll("2>&1", "");
+    strictEqual(
+      stripped.includes(">"),
+      false,
+      `probe redirects somewhere other than /dev/null:\n${stripped}`,
+    );
+    for (const writer of [
+      "mktemp", "tee", "dd ", "touch", "mkdir", "truncate",
+      "sed -i", "cp ", "mv ", "install ", "open(",
+    ]) {
+      strictEqual(PROBE_SCRIPT.includes(writer), false, `probe uses ${writer}`);
+    }
   });
 });
 
