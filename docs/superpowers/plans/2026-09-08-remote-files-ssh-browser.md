@@ -1234,6 +1234,28 @@ describe("helper stat, head, and read", () => {
   });
 });
 
+describe("helper framing", () => {
+  // Task 7 splits the reply on the first newline and parses the prefix as
+  // JSON. A traceback would break that contract for every caller, so the
+  // header has to survive inputs the helper never anticipated.
+  it("still emits one JSON line for a path containing a NUL byte", () => {
+    const { header } = run(["stat", root, "a\u0000b"]);
+    strictEqual(header.ok, false);
+    ok(String(header.error).length > 0);
+  });
+
+  it("still emits one JSON line for a non-numeric size argument", () => {
+    const { header } = run(["head", root, "plain.txt", "not-a-number"]);
+    strictEqual(header.ok, false);
+    ok(/ValueError/.test(String(header.error)), String(header.error));
+  });
+
+  it("still emits one JSON line for an unknown operation", () => {
+    const { header } = run(["frobnicate", root, "."]);
+    strictEqual(header.ok, false);
+  });
+});
+
 describe("helper hygiene", () => {
   it("writes nothing outside stdout", () => {
     const source = HELPER;
@@ -1432,7 +1454,17 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        # The one-JSON-line header is a contract the caller parses. An
+        # uncaught traceback goes to stderr and leaves stdout empty, which
+        # reads to the caller as "unreadable reply" rather than as the
+        # specific thing that went wrong. Every exit through here is still
+        # one JSON line.
+        fail("%s: %s" % (type(exc).__name__, exc))
 ```
 
 - [ ] **Step 4: Run the tests and the typechecker**
