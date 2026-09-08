@@ -224,3 +224,20 @@ testHostBodyShowsTheDirectiveADragJustRewrote
 		parentExtent: 800 @ 600.
 	self assert: ((board cardBodyFor: board document roots first) text asString
 		includesSubstring: 'f@50%x25%+11%+22%')! !
+
+!McCorkboardTest methodsFor: 'tests - demo'!
+testTheDemoBoardLoadsItsCardsFromTheSampleFile
+	"The launcher card opens this file, so a rename that leaves it dangling
+	 must fail here rather than in front of whoever clicked."
+	| sample |
+	sample := McCorkboard sampleDocument.
+	self assert: sample basename equals: 'floaty.md'.
+	self assert: sample parent basename equals: 'samples'.
+	self assert: sample exists!
+
+testTheSampleFileProjectsAsANestedBoard
+	| board |
+	board := McCorkboard new buildDocumentView: McCorkboard sampleDocument.
+	self assert: board document roots size equals: 1.
+	self assert: board document roots first children size equals: 2.
+	self assert: board canvas children size equals: 1! !

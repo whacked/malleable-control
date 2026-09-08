@@ -1,6 +1,6 @@
 {
   "title": "Corkboard",
-  "blurb": "Coordinate-addressable canvas, independent of the rich editor",
+  "blurb": "Coordinate canvas whose cards come from floaty directives in a text file",
   "files": [
     "pharo/McCache.st",
     "pharo/McRelation.st",
@@ -22,5 +22,5 @@
     "McFloatyTest"
   ],
   "priority": 30,
-  "note": "McCorkboard projects a McCorkboardDocument, which holds McCorkboardPanelModel instances. It also projects a McFloatyDocument, whose cards come from floaty directives in a file; McFloaty reads headings with McMarkdownParser, which is why the markdown chain is loaded here in the same order rich-edit needs it."
+  "note": "McCorkboard open projects samples/floaty.md: the demo's cards come from floaty directives in that file, not from anything hard coded, so editing the file changes the demo. McCorkboard openExample is the older free-coordinate board. McFloaty reads headings with McMarkdownParser, which is why the markdown chain is loaded here in the same order rich-edit needs it."
 }

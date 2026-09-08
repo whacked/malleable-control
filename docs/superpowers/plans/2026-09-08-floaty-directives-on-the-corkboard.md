@@ -98,8 +98,33 @@ changes length. `McCorkboardTest` (8 more) pins the projection: nesting,
 relative placement, paint order, host-drag carrying children without touching
 their directives, and a percent child rewritten in percent.
 
-A manual open probe:
+## Demonstrating it
+
+The launcher card *is* the demo. `McCorkboard open` projects
+`samples/floaty.md`, so the cards the board shows come from a text file rather
+than from anything hard coded, and editing that file changes what the demo
+shows. Three ways in, all the same thing:
+
+- the **Corkboard** card on GT's home screen,
+- `M-x mc-corkboard-open` in Emacs (the command name comes from
+  `launchers/corkboard.json`'s filename),
+- `McCorkboard open` evaluated in the image.
+
+The launcher re-files every source in the manifest before it opens, so the loop
+is: edit the `.st`, click the card again, see the change. No image restart, and
+one window either way.
+
+The older free-coordinate board — cards placed by typed x and y, with Apply,
+DIRTY and Escape — is still there as `McCorkboard openExample`. It is no longer
+on the launcher, and its two cards remain hard coded because they are now a test
+fixture rather than a demo; giving a fixture a file dependency would only make
+the suite need a filesystem.
+
+A missing sample falls back to that example board rather than raising, so the
+launcher card cannot become a stack trace.
 
 ```smalltalk
-McCorkboard openDocument: 'samples/floaty.md' asFileReference.
+McCorkboard open.                                   "the demo"
+McCorkboard openDocument: 'some/other.md' asFileReference.
+McCorkboard openExample.                            "the older board"
 ```

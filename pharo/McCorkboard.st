@@ -13,9 +13,35 @@ Object subclass: #McCorkboard
 
 !McCorkboard class methodsFor: 'opening'!
 open
-	"One window per tool: a corkboard that is already up comes forward and is
+	"The demo board is a document board: its cards come from floaty directives
+	 in samples/floaty.md rather than from anything hard coded here, so what the
+	 launcher card shows is editable in a text file.
+
+	 The example board is the fallback rather than an error, because a missing
+	 sample should not turn the launcher card into a stack trace."
+	| sample |
+	sample := self sampleDocument.
+	^ (sample exists and: [ sample isFile ])
+		ifTrue: [ self openDocument: sample ]
+		ifFalse: [ self openExample ]!
+
+openExample
+	"The free-coordinate prototype: cards placed by typed x and y rather than by
+	 a document.  Not on the launcher, but one expression away.
+
+	 One window per tool: a corkboard that is already up comes forward and is
 	 re-projected rather than duplicated.  See McWindow."
 	^ (McWindow front: self) ifNil: [ self new openView ]!
+
+sampleDocument
+	^ self projectRoot / 'samples' / 'floaty.md'!
+
+projectRoot
+	"The project root.  Uses the McHome global set by gt-install-startup,
+	 falling back to the working directory, as McRichEdit does."
+	^ ((Smalltalk at: #McHome ifAbsent: [ nil ])
+		ifNil: [ FileLocator workingDirectory resolve ]
+		ifNotNil: [ :path | path asFileReference ]) asAbsolute!
 
 exampleModel
 	^ McCorkboardDocument new
