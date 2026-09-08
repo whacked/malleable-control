@@ -3172,6 +3172,7 @@ Replaces the scaffold's todo example with the real backend. This is where the pi
 **Files:**
 - Rewrite: `server.ts`
 - Create: `test/server.test.ts`
+- Rewrite: `app.tsx` (placeholder only — Task 11 builds the real UI)
 - Delete: `skills/example-todos/`
 
 **Interfaces:**
@@ -3743,6 +3744,44 @@ export default async function plugin(bb: BbPluginApi) {
 }
 ```
 
+- [ ] **Step 4b: Replace `app.tsx` with a placeholder**
+
+The scaffold's `app.tsx` calls the todo contract this task just deleted, so the
+tree cannot typecheck until it goes. Task 11 builds the real browser on top of
+this; it exists so that the gate between the two tasks still means something.
+
+```tsx
+// bb-plugin-remote-files — frontend entry.
+//
+// A placeholder. Task 11 replaces it with the Miller-column browser; this
+// exists so the tree typechecks between the backend landing and the UI
+// arriving, rather than leaving a red tree for the next task to inherit and
+// mistake for its own.
+import { useEffect, useState } from "react";
+import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
+import type { Status, rpcContract } from "./server";
+
+export default definePluginApp(() => {
+  const rpc = useRpc<typeof rpcContract>();
+  const [status, setStatus] = useState<Status | null>(null);
+
+  useEffect(() => {
+    void rpc.status(null).then(setStatus);
+  }, [rpc]);
+
+  if (status === null) {
+    return <div className="p-4 text-sm text-muted-foreground">Loading…</div>;
+  }
+  return (
+    <div className="p-4 text-sm text-muted-foreground">
+      {status.source === "unset"
+        ? status.hint
+        : `${status.sshTarget} — ${status.connected ? status.capabilities : "not connected"}`}
+    </div>
+  );
+});
+```
+
 - [ ] **Step 5: Run the tests and the typechecker**
 
 Run: `npm test && npm run typecheck`
@@ -3751,7 +3790,7 @@ Expected: both PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add server.ts test/server.test.ts
+git add server.ts app.tsx test/server.test.ts
 git commit -m "Wire the backend: settings, RPC, byte routes, and bb remote
 
 Replaces the scaffold's todo example. Config resolves through the four
@@ -3768,7 +3807,7 @@ fetched, and the route only reads what this plugin put in the cache."
 ### Task 11: The panel — Miller columns and keyboard navigation
 
 **Files:**
-- Rewrite: `app.tsx`
+- Rewrite: `app.tsx` (currently a placeholder left by Task 10)
 - Create: `lib/columns.ts`
 - Create: `test/columns.test.ts`
 
