@@ -4222,6 +4222,11 @@ import type { Preview, Status, rpcContract } from "./server";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 
+type ColumnState =
+  | { state: "loading" }
+  | { state: "ready"; entries: Entry[] }
+  | { state: "failed"; error: string };
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -4343,7 +4348,9 @@ export default definePluginApp(() => {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<Status | null>(null);
   const [segments, setSegments] = useState<string[]>([]);
-  const [listings, setListings] = useState<Record<string, Entry[]>>({});
+  // A failed listing must not render as an empty directory: a permission
+  // error and an empty folder look identical otherwise, with no way to retry.
+  const [listings, setListings] = useState<Record<string, ColumnState>>({});
   const [selection, setSelection] = useState<Record<string, number>>({});
   const [filter, setFilter] = useState("");
   const [filtering, setFiltering] = useState(false);
@@ -4359,9 +4366,11 @@ export default definePluginApp(() => {
 
   const paths = useMemo(() => columnsFor(segments), [segments]);
   const currentPath = pathOf(segments);
+  const currentColumn = listings[currentPath];
   const entries = useMemo(
-    () => filterEntries(listings[currentPath] ?? [], filter),
-    [listings, currentPath, filter],
+    () =>
+      filterEntries(currentColumn?.state === "ready" ? currentColumn.entries : [], filter),
+    [currentColumn, filter],
   );
   const selected = Math.min(selection[currentPath] ?? 0, Math.max(0, entries.length - 1));
   const selectedEntry = entries[selected] ?? null;
@@ -4372,13 +4381,39 @@ export default definePluginApp(() => {
     if (status?.connected !== true) return;
     for (const path of paths) {
       if (listings[path] !== undefined) continue;
-      void rpc.call("list", { path }).then((result) => {
-        if (result.ok) setListings((prior) => ({ ...prior, [path]: result.entries }));
-      });
+      // Marked loading first, so this effect's next run skips the path rather
+      // than issuing a second request for it.
+      setListings((prior) =>
+        prior[path] === undefined ? { ...prior, [path]: { state: "loading" } } : prior,
+      );
+      void rpc
+        .call("list", { path })
+        .then((result) => {
+          setListings((prior) => ({
+            ...prior,
+            [path]: result.ok
+              ? { state: "ready", entries: result.entries }
+              : { state: "failed", error: result.error },
+          }));
+        })
+        .catch((cause: unknown) => {
+          setListings((prior) => ({
+            ...prior,
+            [path]: {
+              state: "failed",
+              error: cause instanceof Error ? cause.message : String(cause),
+            },
+          }));
+        });
     }
   }, [paths, status?.connected, rpc, listings]);
 
   // Reset everything when the connection changes underneath us.
+  //
+  // Declared after the loading effect on purpose. On the render where status
+  // first resolves, both fire; this one wipes the cache the other just began
+  // filling, which costs one duplicate list of the root and nothing else.
+  // Reversed, it would wipe a listing that had already committed.
   useEffect(() => {
     setListings({});
     setSelection({});
@@ -4399,7 +4434,10 @@ export default definePluginApp(() => {
     return () => {
       stale = true;
     };
-  }, [selectedEntry?.name, currentPath, status?.connected, rpc, segments]);
+    // currentPath is deliberately absent: it is derived from segments, which
+    // is already listed, and naming it twice implies a distinction there
+    // isn't one.
+  }, [selectedEntry?.name, status?.connected, rpc, segments]);
 
   const descend = useCallback(() => {
     if (selectedEntry === null) return;
@@ -4446,6 +4484,9 @@ export default definePluginApp(() => {
         case "G": set(moveSelection(column, "end")); break;
         case "g": set(moveSelection(column, "start")); break;
         case "/": setFiltering(true); break;
+        // Handled only to swallow it: the panel's container is focusable, and
+        // an unhandled space scrolls the page out from under the columns.
+        case " ": break;
         default: return;
       }
       event.preventDefault();
@@ -4486,13 +4527,22 @@ export default definePluginApp(() => {
             <div ref={stripRef} className="flex min-w-0 flex-1 overflow-x-auto">
               {paths.map((path, index) => {
                 const isCurrent = index === paths.length - 1;
-                const columnEntries = isCurrent ? entries : (listings[path] ?? []);
+                const loaded = listings[path];
+                const columnEntries = isCurrent
+                  ? entries
+                  : loaded?.state === "ready"
+                    ? loaded.entries
+                    : [];
                 const activeName = isCurrent
                   ? selectedEntry?.name
                   : segments[index];
                 return (
                   <div key={path} className="w-56 shrink-0 overflow-y-auto border-r">
-                    {columnEntries.length === 0 ? (
+                    {loaded === undefined || loaded.state === "loading" ? (
+                      <div className="p-2 text-xs text-muted-foreground">loading…</div>
+                    ) : loaded.state === "failed" ? (
+                      <div className="p-2 text-xs text-destructive">{loaded.error}</div>
+                    ) : columnEntries.length === 0 ? (
                       <div className="p-2 text-xs text-muted-foreground">empty</div>
                     ) : (
                       columnEntries.map((entry, row) => (
@@ -4504,11 +4554,20 @@ export default definePluginApp(() => {
                           onSelect={() => {
                             if (isCurrent) {
                               setSelection((prior) => ({ ...prior, [path]: row }));
-                            } else {
-                              setSegments(
-                                path === "." ? [] : path.split("/"),
-                              );
+                              return;
                             }
+                            // An ancestor column. Clicking a directory walks
+                            // into it — that is the whole Miller-column
+                            // gesture. Ignoring the clicked row and merely
+                            // truncating to the column's own path, as an
+                            // earlier version did, made it impossible to
+                            // click across into another branch.
+                            const base = path === "." ? [] : path.split("/");
+                            const isDir =
+                              entry.type === "dir" || entry.linkType === "dir";
+                            setSegments(isDir ? [...base, entry.name] : base);
+                            setSelection((prior) => ({ ...prior, [path]: row }));
+                            setFilter("");
                           }}
                           onOpen={() => {
                             if (!isCurrent) return;
