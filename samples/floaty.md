@@ -1,38 +1,37 @@
+<!-- f@820x560+40-60 -->
 # Floaty corkboard
 
-<!-- f@820x560+40-60 -->
+This is the host card. Its directive is the top comment of the file, which is
+what makes it the host: it governs the whole document, in the corkboard's own
+signed document pixels, and it keeps showing the whole text the way floaty's
+host buffer does.
 
-This is the host card. It carries an absolute directive, so its geometry is
-read in the corkboard's own signed document pixels, and it keeps showing the
-whole file the way floaty's host buffer does.
+Drag a card by its header. The directive is rewritten in place, and because
+every card is a view onto the same text, the new numbers appear here too.
 
-Drag a card by its header. The directive below it is rewritten in place, and
-because every card is a view onto the same text, the new numbers appear here
-too.
-
+<!-- f@45%x42%+40%+11% -->
 ## Relative child
 
-<!-- f@45%x30%+5%+18% -->
+The directive sits above the heading, so the heading belongs to this card. It
+is written in percentages, so it is 45% of the host's width and 42% of its
+height, offset 40% and 11% into it. Dragging rewrites the percentages rather
+than replacing them with pixels: the unit is the intent.
 
-This card is written in percentages, so it is 45% of the host's width and 30%
-of its height, offset 5% and 18% into it. Dragging it rewrites the percentages
-rather than replacing them with pixels: the unit is the intent.
-
+<!-- f@80%x45%+10%+48% -->
 ### Nested deeper
 
-<!-- f@80%x40%+10%+50% -->
-
 A third level. Its percentages resolve against the card above it, not against
-the host, and it paints above both because a card is a Bloc child of the card
-it nests in.
+the host, and it paints above both.
 
+<!-- f@300x170+430+330 -->
 ## Fixed child
-
-<!-- f@300x150+430+330 -->
 
 Percent and pixel cards coexist; each of the four numbers carries its own unit.
 
 ## Not a card
 
-This section has no directive, so it never becomes a card. Its text still
-belongs to the host, which is why you can read it here.
+This section has no directive of its own, so it never becomes a card. Its text
+still belongs to the host, which is why you can read it here.
+
+Neither does the `# Floaty corkboard` heading above: the host directive precedes
+it and owns the whole file, so no separate card is made for that section.

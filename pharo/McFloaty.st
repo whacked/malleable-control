@@ -21,13 +21,23 @@ it resolves against the parent card's box -- width and x against its width,
 height and y against its height.  A root card's parent box is the canvas
 viewport, so the rule needs no special case at the top.
 
-Hierarchy comes from the document, not from the directives.  In markdown a
-directive attaches geometry to the heading section that contains it, so
-heading levels alone decide what nests inside what; a section with no
-directive is simply not a card.  Everywhere else every directive sits at the
-same level, and the rule is floaty's: if the first non-blank line of the file
-is a directive it governs the whole document, and every later directive is one
-of its children.
+Hierarchy comes from the document, not from the directives.  A directive on
+the first non-blank line of the file is the host, and governs the whole
+document -- being the top comment is what makes it the host, so a directive
+further down is always a child however early it appears.  Every other
+directive governs a heading section: the one it introduces, when a heading is
+the next non-blank line after it, and otherwise the one it sits inside.
+Heading levels alone then decide what nests inside what, and a section with no
+directive is simply not a card.
+
+A card's text always begins at its own directive line.  That is what settles
+whether a heading belongs to the card or to its host: a directive placed above
+a heading takes that heading into the card, and one placed below it leaves the
+heading behind.  It also means the first line a card shows is the directive
+that positions it, which keeps it legible in a card too short to scroll.
+
+Outside markdown there are no headings to read, so every directive is at the
+same level and only the host rule nests anything.
 
 Headings are read with McMarkdownParser rather than by scanning for a leading
 hash, because that parser already knows a hash inside a fenced code block is
@@ -581,33 +591,79 @@ headingLabelFrom: aString
 	^ (line copyFrom: index to: line size) trimBoth!
 
 placeAsMarkdown: aCollection headings: aHeadingCollection
-	"A directive belongs to the heading section it sits in, and takes that
-	 section's level and extent.  A section with no directive is not a card, so
-	 nesting is by level and the missing levels simply never appear."
-	| all placed |
+	"The top comment is the host and owns the whole file.  Every other
+	 directive governs the section it introduces, or failing that the one it
+	 sits inside, and always starts its card at its own line."
+	| all placed governed host |
 	all := aHeadingCollection.
 	placed := OrderedCollection new.
+	governed := OrderedCollection new.
+	host := self hostRecordIn: aCollection.
 	aCollection do: [ :record |
 		(record at: 2) ifNotNil: [
-			| start owner directive stop |
-			start := (record at: 1) first.
-			owner := 0.
-			all withIndexDo: [ :each :index |
-				(each first <= start) ifTrue: [ owner := index ] ].
-			stop := self sectionStopFor: owner in: all.
+			| directive owner key |
 			directive := self directiveFrom: record.
-			directive
-				level: (owner = 0 ifTrue: [ 0 ] ifFalse: [ (all at: owner) second ]);
-				label: (owner = 0
-					ifTrue: [ 'document' ]
-					ifFalse: [ (all at: owner) third ]);
-				regionStart: (owner = 0 ifTrue: [ 1 ] ifFalse: [ (all at: owner) first ])
-					stop: stop.
-			"Two directives in one section would describe the same card twice.
-			 The first wins; the second is left as ordinary text."
-			(placed anySatisfy: [ :each | each regionStart = directive regionStart ])
-				ifFalse: [ placed add: directive ] ] ].
+			record == host
+				ifTrue: [
+					key := -1.
+					directive
+						level: 0;
+						label: 'document';
+						regionStart: 1 stop: source size ]
+				ifFalse: [
+					"A heading on the next non-blank line is the one being
+					 introduced, so it belongs to this card.  Otherwise the
+					 directive is inside a section already under way, and that
+					 section's heading stays behind in the host."
+					owner := self headingIndexFollowing: (record at: 1) in: all.
+					owner = 0 ifTrue: [
+						owner := self headingIndexEnclosing: (record at: 1) first in: all ].
+					key := owner.
+					directive
+						level: (owner = 0 ifTrue: [ 0 ] ifFalse: [ (all at: owner) second ]);
+						label: (owner = 0
+							ifTrue: [ 'document' ]
+							ifFalse: [ (all at: owner) third ]);
+						regionStart: (record at: 1) first
+							stop: (self sectionStopFor: owner in: all) ].
+			"Two directives governing one section would describe the same card
+			 twice.  The first wins; the second is left as ordinary text."
+			(governed includes: key) ifFalse: [
+				governed add: key.
+				placed add: directive ] ] ].
 	self buildTreeFrom: placed!
+
+hostRecordIn: aCollection
+	"The record on the first non-blank line of the file, or nil.  Being the top
+	 comment is the whole of what makes a directive the host."
+	| first |
+	first := self lineIntervals
+		detect: [ :each | (self lineAt: each) trimBoth notEmpty ]
+		ifNone: [ nil ].
+	first ifNil: [ ^ nil ].
+	^ aCollection
+		detect: [ :each | (each at: 1) first = first first ]
+		ifNone: [ nil ]!
+
+headingIndexFollowing: anInterval in: aHeadingCollection
+	"The heading beginning on the next non-blank line after anInterval, or 0."
+	| next |
+	next := self lineIntervals
+		detect: [ :each |
+			each first > anInterval last
+				and: [ (self lineAt: each) trimBoth notEmpty ] ]
+		ifNone: [ nil ].
+	next ifNil: [ ^ 0 ].
+	aHeadingCollection withIndexDo: [ :each :index |
+		each first = next first ifTrue: [ ^ index ] ].
+	^ 0!
+
+headingIndexEnclosing: aStart in: aHeadingCollection
+	| owner |
+	owner := 0.
+	aHeadingCollection withIndexDo: [ :each :index |
+		each first <= aStart ifTrue: [ owner := index ] ].
+	^ owner!
 
 sectionStopFor: anIndex in: aCollection
 	"A section runs to the next heading at or above its own level."

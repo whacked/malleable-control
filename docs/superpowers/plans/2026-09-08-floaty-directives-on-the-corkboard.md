@@ -17,12 +17,25 @@ a second build path beside the example board; the existing one is untouched.
 
 ## Decision
 
-**Hierarchy is the document's, not the directives'.** In markdown a directive
-attaches geometry to the heading section containing it, so heading levels alone
-decide what nests inside what, and a section with no directive is simply not a
-card. Everywhere else every directive is at the same level and floaty's own
-rule applies: a directive on the first non-blank line governs the whole file
-and every later one is its child.
+**Hierarchy is the document's, not the directives'.** A directive on the first
+non-blank line of the file is the host and governs the whole document — being
+the *top comment* is the whole of what makes it the host, so a directive one
+line lower is a child however early it appears. Every other directive governs a
+heading section: the one it introduces, when a heading is the next non-blank
+line after it, and otherwise the one it sits inside. Heading levels alone then
+decide nesting, and a section with no directive is not a card.
+
+**A card's text begins at its own directive line.** That one rule settles two
+things at once. It decides whether a heading belongs to the card or stays with
+the host — a directive placed *above* a heading takes it in, one placed *below*
+leaves it behind — and it guarantees the first line a card shows is the
+directive that positions it, which keeps that directive legible in a card far
+too short to scroll:
+
+```markdown
+<!-- f@45%x42%+40%+11% -->
+## Relative child          <- in the card, because the directive precedes it
+```
 
 **Headings are read from `McMarkdownParser`, not by scanning for a hash.** That
 parser already knows a hash inside a fenced code block is not a heading, and it
@@ -74,6 +87,22 @@ only the host's own directive — the children never moved.
 
 ## Deliberate limits
 
+**There is no transclusion yet, and no shared memory.** A card body is a fresh
+rope built from a substring: `body text: (document renderRange: ...)`. Nothing
+is shared between a host and the cards drawn over it. The *effect* of
+transclusion comes from `refreshCardTexts` re-slicing every body from the one
+`McFloatyDocument` after each change, so the document's source string is the
+single truth and the cards are recomputed projections of it. That is
+indistinguishable from the real thing while bodies cannot be edited, and it is
+exactly what stops being true when they can.
+
+Real transclusion here means one text with many views, which in this image is
+either a shared `BrTextEditorModel` (only usable where two cards show the same
+range) or the approach `McRichText` already argues for — one rope, with a card
+as an *attribute over a range of it* rather than a copy of that range. The
+second is the target, and it is what makes editable cards fall out instead of
+being bolted on.
+
 Card bodies are **read only**. This iteration owns parsing, hierarchy,
 percentages, nested projection, drag and writeback; editing a card back into
 the host rope is a separate problem — shared-rope editing or range-reconciled
@@ -90,13 +119,16 @@ the second stays ordinary text.
 
 ## Verification
 
-`McFloatyTest` (27) pins the grammar and its rejections, percent resolution,
-markdown nesting by heading level, the fenced-heading case that justifies using
-the real parser, the flat-file host rule and `f@end`, and writeback — unit
-preserved, rounding, comment style, indentation, and repeated moves as the text
-changes length. `McCorkboardTest` (8 more) pins the projection: nesting,
-relative placement, paint order, host-drag carrying children without touching
-their directives, and a percent child rewritten in percent.
+`McFloatyTest` (32) pins the grammar and its rejections, percent resolution,
+markdown nesting by heading level, that only the top comment is the host, that
+a directive above a heading takes it into the card and one below leaves it
+behind, that every card region opens with its own directive, the fenced-heading
+case that justifies using the real parser, the flat-file host rule and `f@end`,
+and writeback — unit preserved, rounding, comment style, indentation, and
+repeated moves as the text changes length. `McCorkboardTest` (10 more) pins the
+projection: nesting, relative placement, paint order, host-drag carrying
+children without touching their directives, a percent child rewritten in
+percent, and that the demo's sample file exists and projects.
 
 ## Demonstrating it
 

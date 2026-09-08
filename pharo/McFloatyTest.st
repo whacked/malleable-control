@@ -5,19 +5,21 @@ TestCase subclass: #McFloatyTest
 
 !McFloatyTest methodsFor: 'samples'!
 markdownSample
-	"Title is the host; Section A nests inside it and Sub inside A.  Section B
-	 carries no directive and so is not a card at all."
+	"The top comment is the host and owns the whole file.  Section A nests
+	 inside it and Sub inside A, each introduced by the directive above its
+	 heading.  Title and Section B carry no directive of their own and so are
+	 not cards at all."
 	^ String lf join: #(
-		'# Title'
 		'<!!-- f@800x600+10-20 -->'
+		'# Title'
 		'intro body'
 		''
-		'## Section A'
 		'<!!-- f@50%x25%+5%+2% -->'
+		'## Section A'
 		'body A'
 		''
-		'### Sub'
 		'<!!-- f@40%x30%+1%+1% -->'
+		'### Sub'
 		'body sub'
 		''
 		'## Section B'
@@ -111,14 +113,14 @@ testGeometryResolvesInsideTheParentBox
 
 !McFloatyTest methodsFor: 'tests - markdown hierarchy'!
 testMarkdownNestsCardsByHeadingLevel
-	| document title sectionA |
+	| document host sectionA |
 	document := self markdown: self markdownSample.
 	self assert: document roots size equals: 1.
-	title := document roots first.
-	self assert: title label equals: 'Title'.
-	self assert: title level equals: 1.
-	self assert: title children size equals: 1.
-	sectionA := title children first.
+	host := document roots first.
+	self assert: host label equals: 'document'.
+	self assert: host level equals: 0.
+	self assert: host children size equals: 1.
+	sectionA := host children first.
 	self assert: sectionA label equals: 'Section A'.
 	self assert: sectionA level equals: 2.
 	self assert: sectionA children size equals: 1.
@@ -129,7 +131,58 @@ testMarkdownSectionWithoutADirectiveIsNotACard
 	| document |
 	document := self markdown: self markdownSample.
 	self assert: (document directiveLabelled: 'Section B') isNil.
+	self assert: (document directiveLabelled: 'Title') isNil.
 	self assert: document allDirectives size equals: 3!
+
+testOnlyTheTopCommentIsTheHost
+	"Being first is the whole of what makes a directive the host.  The same
+	 directive one line lower governs the heading above it instead."
+	| top lower |
+	top := self markdown: (String lf join: #(
+		'<!!-- f@800x600+0+0 -->'
+		'# Title'
+		'body')).
+	self assert: top roots first label equals: 'document'.
+	self assert: top roots first level equals: 0.
+	self assert: top roots first regionStart equals: 1.
+	lower := self markdown: (String lf join: #(
+		'# Title'
+		'<!!-- f@800x600+0+0 -->'
+		'body')).
+	self assert: lower roots first label equals: 'Title'.
+	self assert: lower roots first level equals: 1.
+	self deny: lower roots first regionStart equals: 1!
+
+testDirectiveAboveAHeadingTakesTheHeadingIntoTheCard
+	| document card |
+	document := self markdown: self markdownSample.
+	card := document directiveLabelled: 'Section A'.
+	self assert: ((document renderRange: card regionRange)
+		includesSubstring: '## Section A')!
+
+testDirectiveBelowAHeadingLeavesTheHeadingBehind
+	"The card starts at its own directive, so a heading above that line stays
+	 with the host rather than being pulled into the card."
+	| document card |
+	document := self markdown: (String lf join: #(
+		'# Host'
+		'## Section A'
+		'<!!-- f@50%x25%+0+0 -->'
+		'body A')).
+	card := document directiveLabelled: 'Section A'.
+	self deny: ((document renderRange: card regionRange)
+		includesSubstring: '## Section A').
+	self assert: ((document renderRange: card regionRange)
+		includesSubstring: 'body A')!
+
+testEveryCardOpensWithItsOwnDirective
+	"A card too short to scroll must still show what positions it."
+	| document |
+	document := self markdown: self markdownSample.
+	self assert: document allDirectives size equals: 3.
+	document allDirectives do: [ :each |
+		self assert: (document renderRange: each regionRange) lines first trimBoth
+			equals: each directiveLine trimBoth ]!
 
 testHostRegionIsTheWholeDocument
 	"The host keeps showing the whole text, as floaty's host buffer does."
@@ -148,6 +201,15 @@ testChildRegionStopsAtTheNextSectionOfItsOwnLevel
 	self assert: (region includesSubstring: 'body sub').
 	self deny: (region includesSubstring: 'body B').
 	self deny: (region includesSubstring: 'intro body')!
+
+testHostStillShowsEveryChildSection
+	"The host keeps the whole text, so nothing a child card lifts out goes
+	 missing from it."
+	| document region |
+	document := self markdown: self markdownSample.
+	region := document renderRange: document roots first regionRange.
+	#('intro body' 'body A' 'body sub' 'body B') do: [ :each |
+		self assert: (region includesSubstring: each) ]!
 
 testHeadingInsideACodeFenceDoesNotOpenASection
 	"The payoff for reading headings from McMarkdownParser rather than scanning
