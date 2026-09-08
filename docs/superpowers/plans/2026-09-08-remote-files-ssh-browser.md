@@ -1239,7 +1239,23 @@ describe("helper framing", () => {
   // JSON. A traceback would break that contract for every caller, so the
   // header has to survive inputs the helper never anticipated.
   it("still emits one JSON line for a path containing a NUL byte", () => {
-    const { header } = run(["stat", root, "a\u0000b"]);
+    // A real NUL byte can never reach the helper through `run()`: POSIX
+    // exec() argv elements are NUL-terminated C strings, and Node's
+    // child_process rejects an embedded NUL before it will even spawn
+    // (verified directly: execFileSync throws ERR_INVALID_ARG_VALUE for a
+    // string arg, and even a raw Buffer arg gets silently truncated at the
+    // byte by the OS before python3 ever sees it). So this drives the same
+    // guard a different way: build sys.argv inside the interpreter, where a
+    // NUL-containing string can actually exist, and run the exact same
+    // helper source through its own `__main__` gate.
+    const driver = `
+import sys
+sys.argv = ["helper.py", "stat", ${JSON.stringify(root)}, "a" + chr(0) + "b"]
+exec(compile(${JSON.stringify(HELPER)}, "helper.py", "exec"), {"__name__": "__main__"})
+`;
+    const stdout = execFileSync("python3", ["-c", driver], { maxBuffer: 64 * 1024 * 1024 });
+    const nl = stdout.indexOf(0x0a);
+    const header = JSON.parse(stdout.subarray(0, nl).toString("utf8"));
     strictEqual(header.ok, false);
     ok(String(header.error).length > 0);
   });
