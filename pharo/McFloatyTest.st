@@ -241,6 +241,51 @@ testHashCommentIsNotADirectiveInMarkdown
 		'body')).
 	self assert: document allDirectives isEmpty! !
 
+!McFloatyTest methodsFor: 'tests - markdown hierarchy'!
+testMarkdownEndDirectiveClosesASection
+	"A section normally runs to the next heading at or above its level.  An
+	 f@end stops the card earlier, and what is left of the section stays with
+	 the host, which owns the whole file anyway."
+	| document child region |
+	document := self markdown: (String lf join: #(
+		'<!!-- f@800x600+0+0 -->'
+		'# Doc'
+		''
+		'<!!-- f@50%x40%+5%+5% -->'
+		'## Section A'
+		'inside A'
+		'<!!-- f@end -->'
+		'past the end'
+		''
+		'## Section B'
+		'body B')).
+	child := document roots first children first.
+	region := document renderRange: child regionRange.
+	self assert: (region includesSubstring: 'inside A').
+	self deny: (region includesSubstring: 'past the end').
+	self deny: (region includesSubstring: 'Section B')! !
+
+!McFloatyTest methodsFor: 'tests - markdown hierarchy'!
+testMarkdownEndDirectiveCannotExtendASection
+	"An f@end only ever shortens.  One sitting beyond the heading that already
+	 ends the section changes nothing."
+	| document child region |
+	document := self markdown: (String lf join: #(
+		'<!!-- f@800x600+0+0 -->'
+		'# Doc'
+		''
+		'<!!-- f@50%x40%+5%+5% -->'
+		'## Section A'
+		'inside A'
+		''
+		'## Section B'
+		'body B'
+		'<!!-- f@end -->')).
+	child := document roots first children first.
+	region := document renderRange: child regionRange.
+	self assert: (region includesSubstring: 'inside A').
+	self deny: (region includesSubstring: 'body B')! !
+
 !McFloatyTest methodsFor: 'tests - flat hierarchy'!
 testFlatFileHostsTheWholeDocumentFromItsFirstLine
 	| document host |
@@ -259,12 +304,22 @@ testFlatChildrenAreLabelledByTheirFirstRealLine
 		equals: #('(defun child-one ())' '(defun child-two ())')!
 
 testFlatEndDirectiveClosesARegion
+	"Nothing follows the f@end here, so it is the only thing that can close the
+	 region.  The flatSample alone would not prove this: there the next
+	 directive closes the card whether or not the f@end is understood."
 	| document childOne region |
-	document := self flat: self flatSample.
+	document := self flat: (String lf join: #(
+		';;; f@900x700+0+0'
+		'(defun host ())'
+		''
+		';;; f@30%x20%+5%+5%'
+		'(defun child-one ())'
+		';;; f@end'
+		'(defun after-the-end ())')).
 	childOne := document roots first children first.
 	region := document renderRange: childOne regionRange.
 	self assert: (region includesSubstring: 'child-one').
-	self deny: (region includesSubstring: 'child-two')!
+	self deny: (region includesSubstring: 'after-the-end')!
 
 testFlatFileWithoutALeadingDirectiveHasNoHost
 	| document |

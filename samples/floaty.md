@@ -28,6 +28,11 @@ the host, and it paints above both.
 
 Percent and pixel cards coexist; each of the four numbers carries its own unit.
 
+<!-- f@end -->
+
+An `f@end` closes a card early. This paragraph is still inside the `## Fixed
+child` section, so the host below shows it, but the card above stops before it.
+
 ## Not a card
 
 This section has no directive of its own, so it never becomes a card. Its text

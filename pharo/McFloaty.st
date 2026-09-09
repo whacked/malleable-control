@@ -625,7 +625,8 @@ placeAsMarkdown: aCollection headings: aHeadingCollection
 							ifTrue: [ 'document' ]
 							ifFalse: [ (all at: owner) third ]);
 						regionStart: (record at: 1) first
-							stop: (self sectionStopFor: owner in: all) ].
+							stop: ((self sectionStopFor: owner in: all)
+								min: (self endStopFor: (record at: 1) last in: aCollection)) ].
 			"Two directives governing one section would describe the same card
 			 twice.  The first wins; the second is left as ordinary text."
 			(governed includes: key) ifFalse: [
@@ -673,6 +674,15 @@ sectionStopFor: anIndex in: aCollection
 	(anIndex + 1 to: aCollection size) do: [ :each |
 		(aCollection at: each) second <= level
 			ifTrue: [ ^ (aCollection at: each) first - 1 ] ].
+	^ source size!
+
+endStopFor: aStart in: aCollection
+	"An f@end closes whatever region is open, so a card stops on the line
+	 before the first one that follows its directive.  It can only shorten a
+	 section, never carry it past the heading that ends it."
+	aCollection do: [ :each |
+		((each at: 2) isNil and: [ (each at: 1) first > aStart ])
+			ifTrue: [ ^ (each at: 1) first - 1 ] ].
 	^ source size! !
 
 !McFloatyDocument methodsFor: 'parsing - flat'!
