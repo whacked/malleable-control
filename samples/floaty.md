@@ -9,6 +9,14 @@ host buffer does.
 Drag a card by its header. The directive is rewritten in place, and because
 every card is a view onto the same text, the new numbers appear here too.
 
+Type into a card and the same thing happens the other way: the characters go
+into this file, and every card whose range covers them shows them at once. The
+row above each card's text is that card's own directive line, and it is an
+editor too -- retype the numbers and the card moves as you finish them, the way
+dragging does. Press Enter there, or click out of a card you have typed in, and
+the file is read again: that is when a line that has stopped being a directive
+loses its card, and when a new one gains its own.
+
 <!-- f@45%x42%+40%+11% -->
 ## Relative child
 
