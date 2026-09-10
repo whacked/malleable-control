@@ -508,6 +508,166 @@ testCommittingNothingLeavesTheCardsAlone
 	board commitStructure.
 	self assert: (board cardViewFor: child) == card! !
 
+!McCorkboardTest methodsFor: 'tests - directive reveal'!
+hostTokenOn: aBoard
+	^ (aBoard document tokensIn: aBoard document roots first contentRange)
+		detect: [ :each | each isCard ]!
+
+caretIn: aDirective on: aBoard to: anInteger
+	"Move a card's caret and restyle, which is what the cursor-moved handler
+	 does when a real caret arrives."
+	| body |
+	body := aBoard cardBodyFor: aDirective.
+	body editor moveCursorTo: anInteger.
+	body editor styleText.
+	^ body!
+
+adornmentsAt: anIndex in: anEditor
+	^ ((anEditor text attributesAt: anIndex) select: [ :each |
+		each isKindOf: BrTextAdornmentAttribute ]) size!
+
+testADirectiveBlockIsABandAcrossTheTextNotAChipInIt
+	"A chip in the run of prose reads as a word in the sentence.  The line is a
+	 thing the document is made of, so it takes the width of one."
+	| board |
+	board := self floatyBoard.
+	self assert: (board blockFor: (self hostTokenOn: board))
+		constraints horizontal resizer isMatchParent!
+
+testABlockNamesTheCardItOpens
+	| board |
+	board := self floatyBoard.
+	self assert: ((board blockTextFor: (self hostTokenOn: board)) asString
+		includesSubstring: 'Child')!
+
+testTheGeometryAndTheNameAreColouredApart
+	"They are two different things to know, and the geometry is the one the
+	 author typed.  A cascade after the comma would have painted both in the
+	 name's colour."
+	| board text foregroundAt |
+	board := self floatyBoard.
+	text := board blockTextFor: (self hostTokenOn: board).
+	foregroundAt := [ :index |
+		(text attributesAt: index) detect: [ :each |
+			each isKindOf: BlTextForegroundAttribute ] ].
+	self deny: (foregroundAt value: 1) paint = (foregroundAt value: text size) paint!
+
+testACardWithNoCaretShowsEveryDirectiveAsABlock
+	"Which is how a passive card should look: nobody is editing it, so there is
+	 no reason to show anyone the syntax."
+	| board host token |
+	board := self floatyBoard.
+	host := board document roots first.
+	token := self hostTokenOn: board.
+	self assert: (self adornmentsAt: token range first in: (board cardBodyFor: host))
+		equals: 1!
+
+testACaretOnADirectiveRevealsItsSource
+	"The rule McRichEdit uses, so a directive and a piece of markdown reveal
+	 themselves the same way."
+	| board host token |
+	board := self floatyBoard.
+	host := board document roots first.
+	token := self hostTokenOn: board.
+	self caretIn: host on: board to: token range first.
+	self assert: (self adornmentsAt: token range first in: (board cardBodyFor: host))
+		equals: 0!
+
+testACaretLeavingADirectivePutsTheBlockBack
+	| board host token |
+	board := self floatyBoard.
+	host := board document roots first.
+	token := self hostTokenOn: board.
+	self caretIn: host on: board to: token range first.
+	self caretIn: host on: board to: token range last + 20.
+	self assert: (self adornmentsAt: token range first in: (board cardBodyFor: host))
+		equals: 1!
+
+testRevealingADirectiveLeavesTheCharactersAlone
+	"The block replaced what was drawn, never what was there, so revealing it
+	 is a change of appearance and nothing else."
+	| board host before |
+	board := self floatyBoard.
+	host := board document roots first.
+	before := (board cardBodyFor: host) text asString.
+	self caretIn: host on: board to: (self hostTokenOn: board) range first.
+	self assert: (board cardBodyFor: host) text asString equals: before! !
+
+!McCorkboardTest methodsFor: 'tests - settling'!
+testTheSettleDefaultsToHalfASecond
+	[ McCorkboard settleMilliseconds: nil.
+	  self assert: McCorkboard settleMilliseconds equals: 500 ]
+		ensure: [ McCorkboard settleMilliseconds: nil ]!
+
+testTheSettleCanBeSetForTheImage
+	[ McCorkboard settleMilliseconds: 120.
+	  self assert: McCorkboard settleMilliseconds equals: 120 ]
+		ensure: [ McCorkboard settleMilliseconds: nil ]!
+
+testBreakingAChildsDirectiveDestroysItsCardOnceTypingSettles
+	"The point of the whole arrangement: a directive is text, so breaking the
+	 text breaks the card.  It waits for the settle because every prefix of a
+	 directive being typed is a line that is not one yet."
+	| board host child at |
+	board := self floatyBoard.
+	host := board document roots first.
+	child := board document directiveLabelled: 'Child'.
+	at := (board cardBodyFor: host) text asString indexOfSubCollection: 'f@50%'.
+	(board cardBodyFor: host) editor deleter from: at - 1 to: at; delete.
+	"Still there: the source has changed but the board has not been told to
+	 read it again yet."
+	self assert: (board cardViewFor: child) notNil.
+	board commitStructure.
+	self assert: (board document directiveLabelled: 'Child') isNil.
+	self assert: board document roots first children isEmpty!
+
+testRepairingADirectiveBringsItsCardBack
+	| board host at |
+	board := self floatyBoard.
+	host := board document roots first.
+	at := (board cardBodyFor: host) text asString indexOfSubCollection: 'f@50%'.
+	(board cardBodyFor: host) editor deleter from: at - 1 to: at; delete.
+	board commitStructure.
+	self assert: (board document directiveLabelled: 'Child') isNil.
+	host := board document roots first.
+	at := (board cardBodyFor: host) text asString indexOfSubCollection: '@50%'.
+	(board cardBodyFor: host) editor inserter at: at - 1; string: 'f'; insert.
+	board commitStructure.
+	self assert: (board document directiveLabelled: 'Child') notNil!
+
+testTheCaretSurvivesARebuildOfTheCardItIsIn
+	"Every card is a new object after a reparse, so the caret cannot be carried
+	 by the one that was holding it.  It is carried by where it was in the
+	 document instead, and put back in whichever card now shows that text."
+	| board child at before |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	at := ((board cardBodyFor: child) text asString
+		indexOfSubCollection: 'child body') - 1.
+	(board cardBodyFor: child) editor inserter at: at; string: 'Z'; insert.
+	before := board cursorIn: (board cardBodyFor: child).
+	board commitStructure.
+	child := board document directiveLabelled: 'Child'.
+	self assert: ((board cardBodyFor: child) text asString
+		includesSubstring: 'Zchild body').
+	self assert: (board cursorIn: (board cardBodyFor: child)) equals: before!
+
+testTheCaretMovesToTheHostWhenTheCardUnderItIsDestroyed
+	"Breaking a directive from the host's own text takes the child away.  The
+	 characters the caret was among are still there -- they are the host's now
+	 -- so that is where it goes."
+	| board host at |
+	board := self floatyBoard.
+	host := board document roots first.
+	at := (board cardBodyFor: host) text asString indexOfSubCollection: 'f@50%'.
+	"A caret has to be somewhere for there to be one to carry."
+	(board cardBodyFor: host) editor moveCursorTo: at.
+	(board cardBodyFor: host) editor deleter from: at - 1 to: at; delete.
+	board commitStructure.
+	self assert: (board document directiveLabelled: 'Child') isNil.
+	host := board document roots first.
+	self assert: (board cursorIn: (board cardBodyFor: host)) >= 0! !
+
 !McCorkboardTest methodsFor: 'tests - demo'!
 testTheDemoBoardLoadsItsCardsFromTheSampleFile
 	"The launcher card opens this file, so a rename that leaves it dangling

@@ -7,8 +7,8 @@ resolution and future pan/zoom independent from the component tree.
 "!
 
 Object subclass: #McCorkboard
-	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid gridKey panOrigin panStart'
-	classVariableNames: ''
+	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid gridKey panOrigin panStart settleGeneration caretPosition'
+	classVariableNames: 'SettleMilliseconds'
 	package: 'MalleableControl'!
 
 !McCorkboard class methodsFor: 'opening'!
@@ -540,6 +540,14 @@ bodyFor: aDirective
 	body aptitude: BrGlamorousCodeEditorAptitude new.
 	body background: Color white.
 	body padding: (BlInsets all: 4).
+	"The projection is applied to the rope the editor already holds rather than
+	 assigned as a new one.  Handing an editor a fresh rope takes the caret with
+	 it, and the caret is exactly what decides which directives are shown as
+	 blocks and which as the source they came from -- so a projection that
+	 destroyed it could never depend on it."
+	body editor useSyncStylerStrategy.
+	body editor styler: (BlPluggableStyler new block: [ :aText |
+		self styleBody: aText for: aDirective in: body ]).
 	body text: (self bodyTextFor: aDirective).
 	"A card's text is a window onto a range of the one source, and typing into
 	 it writes through to that range.  Nothing here owns a copy, so nothing has
@@ -547,32 +555,70 @@ bodyFor: aDirective
 	 again."
 	body editor when: BrTextEditorModifiedEvent do: [ :event |
 		self cardBodyEdited: aDirective ].
-	"Structure waits for the caret to leave.  Re-projecting destroys the editor
-	 being typed into, so it is not something to do on a keystroke."
+	"A caret arriving on a directive reveals its source; one leaving puts the
+	 block back."
+	body editor when: BrTextEditorCursorMovedEvent do: [ :event |
+		body editor styleText ].
+	"The caret leaving is itself a deliberate moment, so it settles the
+	 structure without waiting out the timer.  It also forgets where the caret
+	 was: the author has gone somewhere else, and a rebuild that pulled the
+	 focus back would be taking the click off whatever they clicked on."
 	body addEventFilter: (BlEventHandler on: BlFocusOutEvent do: [ :event |
+		caretPosition := nil.
 		self enqueue: [ self commitStructure ] ]).
 	body constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ].
 	^ body!
 
 bodyTextFor: aDirective
-	"The card's own directive is drawn above the text, so the body starts on the
-	 line after it.  Every directive line that remains inside the body -- a
-	 child's, or an f@end -- is a block node rather than prose, and is replaced
-	 by its own element.  The characters stay in the text underneath the
-	 replacement, which is what keeps the body a faithful view of the range and
-	 leaves the source mapping intact for the day the body becomes editable."
-	| range text |
-	range := aDirective contentRange.
-	text := (document renderRange: range) asRopedText.
-	(document tokensIn: range) do: [ :token |
-		text
-			attribute: (BrTextAdornmentDynamicAttribute new
-				beReplace;
-				stencil: [ :anIndex | self blockFor: token ];
-				yourself)
-			from: token range first
-			to: token range last ].
-	^ text!
+	"The characters a card shows: its region without the directive line that
+	 opens it, which is drawn in the row above instead.  What those characters
+	 look like is the styler's business, not this one's."
+	^ (document renderRange: aDirective contentRange) asRopedText!
+
+styleBody: aText for: aDirective in: anEditor
+	"Draw every directive line inside the card as the block it is, except the
+	 one the caret is on, which stays the source the author is editing.  The
+	 characters stay in the text underneath a block, so the body is still a
+	 faithful view of its range and the source mapping is untouched.
+
+	 A styler runs on every keystroke and is handed the text in whatever state
+	 the edit left it, an empty one included, so a range that does not fit is
+	 skipped and anything unexpected degrades to plain source rather than
+	 taking the card down."
+	| cursor |
+	[ cursor := self cursorIn: anEditor.
+	  (document tokensIn: aDirective contentRange) do: [ :token |
+		((token range first >= 1 and: [ token range last <= aText size ])
+			and: [ (self cursor: cursor isNear: token range) not ])
+			ifTrue: [ aText
+				attribute: (BrTextAdornmentDynamicAttribute new
+					beReplace;
+					stencil: [ :anIndex | self blockFor: token ];
+					yourself)
+				from: token range first
+				to: token range last ] ] ]
+		on: Error do: [ :e | "leave the source showing" ].
+	^ aText!
+
+cursorIn: anEditor
+	"The caret's position in anEditor, counted as characters before it, or -1
+	 when there is none.  A card nobody is typing in has no caret, and so shows
+	 every one of its directives as a block -- which is exactly how a passive
+	 card should look."
+	| position |
+	position := -1.
+	[ anEditor ifNotNil: [ anEditor editor cursors do: [ :each |
+		position := each position ] ] ]
+		on: Error do: [ :e | position := -1 ].
+	^ position!
+
+cursor: aPosition isNear: aRange
+	"Whether the caret is on this line.  The rule McRichEdit uses, so a
+	 directive and a piece of markdown reveal themselves the same way: the
+	 caret is 0-based and ranges are 1-based, and the two of slack lets it sit
+	 just before a line and still count as being on it."
+	aPosition < 0 ifTrue: [ ^ false ].
+	^ aPosition >= (aRange first - 2) and: [ aPosition <= aRange last ]!
 
 directiveRowFor: aDirective
 	"A card's own directive, in a row above its text instead of as the first
@@ -614,17 +660,19 @@ directiveTextFor: aDirective
 		foreground: (Color fromHexString: '#2f4a66')!
 
 blockFor: aToken
-	"A directive inside a card's text, drawn as the block it is.  An f@end
-	 carries no geometry and only ever closes a region, so it is a sentinel and
-	 is coloured as one rather than pretending to be a card."
+	"A directive inside a card's text, drawn as the block it is: a band across
+	 the width of the text, because a band is what the line is.  A chip sitting
+	 in the run of prose read as a word in the sentence; the line is a thing
+	 the document is made of, and it should look like one.
+
+	 An f@end carries no geometry and only ever closes a region, so it is a
+	 sentinel and is coloured as one rather than pretending to be a card."
 	| block sentinel |
 	sentinel := aToken isEnd.
 	block := BrLabel new.
 	block aptitude: BrGlamorousLabelAptitude new.
-	block text: ((self blockLabelFor: aToken) asRopedText
-		fontName: self class codeFontName;
-		fontSize: 10;
-		foreground: (Color fromHexString: (sentinel ifTrue: [ '#7a5230' ] ifFalse: [ '#2f5d8a' ]))).
+	block text: (self blockTextFor: aToken).
+	block constraintsDo: [ :c | c horizontal matchParent. c vertical fitContent ].
 	block padding: (BlInsets top: 1 left: 6 bottom: 1 right: 6).
 	block background: (Color fromHexString: (sentinel ifTrue: [ '#f6ecdc' ] ifFalse: [ '#e2edf7' ])).
 	block border: (BlBorder paint: (Color fromHexString: (sentinel
@@ -632,6 +680,31 @@ blockFor: aToken
 		ifFalse: [ '#a9c8e4' ])) width: 1).
 	block geometry: (BlRoundedRectangleGeometry cornerRadius: 3).
 	^ block!
+
+blockTextFor: aToken
+	"The geometry, and after it the card the line opens.  There is room for the
+	 name now that the block is a band rather than a chip, and the name is what
+	 tells you which card you are looking at without going to find it."
+	| text label suffix |
+	text := (self blockLabelFor: aToken) asRopedText
+		fontName: self class codeFontName;
+		fontSize: 10;
+		foreground: (Color fromHexString: (aToken isEnd
+			ifTrue: [ '#7a5230' ]
+			ifFalse: [ '#2f5d8a' ])).
+	label := aToken isEnd
+		ifTrue: [ '' ]
+		ifFalse: [ aToken directive
+			ifNil: [ '' ]
+			ifNotNil: [ :each | each label ] ].
+	label isEmpty ifTrue: [ ^ text ].
+	"Built apart and then joined: a cascade after the comma would apply to the
+	 concatenation, and the geometry would come out in the name's colour."
+	suffix := ('   ' , label) asRopedText
+		fontSize: 10;
+		foreground: (Color fromHexString: '#6b7b8c');
+		yourself.
+	^ text , suffix!
 
 blockLabelFor: aToken
 	"The geometry alone, not the comment that carries it: the block exists to
@@ -682,7 +755,9 @@ directiveRowEdited: aDirective
 	typed = (document renderRange: aDirective range) ifTrue: [ ^ self ].
 	(document writeLineOf: aDirective as: typed)
 		ifTrue: [ self placeCardFor: aDirective ].
+	caretPosition := nil.
 	self refreshCardViewsExcept: aDirective.
+	self scheduleSettle.
 	^ self!
 
 cardBodyEdited: aDirective
@@ -704,7 +779,9 @@ cardBodyEdited: aDirective
 		replaceFrom: (edit at: 1)
 		to: (edit at: 2)
 		with: (edit at: 3).
+	self noteCaretIn: aDirective.
 	self refreshCardViewsExcept: aDirective.
+	self scheduleSettle.
 	^ self!
 
 replacementFrom: anOldString to: aNewString at: anOffset
@@ -736,18 +813,89 @@ commitStructure
 
 	 A line may have stopped being a directive, started being one, or come to
 	 govern a different heading, and none of that is something the live path can
-	 answer -- it moves a card, it does not restructure the board.  Every
-	 directive object is new afterwards, so the board is projected rather than
-	 patched, and whatever held the caret loses it.  That is why this waits for
-	 a deliberate moment: Enter in a directive row, or the focus leaving a
-	 card's text.
+	 answer -- it moves a card, it does not restructure the board.  So the board
+	 is projected again, and the caret is carried across by where it was in the
+	 document rather than by which card was holding it: the card that was
+	 holding it may not exist any more, and if the author has just broken a
+	 directive it should not.  It lands in the innermost card that still covers
+	 that position, which is the one now showing those characters.
 
 	 A drag does not reach here.  It says the parse it left standing is still
 	 good, and it is entitled to: it rewrote a line that opens the same card
 	 over the same region either way."
+	| position |
 	document needsReparse ifFalse: [ ^ self ].
+	position := caretPosition.
 	document reparse.
 	self projectDocument.
+	self restoreCaretTo: position.
+	^ self!
+
+noteCaretIn: aDirective
+	"Where the caret is in the document, taken after the edit that moved it, so
+	 that a rebuild can put it back somewhere that still exists.
+
+	 An edit can arrive with no caret behind it -- a test drives the editor
+	 directly, and so could anything else that edits a card without a person in
+	 front of it.  There is nothing to put back then, and a position worked out
+	 from the absence of one would be a fabrication."
+	| cursor |
+	cursor := self cursorIn: (self cardBodyFor: aDirective).
+	caretPosition := cursor < 0
+		ifTrue: [ nil ]
+		ifFalse: [ aDirective contentRange first - 1 + cursor ].
+	^ caretPosition!
+
+restoreCaretTo: aPositionOrNil
+	"Put the caret back at a document position in whichever card now shows it.
+	 The innermost such card: a broken directive takes its own card away, and
+	 the text it was showing is then the host's, which is where the author is
+	 still typing.
+
+	 Nothing to restore when the position is gone from the document entirely --
+	 the author deleted the text the caret was in, and there is nowhere honest
+	 to put it."
+	| best |
+	aPositionOrNil ifNil: [ ^ self ].
+	best := nil.
+	cardViews keysAndValuesDo: [ :directive :views |
+		| range |
+		range := directive contentRange.
+		((aPositionOrNil >= (range first - 1) and: [ aPositionOrNil <= range last ])
+			and: [ best isNil or: [ range first > best contentRange first ] ])
+			ifTrue: [ best := directive ] ].
+	best ifNil: [ ^ self ].
+	self caretIn: best to: aPositionOrNil - (best contentRange first - 1).
+	^ best!
+
+caretIn: aDirective to: aLocalPosition
+	"Move a card's caret to a position of its own, and ask for the focus that
+	 makes it the card being typed in.  A rebuild the author did not ask for
+	 should leave them where they were."
+	| body |
+	body := self cardBodyFor: aDirective.
+	[ body editor moveCursorTo: (aLocalPosition max: 0).
+	  body requestFocus.
+	  body editor styleText ]
+		on: Error do: [ :e | nil ].
+	^ body!
+
+scheduleSettle
+	"Answer a structural change once typing has paused, not on the keystroke
+	 that made it.  Every prefix of a directive being typed is a line that is
+	 not one yet, and rebuilding on each of them would flash a card out of
+	 existence and back on nearly every character.
+
+	 Each keystroke supersedes the last one's pending answer, so a run of them
+	 costs one rebuild at the end rather than one apiece."
+	| generation |
+	settleGeneration := (settleGeneration ifNil: [ 0 ]) + 1.
+	generation := settleGeneration.
+	space ifNil: [ ^ self ].
+	space enqueueTask: (BlDelayedTaskAction new
+		delay: self class settleMilliseconds milliSeconds;
+		action: [ generation = settleGeneration ifTrue: [ self commitStructure ] ];
+		yourself).
 	^ self!
 
 enqueue: aBlock
@@ -807,6 +955,39 @@ cardParentExtentFor: aDirective
 	"The box this card's percentages resolve against -- its host's extent, or
 	 the viewport's when it is a root."
 	^ (cardViews at: aDirective) fourth! !
+
+!McCorkboard class methodsFor: 'settling'!
+settleMilliseconds
+	"How long typing has to pause before the board answers a structural change.
+
+	 Typing a directive walks through many broken states -- every prefix of
+	 `<!!-- f@45x30 -->` is a line that is not one yet -- and answering each of
+	 them would flash a card out of existence and back on nearly every
+	 character.  The source is right the whole time regardless; only the cards
+	 wait.
+
+	 Set for the image with #settleMilliseconds:, or for the session with
+	 MC_CORKBOARD_SETTLE_MS in the environment."
+	SettleMilliseconds ifNotNil: [ :each | ^ each ].
+	^ self settleMillisecondsFromEnvironment ifNil: [ 500 ]!
+
+settleMilliseconds: anIntegerOrNil
+	"Override the settle for this image; nil restores the environment or the
+	 default.  A live board picks this up on its next keystroke."
+	SettleMilliseconds := anIntegerOrNil!
+
+settleMillisecondsFromEnvironment
+	"MC_CORKBOARD_SETTLE_MS, when it is set and reads as a whole number of
+	 milliseconds.  Anything else is ignored rather than argued with: a
+	 mistyped variable should not stop the board from opening."
+	| raw |
+	raw := [ Smalltalk os environment at: 'MC_CORKBOARD_SETTLE_MS' ifAbsent: [ nil ] ]
+		on: Error do: [ :e | nil ].
+	raw ifNil: [ ^ nil ].
+	raw isEmpty ifTrue: [ ^ nil ].
+	^ ((1 to: raw size) allSatisfy: [ :index | (raw at: index) isDigit ])
+		ifTrue: [ raw asInteger ]
+		ifFalse: [ nil ]! !
 
 !McCorkboard class methodsFor: 'grid'!
 codeFontName

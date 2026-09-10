@@ -13,9 +13,15 @@ Type into a card and the same thing happens the other way: the characters go
 into this file, and every card whose range covers them shows them at once. The
 row above each card's text is that card's own directive line, and it is an
 editor too -- retype the numbers and the card moves as you finish them, the way
-dragging does. Press Enter there, or click out of a card you have typed in, and
-the file is read again: that is when a line that has stopped being a directive
-loses its card, and when a new one gains its own.
+dragging does.
+
+The directives inside a card's text are bands rather than lines of syntax. Put
+the caret on one and it turns back into the source it came from; move away and
+the band returns. Type a directive into a card's text and a new card appears
+once you pause; break one and its card goes away. That happens half a second
+after you stop typing, because every half-written directive is a line that is
+not one yet -- press Enter in a row, or click out of a card, to have it happen
+at once.
 
 <!-- f@45%x42%+40%+11% -->
 ## Relative child
