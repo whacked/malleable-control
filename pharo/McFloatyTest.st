@@ -338,6 +338,61 @@ testHashCommentIsADirectiveOutsideMarkdown
 	self assert: document roots size equals: 1.
 	self assert: document roots first geometry width value equals: 40! !
 
+!McFloatyTest methodsFor: 'tests - blocks'!
+testTokensKeepEveryDirectiveLineIncludingEnds
+	"The tree drops an f@end once it has closed a region, but the rendering
+	 still has to know the line is a directive and not prose."
+	| document |
+	document := self flat: (String lf join: #(
+		';;; f@900x700+0+0'
+		'(defun host ())'
+		';;; f@30%x20%+5%+5%'
+		'(defun child ())'
+		';;; f@end'
+		'(defun after ())')).
+	self assert: (document tokens collect: [ :each | each kind ])
+		equals: #(#card #card #end).
+	self assert: (document tokens collect: [ :each | each directive notNil ])
+		equals: #(true true false)! !
+
+!McFloatyTest methodsFor: 'tests - blocks'!
+testACardTokenReadsAsTheGeometryTheCardNowHas
+	"A drag rewrites the directive on the card, and the token is how every
+	 rendering of that line hears about it."
+	| document child token |
+	document := self markdown: self markdownSample.
+	child := document directiveLabelled: 'Section A'.
+	token := document tokens detect: [ :each | each directive == child ].
+	child geometry: (McFloatyGeometry parse: '10x20+30+40').
+	self assert: (token text includesSubstring: 'f@10x20+30+40')! !
+
+!McFloatyTest methodsFor: 'tests - blocks'!
+testARenderedTokenAddressesTheLineItLandedOn
+	"A rewritten directive is rarely the length of the one in the file, so a
+	 token's rendered range has to be measured rather than offset."
+	| document host rendered |
+	document := self markdown: self markdownSample.
+	(document directiveLabelled: 'Section A')
+		geometry: (McFloatyGeometry parse: '1x2+3+4').
+	host := document roots first.
+	rendered := document renderRange: host regionRange.
+	self assert: (document tokensIn: host regionRange) size equals: 3.
+	(document tokensIn: host regionRange) do: [ :token |
+		self assert: (rendered copyFrom: token range first to: token range last)
+			equals: token text ]! !
+
+!McFloatyTest methodsFor: 'tests - blocks'!
+testContentRangeLeavesOutTheDirectiveThatOpensTheCard
+	"The card draws its own directive as a block above the text, so the text
+	 itself starts on the line after it."
+	| document child content |
+	document := self markdown: self markdownSample.
+	child := document directiveLabelled: 'Sub'.
+	self assert: child contentRange first equals: child range last + 2.
+	content := document renderRange: child contentRange.
+	self deny: (content includesSubstring: 'f@').
+	self assert: (content beginsWith: '### Sub')! !
+
 !McFloatyTest methodsFor: 'tests - writeback'!
 testMovingAnAbsoluteCardWritesPixelsBack
 	| document title |

@@ -485,7 +485,7 @@ addCardViewFor: aDirective in: aParentElement parentExtent: anExtent
 	 position is already relative to its host, dragging the host carries its
 	 children along with their relative positions intact, and a child painted
 	 after its parent is painted above it."
-	| card body extent |
+	| card body row extent |
 	extent := aDirective geometry extentIn: anExtent.
 	card := BlElement new.
 	card layout: BlLinearLayout vertical.
@@ -501,10 +501,12 @@ addCardViewFor: aDirective in: aParentElement parentExtent: anExtent
 	card when: BlPullEvent do: [ :event |
 		self commitDraggedCard: aDirective view: card parentExtent: anExtent ].
 	body := self bodyFor: aDirective.
+	row := self directiveRowFor: aDirective.
 	card addChild: (self headerFor: aDirective card: card).
+	card addChild: row.
 	card addChild: body.
 	aParentElement addChild: card.
-	cardViews at: aDirective put: { card. body }.
+	cardViews at: aDirective put: { card. body. row }.
 	"After the body, so every descendant paints over it."
 	aDirective children do: [ :each |
 		self addCardViewFor: each in: card parentExtent: extent ].
@@ -515,6 +517,7 @@ headerFor: aDirective card: aCardElement
 	header := BlElement new layout: BlLinearLayout horizontal.
 	header constraintsDo: [ :c | c horizontal matchParent. c vertical exact: 26 ].
 	title := BrLabel new.
+	title aptitude: BrGlamorousLabelAptitude new.
 	title text: (aDirective label asRopedText fontSize: 13; bold).
 	title constraintsDo: [ :c | c horizontal fitContent ].
 	header addChild: title.
@@ -537,9 +540,83 @@ bodyFor: aDirective
 	"Read-only for now: this iteration projects the text and owns the geometry.
 	 Editing a card back into the host rope is the next piece of work."
 	body beReadOnlyWithSelection.
-	body text: (document renderRange: aDirective regionRange) asRopedText.
+	body text: (self bodyTextFor: aDirective).
 	body constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ].
 	^ body!
+
+bodyTextFor: aDirective
+	"The card's own directive is drawn above the text, so the body starts on the
+	 line after it.  Every directive line that remains inside the body -- a
+	 child's, or an f@end -- is a block node rather than prose, and is replaced
+	 by its own element.  The characters stay in the text underneath the
+	 replacement, which is what keeps the body a faithful view of the range and
+	 leaves the source mapping intact for the day the body becomes editable."
+	| range text |
+	range := aDirective contentRange.
+	text := (document renderRange: range) asRopedText.
+	(document tokensIn: range) do: [ :token |
+		text
+			attribute: (BrTextAdornmentDynamicAttribute new
+				beReplace;
+				stencil: [ :anIndex | self blockFor: token ];
+				yourself)
+			from: token range first
+			to: token range last ].
+	^ text!
+
+directiveRowFor: aDirective
+	"A card's own directive, in a row above its text instead of as the first
+	 line of it.  Floaty wants the directive in sight; a row cannot be scrolled
+	 out of view, and it holds still while the text below it moves."
+	| row |
+	row := BrLabel new.
+	"A BrLabel without an aptitude measures 0x0 and paints nothing at all."
+	row aptitude: BrGlamorousLabelAptitude new.
+	row text: (self directiveTextFor: aDirective).
+	row padding: (BlInsets top: 2 left: 6 bottom: 2 right: 6).
+	row background: (Color fromHexString: '#e8eef4').
+	row border: (BlBorder paint: (Color fromHexString: '#adbccc') width: 1).
+	row geometry: (BlRoundedRectangleGeometry cornerRadius: 3).
+	row margin: (BlInsets bottom: 4).
+	row constraintsDo: [ :c | c horizontal matchParent. c vertical fitContent ].
+	^ row!
+
+directiveTextFor: aDirective
+	"The family is named rather than asked for by #monospace: the label
+	 aptitude installs a default family that wins over it."
+	^ aDirective directiveLine trimBoth asRopedText
+		fontName: self class codeFontName;
+		fontSize: 11;
+		foreground: (Color fromHexString: '#2f4a66')!
+
+blockFor: aToken
+	"A directive inside a card's text, drawn as the block it is.  An f@end
+	 carries no geometry and only ever closes a region, so it is a sentinel and
+	 is coloured as one rather than pretending to be a card."
+	| block sentinel |
+	sentinel := aToken isEnd.
+	block := BrLabel new.
+	block aptitude: BrGlamorousLabelAptitude new.
+	block text: ((self blockLabelFor: aToken) asRopedText
+		fontName: self class codeFontName;
+		fontSize: 10;
+		foreground: (Color fromHexString: (sentinel ifTrue: [ '#7a5230' ] ifFalse: [ '#2f5d8a' ]))).
+	block padding: (BlInsets top: 1 left: 6 bottom: 1 right: 6).
+	block background: (Color fromHexString: (sentinel ifTrue: [ '#f6ecdc' ] ifFalse: [ '#e2edf7' ])).
+	block border: (BlBorder paint: (Color fromHexString: (sentinel
+		ifTrue: [ '#d8bf95' ]
+		ifFalse: [ '#a9c8e4' ])) width: 1).
+	block geometry: (BlRoundedRectangleGeometry cornerRadius: 3).
+	^ block!
+
+blockLabelFor: aToken
+	"The geometry alone, not the comment that carries it: the block exists to
+	 show the structure where the source shows syntax."
+	^ aToken isEnd
+		ifTrue: [ 'f@end' ]
+		ifFalse: [ aToken directive
+			ifNil: [ aToken text trimBoth ]
+			ifNotNil: [ :each | each geometry asDirectiveString ] ]!
 
 saveButton
 	| button |
@@ -564,17 +641,26 @@ commitDraggedCard: aDirective view: aCardElement parentExtent: anExtent
 refreshCardTexts
 	"Every body is a view onto a range of the one document, so a directive a
 	 drag has just rewritten must reappear in each card whose region covers it,
-	 the host included."
+	 the host included -- and in the row of the card it belongs to."
 	cardViews keysAndValuesDo: [ :directive :views |
-		views second text: (document renderRange: directive regionRange) asRopedText ]!
+		(views at: 2) text: (self bodyTextFor: directive).
+		(views at: 3) text: (self directiveTextFor: directive) ]!
 
 cardViewFor: aDirective
 	^ (cardViews at: aDirective) first!
 
 cardBodyFor: aDirective
-	^ (cardViews at: aDirective) second! !
+	^ (cardViews at: aDirective) second!
+
+cardRowFor: aDirective
+	^ (cardViews at: aDirective) third! !
 
 !McCorkboard class methodsFor: 'grid'!
+codeFontName
+	"What the code aptitude in the card bodies uses, so a directive drawn as a
+	 block lines up with the text it was lifted out of."
+	^ 'Source Code Pro'!
+
 gridSpacing
 	"Document pixels between grid lines at 1:1."
 	^ 40!

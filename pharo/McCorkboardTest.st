@@ -226,6 +226,75 @@ testHostBodyShowsTheDirectiveADragJustRewrote
 	self assert: ((board cardBodyFor: board document roots first) text asString
 		includesSubstring: 'f@50%x25%+11%+22%')! !
 
+!McCorkboardTest methodsFor: 'tests - directive blocks'!
+floatyEndSource
+	^ String lf join: #(
+		'<!!-- f@800x600+0+0 -->'
+		'# Host'
+		''
+		'<!!-- f@40%x30%+10%+20% -->'
+		'## Child'
+		'child body'
+		'<!!-- f@end -->'
+		'after the end')! !
+
+!McCorkboardTest methodsFor: 'tests - directive blocks'!
+testACardDoesNotRepeatItsOwnDirectiveInItsText
+	"The directive is the row above the body, so the body starts with the
+	 section rather than with the line that configures it."
+	| board child body |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	body := (board cardBodyFor: child) text asString.
+	self deny: (body includesSubstring: 'f@50%x25%+10%+20%').
+	self assert: (body beginsWith: 'child body')! !
+
+!McCorkboardTest methodsFor: 'tests - directive blocks'!
+testTheDirectiveRowShowsTheCardsOwnLineAndFollowsADrag
+	"Verbatim, because this is the line the author wrote and would edit.  A
+	 directive belonging to another card is drawn as a chip instead."
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self assert: (board cardRowFor: child) text asString
+		equals: '<!!-- f@50%x25%+10%+20% -->'.
+	(board cardViewFor: child) relocate: 88 @ 132.
+	board commitDraggedCard: child
+		view: (board cardViewFor: child)
+		parentExtent: 800 @ 600.
+	self assert: (board cardRowFor: child) text asString
+		equals: '<!!-- f@50%x25%+11%+22% -->'! !
+
+!McCorkboardTest methodsFor: 'tests - directive blocks'!
+testAChildDirectiveInsideTheHostIsReplacedByABlock
+	"The characters stay in the text under the replacement, so the body is
+	 still a faithful view of its range -- only what is drawn changes."
+	| board host text token |
+	board := self floatyBoard.
+	host := board document roots first.
+	text := (board cardBodyFor: host) text.
+	token := (board document tokensIn: host contentRange)
+		detect: [ :each | each isCard ].
+	self assert: (text copyFrom: token range first to: token range last) asString
+		equals: token text.
+	self assert: ((text attributesAt: token range first) anySatisfy: [ :each |
+		each isKindOf: BrTextAdornmentDynamicAttribute ]).
+	self assert: (board blockLabelFor: token) equals: 'f@50%x25%+10%+20%'! !
+
+!McCorkboardTest methodsFor: 'tests - directive blocks'!
+testAnEndDirectiveIsItsOwnKindOfBlock
+	"f@end carries no geometry and only ever closes a region, so it is drawn as
+	 a sentinel rather than as a card that happens to have no size."
+	| board host token |
+	board := McCorkboard new
+		buildDocumentViewOn: self floatyEndSource markdown: true.
+	host := board document roots first.
+	token := (board document tokensIn: host contentRange)
+		detect: [ :each | each isEnd ].
+	self assert: (board blockLabelFor: token) equals: 'f@end'.
+	self assert: (((board cardBodyFor: host) text attributesAt: token range first)
+		anySatisfy: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ])! !
+
 !McCorkboardTest methodsFor: 'tests - demo'!
 testTheDemoBoardLoadsItsCardsFromTheSampleFile
 	"The launcher card opens this file, so a rename that leaves it dangling

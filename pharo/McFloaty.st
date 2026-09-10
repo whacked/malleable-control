@@ -67,8 +67,13 @@ Object subclass: #McFloatyDirective
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
+Object subclass: #McFloatyToken
+	instanceVariableNames: 'range kind sourceLine directive'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
 Object subclass: #McFloatyDocument
-	instanceVariableNames: 'source markdown roots'
+	instanceVariableNames: 'source markdown roots tokens'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -317,6 +322,13 @@ regionRange
 	"The source interval of the text this card shows."
 	^ regionStart to: regionStop!
 
+contentRange
+	"The region without the directive line that opens it.  A card draws its own
+	 directive as a block of its own, above the text, so the text starts on the
+	 next line -- which is also how the directive stays in sight instead of
+	 scrolling away with the first line."
+	^ (range last + 2) to: regionStop!
+
 label
 	^ label!
 
@@ -362,6 +374,60 @@ directiveLine
 printOn: aStream
 	aStream nextPutAll: 'McFloatyDirective('; nextPutAll: self directiveLine; nextPut: $)! !
 
+!McFloatyToken class methodsFor: 'instance creation'!
+range: anInterval kind: aSymbol source: aString
+	^ self new setRange: anInterval kind: aSymbol source: aString; yourself! !
+
+!McFloatyToken methodsFor: 'initialization'!
+setRange: anInterval kind: aSymbol source: aString
+	range := anInterval.
+	kind := aSymbol.
+	sourceLine := aString! !
+
+!McFloatyToken methodsFor: 'accessing'!
+range
+	^ range!
+
+kind
+	^ kind!
+
+directive
+	^ directive!
+
+directive: aDirectiveOrNil
+	directive := aDirectiveOrNil!
+
+text
+	"What the line reads as now.  A token that opens a card follows that card's
+	 geometry, so a drag reaches every rendering of the line without anything
+	 being re-parsed."
+	^ directive
+		ifNil: [ sourceLine ]
+		ifNotNil: [ :each | each directiveLine ]!
+
+isEnd
+	^ kind = #end!
+
+isCard
+	^ kind = #card! !
+
+!McFloatyToken methodsFor: 'copying'!
+withRange: anInterval
+	"The same token seen through some rendering of the source, where the line
+	 may sit at a different offset than it does in the file."
+	^ (self class range: anInterval kind: kind source: sourceLine)
+		directive: directive;
+		yourself! !
+
+!McFloatyToken methodsFor: 'printing'!
+printOn: aStream
+	aStream
+		nextPutAll: 'McFloatyToken(';
+		nextPutAll: kind;
+		nextPut: $ ;
+		nextPutAll: self text;
+		nextPut: $)! !
+
 !McFloatyDocument class methodsFor: 'instance creation'!
 on: aString markdown: aBoolean
 	^ self new setSource: aString markdown: aBoolean; parse; yourself!
@@ -390,7 +456,8 @@ suffixes
 setSource: aString markdown: aBoolean
 	source := aString.
 	markdown := aBoolean.
-	roots := OrderedCollection new! !
+	roots := OrderedCollection new.
+	tokens := #()! !
 
 !McFloatyDocument methodsFor: 'accessing'!
 source
@@ -409,43 +476,80 @@ allDirectives
 	^ all asArray!
 
 directiveLabelled: aString
-	^ self allDirectives detect: [ :each | each label = aString ] ifNone: [ nil ]! !
+	^ self allDirectives detect: [ :each | each label = aString ] ifNone: [ nil ]!
+
+tokens
+	"Every directive line in the source, cards and f@end alike, in document
+	 order.  The parse tree keeps only the lines that open a card, but
+	 rendering still has to know that an f@end is a directive and not prose."
+	^ tokens! !
 
 !McFloatyDocument methodsFor: 'rendering'!
 renderedSource
 	^ self renderRange: (1 to: source size)!
 
 renderRange: anInterval
-	"anInterval of the source with every directive inside it replaced by what
-	 that directive says now.  Replacing back to front keeps the untouched
-	 ranges valid as the text changes length, which is why the ranges recorded
-	 at parse time never need updating."
-	| text inside |
-	anInterval last < anInterval first ifTrue: [ ^ '' ].
-	text := source copyFrom: anInterval first to: anInterval last.
-	inside := (self allDirectives select: [ :each |
+	^ (self renderingOf: anInterval) first!
+
+tokensIn: anInterval
+	"The directive lines inside anInterval, ranged into what #renderRange:
+	 answers rather than into the source.  These are the blocks a card draws
+	 in place of the syntax."
+	^ (self renderingOf: anInterval) second!
+
+renderingOf: anInterval
+	"anInterval of the source with every directive line inside it replaced by
+	 what that directive says now, together with where each of those lines
+	 landed in the result.  Assembled front to back so a token's rendered range
+	 is exact however much the rewritten line differs in length from the one in
+	 the file -- which is what lets a card address a directive it is showing."
+	| stream inside cursor local |
+	anInterval last < anInterval first ifTrue: [ ^ { ''. #() } ].
+	inside := (tokens select: [ :each |
 		each range first >= anInterval first
 			and: [ each range last <= anInterval last ] ])
-		asSortedCollection: [ :a :b | a range first > b range first ].
-	inside do: [ :each |
-		| start stop |
-		start := each range first - anInterval first + 1.
-		stop := each range last - anInterval first + 1.
-		text := (text copyFrom: 1 to: start - 1) , each directiveLine
-			, (text copyFrom: stop + 1 to: text size) ].
-	^ text! !
+		asSortedCollection: [ :a :b | a range first <= b range first ].
+	stream := WriteStream on: String new.
+	local := OrderedCollection new.
+	cursor := anInterval first.
+	inside do: [ :token |
+		| start |
+		stream nextPutAll: (source copyFrom: cursor to: token range first - 1).
+		start := stream position + 1.
+		stream nextPutAll: token text.
+		local add: (token withRange: (start to: stream position)).
+		cursor := token range last + 1 ].
+	stream nextPutAll: (source copyFrom: cursor to: anInterval last).
+	^ { stream contents. local asArray }! !
 
 !McFloatyDocument methodsFor: 'parsing'!
 parse
 	| records |
 	records := self scanDirectives.
+	tokens := (records collect: [ :each |
+		McFloatyToken
+			range: (each at: 1)
+			kind: ((each at: 2) isNil ifTrue: [ #end ] ifFalse: [ #card ])
+			source: (self lineAt: (each at: 1)) ]) asArray.
 	markdown
 		ifTrue: [
 			self
 				placeAsMarkdown: records
 				headings: (self headingsIn: (self maskedSourceFrom: records)) ]
 		ifFalse: [ self placeAsFlat: records ].
-	^ self! !
+	self linkTokens.
+	^ self!
+
+linkTokens
+	"A card token carries the directive it opens, so its text follows that
+	 card's geometry.  A directive the parse dropped -- a second one governing
+	 a section already spoken for -- finds none, keeps its source line, and is
+	 drawn as the inert text it turned out to be."
+	| byStart |
+	byStart := Dictionary new.
+	self allDirectives do: [ :each | byStart at: each range first put: each ].
+	tokens do: [ :each |
+		each directive: (byStart at: each range first ifAbsent: [ nil ]) ]! !
 
 !McFloatyDocument methodsFor: 'parsing - private'!
 lineIntervals
