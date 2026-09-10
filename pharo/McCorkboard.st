@@ -540,10 +540,17 @@ bodyFor: aDirective
 	body aptitude: BrGlamorousCodeEditorAptitude new.
 	body background: Color white.
 	body padding: (BlInsets all: 4).
-	"Read-only for now: this iteration projects the text and owns the geometry.
-	 Editing a card back into the host rope is the next piece of work."
-	body beReadOnlyWithSelection.
 	body text: (self bodyTextFor: aDirective).
+	"A card's text is a window onto a range of the one source, and typing into
+	 it writes through to that range.  Nothing here owns a copy, so nothing has
+	 to be reconciled with anything: the other cards showing that range read it
+	 again."
+	body editor when: BrTextEditorModifiedEvent do: [ :event |
+		self cardBodyEdited: aDirective ].
+	"Structure waits for the caret to leave.  Re-projecting destroys the editor
+	 being typed into, so it is not something to do on a keystroke."
+	body addEventFilter: (BlEventHandler on: BlFocusOutEvent do: [ :event |
+		self enqueue: [ self commitStructure ] ]).
 	body constraintsDo: [ :c | c horizontal matchParent. c vertical matchParent ].
 	^ body!
 
@@ -585,7 +592,7 @@ directiveRowFor: aDirective
 	row addEventFilter: (BlEventHandler on: BlKeyDownEvent do: [ :event |
 		event key isReturnOrEnter ifTrue: [
 			event consumed: true.
-			self commitDirectiveRow: aDirective ] ]).
+			self enqueue: [ self commitStructure ] ] ]).
 	row padding: (BlInsets top: 2 left: 6 bottom: 2 right: 6).
 	row background: (Color fromHexString: '#e8eef4').
 	row border: (BlBorder paint: (Color fromHexString: '#adbccc') width: 1).
@@ -678,16 +685,79 @@ directiveRowEdited: aDirective
 	self refreshCardViewsExcept: aDirective.
 	^ self!
 
-commitDirectiveRow: aDirective
-	"What Enter means in a directive row: read the document again.  A retyped
-	 line may have stopped being a directive, started being one, or come to
-	 govern a different heading, and none of that is something the live path can
-	 answer -- it moves a card, it does not restructure the board.
+cardBodyEdited: aDirective
+	"A card's text, typed into.  The body is a window onto a range of the one
+	 source, so what was typed goes back into that range and every other view of
+	 it is read again -- including the host's, which is showing these same
+	 characters further down its own body.
 
-	 Every directive object is new afterwards, so the board is projected again
-	 rather than patched."
+	 Only the span that actually changed is sent.  A card's range is most of the
+	 document, and replacing all of it would move every anchor in it for the
+	 sake of one keystroke."
+	| range typed current edit |
+	range := aDirective contentRange.
+	typed := (self cardBodyFor: aDirective) text asString.
+	current := document renderRange: range.
+	typed = current ifTrue: [ ^ self ].
+	edit := self replacementFrom: current to: typed at: range first.
+	document
+		replaceFrom: (edit at: 1)
+		to: (edit at: 2)
+		with: (edit at: 3).
+	self refreshCardViewsExcept: aDirective.
+	^ self!
+
+replacementFrom: anOldString to: aNewString at: anOffset
+	"The one span that differs between the two, as a source range and the text
+	 that belongs in it.  A keystroke changes one place, so the common prefix
+	 and the common suffix bracket exactly what the author did.
+
+	 anOffset is where the old string starts in the source, so the answer is in
+	 the document's coordinates rather than the card's."
+	| prefix suffix limit |
+	prefix := 0.
+	limit := anOldString size min: aNewString size.
+	[ prefix < limit
+		and: [ (anOldString at: prefix + 1) = (aNewString at: prefix + 1) ] ]
+		whileTrue: [ prefix := prefix + 1 ].
+	suffix := 0.
+	limit := limit - prefix.
+	[ suffix < limit
+		and: [ (anOldString at: anOldString size - suffix)
+			= (aNewString at: aNewString size - suffix) ] ]
+		whileTrue: [ suffix := suffix + 1 ].
+	^ { anOffset + prefix.
+		anOffset + anOldString size - suffix - 1.
+		aNewString copyFrom: prefix + 1 to: aNewString size - suffix }!
+
+commitStructure
+	"Read the document again, when an edit has moved the source on from the
+	 parse the board is projecting.
+
+	 A line may have stopped being a directive, started being one, or come to
+	 govern a different heading, and none of that is something the live path can
+	 answer -- it moves a card, it does not restructure the board.  Every
+	 directive object is new afterwards, so the board is projected rather than
+	 patched, and whatever held the caret loses it.  That is why this waits for
+	 a deliberate moment: Enter in a directive row, or the focus leaving a
+	 card's text.
+
+	 A drag does not reach here.  It says the parse it left standing is still
+	 good, and it is entitled to: it rewrote a line that opens the same card
+	 over the same region either way."
+	document needsReparse ifFalse: [ ^ self ].
 	document reparse.
 	self projectDocument.
+	^ self!
+
+enqueue: aBlock
+	"Run aBlock on the next pulse instead of inside the event being dispatched.
+	 Re-projecting destroys the element the event is on, which is not something
+	 to do while that element is still handling it.  With no space -- headless,
+	 in a test -- there is no pulse to wait for and nothing dispatching."
+	space
+		ifNil: [ aBlock value ]
+		ifNotNil: [ :each | each enqueueTask: (BlTaskAction new action: aBlock) ].
 	^ self!
 
 singleLine: aString
@@ -712,16 +782,16 @@ refreshCardViews
 
 refreshCardViewsExcept: aDirectiveOrNil
 	"Re-read every card from the source the edit just made.  Each body is a
-	 view onto a range of the one document, so a directive line that changed
-	 must reappear in every card whose region covers it, the host included --
-	 and in the row of the card it belongs to.
+	 view onto a range of the one document, so a line that changed must reappear
+	 in every card whose region covers it, the host included.
 
-	 The row that originated the edit is the one view left alone: it already
-	 holds what the author typed, and handing it back its own text would take
-	 the caret to the end of it."
+	 The card that originated the edit is left alone.  It already holds what the
+	 author typed, and handing it back its own text would take the caret to the
+	 end of it -- which is the whole difference between a card you can type in
+	 and one that fights you."
 	cardViews keysAndValuesDo: [ :directive :views |
-		(views at: 2) text: (self bodyTextFor: directive).
 		directive == aDirectiveOrNil ifFalse: [
+			(views at: 2) text: (self bodyTextFor: directive).
 			(views at: 3) text: (self directiveTextFor: directive) ] ]!
 
 cardViewFor: aDirective

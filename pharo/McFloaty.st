@@ -79,7 +79,7 @@ Object subclass: #McFloatyReplacement
 	package: 'MalleableControl'!
 
 Object subclass: #McFloatyDocument
-	instanceVariableNames: 'source markdown roots tokens'
+	instanceVariableNames: 'source markdown roots tokens parsedSource'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -570,7 +570,8 @@ setSource: aString markdown: aBoolean
 	source := aString.
 	markdown := aBoolean.
 	roots := OrderedCollection new.
-	tokens := #()! !
+	tokens := #().
+	parsedSource := nil! !
 
 !McFloatyDocument methodsFor: 'accessing'!
 source
@@ -646,14 +647,29 @@ writeGeometryOf: aDirective as: aGeometry
 	 that line does -- it opens the same card over the same region either way --
 	 so it takes the trusted path: replace the line, move what follows it, and
 	 skip the reparse that a hand-edited directive will need."
-	| range |
+	| range replacement |
 	aDirective geometry: aGeometry.
 	range := aDirective range.
-	^ self
+	replacement := self
 		replaceFrom: range first
 		to: range last
 		with: aDirective directiveLine
-		origin: aDirective!
+		origin: aDirective.
+	self trustCurrentParse.
+	^ replacement!
+
+needsReparse
+	"Whether the source has moved on from the parse this document is answering
+	 from.  A drag has not moved it on -- it rewrites a directive line and
+	 cannot change what that line does, and it says so -- but a line retyped by
+	 hand or a character typed into a card's text may have."
+	^ parsedSource ~= source!
+
+trustCurrentParse
+	"Assert that the edit just made cannot have changed the structure, so the
+	 parse standing is still the right one.  Only an edit that knows what it
+	 rewrote may say this."
+	parsedSource := source!
 
 reparse
 	"Read the document again from the source an edit left behind.  Every
@@ -746,6 +762,7 @@ parse
 				headings: (self headingsIn: (self maskedSourceFrom: records)) ]
 		ifFalse: [ self placeAsFlat: records ].
 	self linkTokens.
+	parsedSource := source.
 	^ self!
 
 linkTokens

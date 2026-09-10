@@ -351,7 +351,7 @@ testCommittingALineThatStoppedBeingADirectiveRemovesTheCard
 	board := self floatyBoard.
 	child := board document directiveLabelled: 'Child'.
 	self type: 'not a directive at all' intoRowOf: child on: board.
-	board commitDirectiveRow: child.
+	board commitStructure.
 	self assert: (board document directiveLabelled: 'Child') isNil.
 	self assert: board document roots size equals: 1!
 
@@ -393,6 +393,120 @@ testRetypingTheRowInAnotherCommentStyleIsFollowedNotRewritten
 		as: (host geometry withPosition: 7 @ 9 in: 900 @ 700).
 	self assert: (board document source includesSubstring: '    ## f@900x700+7+9').
 	self deny: (board document source includesSubstring: ';;;')! !
+
+!McCorkboardTest methodsFor: 'tests - card editing'!
+type: aString at: anIndex intoBodyOf: aDirective on: aBoard
+	"Type into a card the way a caret would, through the editor's own inserter,
+	 so the modification events a real edit raises are the ones the board
+	 answers.  anIndex is a cursor position: after that many characters."
+	| body |
+	body := aBoard cardBodyFor: aDirective.
+	body editor inserter at: anIndex; string: aString; insert.
+	^ body!
+
+testACardsTextIsEditable
+	"The programmatic inserter writes through a read-only editor perfectly
+	 happily, so every other test here would pass without this one."
+	| board |
+	board := self floatyBoard.
+	self assert: (board cardBodyFor: board document roots first) isEditable.
+	self assert: (board cardRowFor: board document roots first) isEditable!
+
+testTypingIntoACardWritesThroughToTheSource
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self type: 'XY' at: 0 intoBodyOf: child on: board.
+	self assert: (board document source includesSubstring: 'XYchild body')!
+
+testTypingIntoACardReachesTheHostShowingTheSameText
+	"The host's body covers the child's range, so the two are views onto the
+	 same characters.  This is the whole point of the arrangement."
+	| board child host |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	host := board document roots first.
+	self type: 'XY' at: 0 intoBodyOf: child on: board.
+	self assert: ((board cardBodyFor: host) text asString
+		includesSubstring: 'XYchild body')!
+
+testTypingIntoACardDoesNotDisturbTheCardBeingTypedIn
+	"Handing a card back its own text would take the caret to the end of it."
+	| board child before |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	before := (board cardBodyFor: child) text asString.
+	self type: 'XY' at: 0 intoBodyOf: child on: board.
+	self assert: (board cardBodyFor: child) text asString
+		equals: 'XY' , before!
+
+testOnlyTheSpanThatChangedIsSent
+	"A card's range is most of the document.  Replacing all of it would move
+	 every anchor inside it for the sake of one keystroke, so the edit is
+	 narrowed to what actually differs."
+	| board |
+	board := self floatyBoard.
+	self assert: (board replacementFrom: 'abcd' to: 'abXcd' at: 1)
+		equals: { 3. 2. 'X' }.
+	self assert: (board replacementFrom: 'abXcd' to: 'abcd' at: 1)
+		equals: { 3. 3. '' }.
+	self assert: (board replacementFrom: 'abXd' to: 'abYd' at: 1)
+		equals: { 3. 3. 'Y' }.
+	self assert: (board replacementFrom: '' to: 'X' at: 5)
+		equals: { 5. 4. 'X' }!
+
+testTypingIntoACardLeavesTheOtherDirectivesWhereTheyAre
+	"Anchors after the edit move with it, so the child's own line is still
+	 exactly where the board thinks it is."
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self type: 'a longer piece of text ' at: 0 intoBodyOf: board document roots first on: board.
+	self assert: (board document renderRange: child range)
+		equals: '<!!-- f@50%x25%+10%+20% -->'!
+
+testTypingDoesNotRestructureTheBoardUntilTheCaretLeaves
+	"A directive typed into a card's text is not a card until the parse says so,
+	 and the parse waits: re-projecting would destroy the editor being typed
+	 into.
+
+	 The Plain section has no directive and so is not a card.  Writing one above
+	 its heading makes it one -- but not until the caret leaves."
+	| board host at |
+	board := self floatyBoard.
+	host := board document roots first.
+	at := ((board cardBodyFor: host) text asString
+		indexOfSubCollection: '## Plain') - 1.
+	self type: '<!!-- f@10x10+0+0 -->' , String lf
+		at: at intoBodyOf: host on: board.
+	self assert: (board document directiveLabelled: 'Plain') isNil.
+	self assert: board document needsReparse.
+	board commitStructure.
+	self assert: (board document directiveLabelled: 'Plain') notNil.
+	self assert: board document roots first children size equals: 2!
+
+testADragDoesNotMakeTheBoardStale
+	"The trusted path rewrites a line that opens the same card over the same
+	 region either way, so it leaves the parse standing -- otherwise clicking
+	 away after a drag would rebuild the whole board for nothing."
+	| board host |
+	board := self floatyBoard.
+	host := board document roots first.
+	(board cardViewFor: host) relocate: 123 @ -45.
+	board commitDraggedCard: host
+		view: (board cardViewFor: host)
+		parentExtent: board viewportExtent.
+	self deny: board document needsReparse!
+
+testCommittingNothingLeavesTheCardsAlone
+	"Focus moves between cards constantly.  A commit with nothing to commit has
+	 to be free, or every click would rebuild the board underneath itself."
+	| board child card |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	card := board cardViewFor: child.
+	board commitStructure.
+	self assert: (board cardViewFor: child) == card! !
 
 !McCorkboardTest methodsFor: 'tests - demo'!
 testTheDemoBoardLoadsItsCardsFromTheSampleFile
