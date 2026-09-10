@@ -186,8 +186,8 @@ testDraggingTheHostRewritesItsOwnDirectiveOnly
 	board commitDraggedCard: host
 		view: (board cardViewFor: host)
 		parentExtent: board viewportExtent.
-	self assert: (board document renderedSource includesSubstring: 'f@800x600+123-45').
-	self assert: (board document renderedSource includesSubstring: 'f@50%x25%+10%+20%')!
+	self assert: (board document source includesSubstring: 'f@800x600+123-45').
+	self assert: (board document source includesSubstring: 'f@50%x25%+10%+20%')!
 
 testDraggingTheHostLeavesChildrenWhereTheyWereRelativeToIt
 	"The child is a Bloc child, so the host carries it; its own coordinates --

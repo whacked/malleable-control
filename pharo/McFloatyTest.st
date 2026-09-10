@@ -111,6 +111,88 @@ testGeometryResolvesInsideTheParentBox
 	self assert: (geometry extentIn: 800 @ 600) equals: 400 @ 150.
 	self assert: (geometry positionIn: 800 @ 600) equals: 40 @ 12! !
 
+!McFloatyTest methodsFor: 'tests - replacement'!
+overwrite: aString from: aStart to: aStop with: aReplacement
+	^ (McFloatyReplacement from: aStart to: aStop with: aReplacement)
+		applyTo: aString!
+
+testAReplacementRewritesTheStringItCovers
+	self assert: (self overwrite: 'abcdef' from: 3 to: 4 with: 'XYZ') equals: 'abXYZef'!
+
+testAnInsertionKeepsEveryCharacter
+	"An insertion at p is the empty interval p to p - 1, so the two halves meet
+	 exactly at p and nothing is consumed."
+	self assert: ((McFloatyReplacement at: 3 insert: 'XY') applyTo: 'abcdef')
+		equals: 'abXYcdef'.
+	self assert: ((McFloatyReplacement at: 1 insert: 'X') applyTo: 'abc')
+		equals: 'Xabc'.
+	self assert: ((McFloatyReplacement at: 4 insert: 'X') applyTo: 'abc')
+		equals: 'abcX'!
+
+testADeletionIsAReplacementByNothing
+	self assert: (self overwrite: 'abcdef' from: 2 to: 4 with: '') equals: 'aef'!
+
+testARangeBeforeTheEditDoesNotMove
+	| replacement |
+	replacement := McFloatyReplacement from: 10 to: 12 with: 'much longer'.
+	self assert: (replacement transform: (2 to: 5)) equals: (2 to: 5)!
+
+testARangeAfterTheEditMovesByTheDelta
+	| replacement |
+	replacement := McFloatyReplacement from: 3 to: 4 with: 'XYZ'.
+	self assert: (replacement transform: (10 to: 20)) equals: (11 to: 21)!
+
+testARangeAfterADeletionMovesBack
+	| replacement |
+	replacement := McFloatyReplacement from: 3 to: 6 with: ''.
+	self assert: (replacement transform: (10 to: 20)) equals: (6 to: 16)!
+
+testAnEditInsideARangeStretchesIt
+	| replacement |
+	replacement := McFloatyReplacement from: 5 to: 6 with: 'abcde'.
+	self assert: (replacement transform: (1 to: 10)) equals: (1 to: 13)!
+
+testARangeTheEditCoveredBecomesWhatReplacedIt
+	"The card whose own line a drag rewrites is the reason this matters: it has
+	 to be able to address that line again on the next drag."
+	| replacement |
+	replacement := McFloatyReplacement from: 4 to: 8 with: 'XYZ'.
+	self assert: (replacement transform: (4 to: 8)) equals: (4 to: 6)!
+
+testARangeADeletionCoveredComesBackEmpty
+	| replacement |
+	replacement := McFloatyReplacement from: 4 to: 8 with: ''.
+	self assert: (replacement transform: (5 to: 7)) isEmpty!
+
+testADeletionAcrossARangesStartClampsIt
+	"What survives is the tail, and it begins where the deletion did."
+	| replacement |
+	replacement := McFloatyReplacement from: 3 to: 6 with: ''.
+	self assert: (replacement transform: (5 to: 12)) equals: (3 to: 8)!
+
+testADeletionAcrossARangesEndLeavesThePrefix
+	| replacement |
+	replacement := McFloatyReplacement from: 6 to: 9 with: ''.
+	self assert: (replacement transform: (2 to: 7)) equals: (2 to: 5)!
+
+testTypingAtARangesFirstCharacterFallsOutsideIt
+	"Both anchors shift, so the text belongs to whatever precedes the range.
+	 Handing it to the range instead is an affinity the editor knows and this
+	 object does not, so it is not decided here."
+	| replacement |
+	replacement := McFloatyReplacement at: 5 insert: 'XX'.
+	self assert: (replacement transform: (5 to: 9)) equals: (7 to: 11)!
+
+testTypingJustPastARangesLastCharacterFallsOutsideIt
+	| replacement |
+	replacement := McFloatyReplacement at: 10 insert: 'XX'.
+	self assert: (replacement transform: (5 to: 9)) equals: (5 to: 9)!
+
+testTypingInsideARangeExtendsIt
+	| replacement |
+	replacement := McFloatyReplacement at: 6 insert: 'XX'.
+	self assert: (replacement transform: (5 to: 9)) equals: (5 to: 11)! !
+
 !McFloatyTest methodsFor: 'tests - markdown hierarchy'!
 testMarkdownNestsCardsByHeadingLevel
 	| document host sectionA |
@@ -356,15 +438,27 @@ testTokensKeepEveryDirectiveLineIncludingEnds
 		equals: #(true true false)! !
 
 !McFloatyTest methodsFor: 'tests - blocks'!
-testACardTokenReadsAsTheGeometryTheCardNowHas
-	"A drag rewrites the directive on the card, and the token is how every
-	 rendering of that line hears about it."
-	| document child token |
+testACardTokenReadsAsTheLineTheDragWrote
+	"A drag rewrites the source, and a token re-reads its line from it, so
+	 every rendering of that line agrees without anyone being told."
+	| document child |
 	document := self markdown: self markdownSample.
 	child := document directiveLabelled: 'Section A'.
-	token := document tokens detect: [ :each | each directive == child ].
-	child geometry: (McFloatyGeometry parse: '10x20+30+40').
-	self assert: (token text includesSubstring: 'f@10x20+30+40')! !
+	document
+		writeGeometryOf: child
+		as: (McFloatyGeometry parse: '10x20+30+40').
+	self assert: ((document tokens detect: [ :each | each directive == child ]) text
+		includesSubstring: 'f@10x20+30+40')!
+
+testATokenTheEditConsumedIsDropped
+	"A directive line deleted outright leaves no block behind to draw."
+	| document child before |
+	document := self markdown: self markdownSample.
+	child := document directiveLabelled: 'Section A'.
+	before := document tokens size.
+	document replaceFrom: child range first to: child range last with: ''.
+	self assert: document tokens size equals: before - 1.
+	self deny: (document tokens anySatisfy: [ :each | each directive == child ])! !
 
 !McFloatyTest methodsFor: 'tests - blocks'!
 testARenderedTokenAddressesTheLineItLandedOn
@@ -372,8 +466,9 @@ testARenderedTokenAddressesTheLineItLandedOn
 	 token's rendered range has to be measured rather than offset."
 	| document host rendered |
 	document := self markdown: self markdownSample.
-	(document directiveLabelled: 'Section A')
-		geometry: (McFloatyGeometry parse: '1x2+3+4').
+	document
+		writeGeometryOf: (document directiveLabelled: 'Section A')
+		as: (McFloatyGeometry parse: '1x2+3+4').
 	host := document roots first.
 	rendered := document renderRange: host regionRange.
 	self assert: (document tokensIn: host regionRange) size equals: 3.
@@ -394,13 +489,18 @@ testContentRangeLeavesOutTheDirectiveThatOpensTheCard
 	self assert: (content beginsWith: '### Sub')! !
 
 !McFloatyTest methodsFor: 'tests - writeback'!
+move: aDirective to: aPoint in: anExtent document: aDocument
+	^ aDocument
+		writeGeometryOf: aDirective
+		as: (aDirective geometry withPosition: aPoint in: anExtent)!
+
 testMovingAnAbsoluteCardWritesPixelsBack
 	| document title |
 	document := self markdown: self markdownSample.
 	title := document roots first.
-	title geometry: (title geometry withPosition: 123 @ -45 in: 1000 @ 700).
-	self assert: (document renderedSource includesSubstring: '<!!-- f@800x600+123-45 -->').
-	self deny: (document renderedSource includesSubstring: '+10-20')!
+	self move: title to: 123 @ -45 in: 1000 @ 700 document: document.
+	self assert: (document source includesSubstring: '<!!-- f@800x600+123-45 -->').
+	self deny: (document source includesSubstring: '+10-20')!
 
 testMovingAPercentCardKeepsItInPercent
 	"The unit the author wrote is the intent, so a drag re-expresses the drop
@@ -408,8 +508,8 @@ testMovingAPercentCardKeepsItInPercent
 	| document sectionA |
 	document := self markdown: self markdownSample.
 	sectionA := document directiveLabelled: 'Section A'.
-	sectionA geometry: (sectionA geometry withPosition: 40 @ 12 in: 800 @ 600).
-	self assert: (document renderedSource includesSubstring: 'f@50%x25%+5%+2%')!
+	self move: sectionA to: 40 @ 12 in: 800 @ 600 document: document.
+	self assert: (document source includesSubstring: 'f@50%x25%+5%+2%')!
 
 testPercentWritebackRoundsToTheNearestWholePercent
 	"46/800 is 5.75%, which has no exact whole-percent spelling; the drop lands
@@ -417,8 +517,8 @@ testPercentWritebackRoundsToTheNearestWholePercent
 	| document sectionA |
 	document := self markdown: self markdownSample.
 	sectionA := document directiveLabelled: 'Section A'.
-	sectionA geometry: (sectionA geometry withPosition: 46 @ 18 in: 800 @ 600).
-	self assert: (document renderedSource includesSubstring: 'f@50%x25%+6%+3%')!
+	self move: sectionA to: 46 @ 18 in: 800 @ 600 document: document.
+	self assert: (document source includesSubstring: 'f@50%x25%+6%+3%')!
 
 testWritebackPreservesCommentStyleAndIndentation
 	| document card |
@@ -428,30 +528,54 @@ testWritebackPreservesCommentStyleAndIndentation
 		'    ;;; f@40x10+0+0'
 		'(defun child ())')).
 	card := document roots first children first.
-	card geometry: (card geometry withPosition: 7 @ 9 in: 900 @ 700).
-	self assert: (document renderedSource includesSubstring: '    ;;; f@40x10+7+9')!
+	self move: card to: 7 @ 9 in: 900 @ 700 document: document.
+	self assert: (document source includesSubstring: '    ;;; f@40x10+7+9')!
 
 testWritebackLeavesEveryOtherDirectiveAlone
 	| document |
 	document := self markdown: self markdownSample.
-	document roots first
-		geometry: (document roots first geometry withPosition: 1 @ 2 in: 1000 @ 700).
-	self assert: (document renderedSource includesSubstring: 'f@50%x25%+5%+2%').
-	self assert: (document renderedSource includesSubstring: 'f@40%x30%+1%+1%')!
+	self move: document roots first to: 1 @ 2 in: 1000 @ 700 document: document.
+	self assert: (document source includesSubstring: 'f@50%x25%+5%+2%').
+	self assert: (document source includesSubstring: 'f@40%x30%+1%+1%')!
 
-testRenderedSourceKeepsTheDocumentOtherwiseByteForByte
+testAnUntouchedDocumentIsItsSourceByteForByte
+	"Nothing is replayed over the source on the way out any more, so a document
+	 nobody has dragged is the file it was read from."
 	| document |
 	document := self markdown: self markdownSample.
-	self assert: document renderedSource equals: self markdownSample!
+	self assert: document source equals: self markdownSample!
 
 testRepeatedMovesStayCorrectAsTheTextChangesLength
-	"Ranges are stamped once and never move, so a directive that grows or
-	 shrinks must not disturb where the others were found."
+	"Each move rewrites the source, so the next one has to find the directive
+	 where the last one left it -- a line that grows by three characters moves
+	 everything after it by three."
 	| document title |
 	document := self markdown: self markdownSample.
 	title := document roots first.
 	#(1 22 333 4444) do: [ :each |
-		title geometry: (title geometry withPosition: each @ each negated in: 1000 @ 700) ].
-	self assert: (document renderedSource includesSubstring: 'f@800x600+4444-4444').
-	self assert: (document renderedSource includesSubstring: 'f@50%x25%+5%+2%').
-	self assert: (document renderedSource includesSubstring: 'body B')! !
+		self move: title to: each @ each negated in: 1000 @ 700 document: document ].
+	self assert: (document source includesSubstring: 'f@800x600+4444-4444').
+	self assert: (document source includesSubstring: 'f@50%x25%+5%+2%').
+	self assert: (document source includesSubstring: 'body B')!
+
+testAMoveLeavesEveryOtherCardShowingTheSameTextAsBefore
+	"The anchors after a rewritten line move with it, so a sibling still reads
+	 as its own region rather than as a window slid off by the length delta."
+	| document before |
+	document := self markdown: self markdownSample.
+	before := document renderRange: (document directiveLabelled: 'Sub') regionRange.
+	self move: document roots first to: 4444 @ -4444 in: 1000 @ 700 document: document.
+	self
+		assert: (document renderRange: (document directiveLabelled: 'Sub') regionRange)
+		equals: before!
+
+testAMoveKeepsTheCardsOwnLineAddressable
+	"The directive the edit replaced is anchored to what replaced it, so a
+	 second drag reads its own line and not the one that follows."
+	| document title |
+	document := self markdown: self markdownSample.
+	title := document roots first.
+	self move: title to: 4444 @ -4444 in: 1000 @ 700 document: document.
+	self
+		assert: (document renderRange: title range)
+		equals: '<!!-- f@800x600+4444-4444 -->'! !

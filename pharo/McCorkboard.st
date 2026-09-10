@@ -475,7 +475,7 @@ saveDocument
 	documentFile ifNil: [ ^ self ].
 	documentFile ensureDelete.
 	documentFile writeStreamDo: [ :stream |
-		stream nextPutAll: document renderedSource ].
+		stream nextPutAll: document source ].
 	^ self! !
 
 !McCorkboard methodsFor: 'floaty projection'!
@@ -582,9 +582,12 @@ directiveRowFor: aDirective
 	^ row!
 
 directiveTextFor: aDirective
-	"The family is named rather than asked for by #monospace: the label
+	"The line as the source has it, not as the directive would spell it: the
+	 source is what the row will shortly be editing.
+
+	 The family is named rather than asked for by #monospace: the label
 	 aptitude installs a default family that wins over it."
-	^ aDirective directiveLine trimBoth asRopedText
+	^ (document renderRange: aDirective range) trimBoth asRopedText
 		fontName: self class codeFontName;
 		fontSize: 11;
 		foreground: (Color fromHexString: '#2f4a66')!
@@ -631,17 +634,24 @@ saveButton
 commitDraggedCard: aDirective view: aCardElement parentExtent: anExtent
 	"A dropped card keeps constraints position in its parent's coordinates,
 	 which is exactly what the directive means, so the only conversion is back
-	 into the unit the author wrote."
-	aDirective geometry: (aDirective geometry
-		withPosition: aCardElement constraints position
-		in: anExtent).
-	self refreshCardTexts.
+	 into the unit the author wrote.
+
+	 The drop goes to the document rather than to the directive: a geometry that
+	 lived beside the source and was replayed over it on the way out would be a
+	 second source of truth the moment a card's text could be typed into."
+	document
+		writeGeometryOf: aDirective
+		as: (aDirective geometry
+			withPosition: aCardElement constraints position
+			in: anExtent).
+	self refreshCardViews.
 	^ aDirective!
 
-refreshCardTexts
-	"Every body is a view onto a range of the one document, so a directive a
-	 drag has just rewritten must reappear in each card whose region covers it,
-	 the host included -- and in the row of the card it belongs to."
+refreshCardViews
+	"Re-read every card from the source the edit just made.  Each body is a
+	 view onto a range of the one document, so a directive line that changed
+	 must reappear in every card whose region covers it, the host included --
+	 and in the row of the card it belongs to."
 	cardViews keysAndValuesDo: [ :directive :views |
 		(views at: 2) text: (self bodyTextFor: directive).
 		(views at: 3) text: (self directiveTextFor: directive) ]!

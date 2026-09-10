@@ -44,10 +44,11 @@ hash, because that parser already knows a hash inside a fenced code block is
 not a heading, and it records the source range of every node -- which is what
 lets a directive be rewritten in place after a drag.
 
-Source ranges are stamped once against the text as parsed and never move.
-Writeback edits the directive objects, and #renderedSource replays every
-directive onto the original string back to front, so the ranges stay valid for
-the life of the document however often a card is dragged.
+The source is the document.  Every edit -- a drag today, a keystroke shortly --
+goes through McFloatyDocument>>replaceFrom:to:with:, which rewrites the string
+and moves every anchor into it in the same step.  McFloatyReplacement owns that
+one policy, boundaries included, so no directive works out for itself where it
+has ended up.
 
 Chunk format: load with fileIn.
 "!
@@ -69,6 +70,11 @@ Object subclass: #McFloatyDirective
 
 Object subclass: #McFloatyToken
 	instanceVariableNames: 'range kind sourceLine directive'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+Object subclass: #McFloatyReplacement
+	instanceVariableNames: 'start stop string'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -308,6 +314,9 @@ range
 	 This is what writeback replaces."
 	^ range!
 
+range: anInterval
+	range := anInterval!
+
 regionStart
 	^ regionStart!
 
@@ -398,12 +407,13 @@ directive: aDirectiveOrNil
 	directive := aDirectiveOrNil!
 
 text
-	"What the line reads as now.  A token that opens a card follows that card's
-	 geometry, so a drag reaches every rendering of the line without anything
-	 being re-parsed."
-	^ directive
-		ifNil: [ sourceLine ]
-		ifNotNil: [ :each | each directiveLine ]!
+	"The line as the source has it.  A drag rewrites the source, so a token has
+	 nothing to read through to any more: it re-reads its line from the document
+	 after every edit and is therefore never a second opinion about it."
+	^ sourceLine!
+
+sourceLine: aString
+	sourceLine := aString!
 
 isEnd
 	^ kind = #end!
@@ -426,6 +436,88 @@ printOn: aStream
 		nextPutAll: kind;
 		nextPut: $ ;
 		nextPutAll: self text;
+		nextPut: $)! !
+
+!McFloatyReplacement class methodsFor: 'instance creation'!
+from: aStart to: aStop with: aString
+	"aStart to aStop is 1-based and inclusive, like every range in this file.
+	 An insertion at p is written p to p - 1: the empty interval that starts
+	 there, so one object covers inserting, deleting and overwriting."
+	^ self new setStart: aStart stop: aStop string: aString; yourself!
+
+at: aPosition insert: aString
+	^ self from: aPosition to: aPosition - 1 with: aString! !
+
+!McFloatyReplacement methodsFor: 'initialization'!
+setStart: aStart stop: aStop string: aString
+	start := aStart.
+	stop := aStop.
+	string := aString! !
+
+!McFloatyReplacement methodsFor: 'accessing'!
+start
+	^ start!
+
+stop
+	^ stop!
+
+string
+	^ string!
+
+removedSize
+	^ (stop - start + 1) max: 0!
+
+delta
+	"How much longer the source gets.  Negative for a net deletion."
+	^ string size - self removedSize! !
+
+!McFloatyReplacement methodsFor: 'applying'!
+applyTo: aString
+	"aString with this replacement made.  The tail starts after whichever of
+	 the two the replacement actually consumed, so an insertion -- whose stop
+	 is one before its start -- keeps every character."
+	^ (aString copyFrom: 1 to: (start - 1 min: aString size))
+		, string
+		, (aString copyFrom: ((stop max: start - 1) + 1 min: aString size + 1) to: aString size)! !
+
+!McFloatyReplacement methodsFor: 'transforming'!
+transform: anInterval
+	"Where anInterval lands after this replacement.  A range the replacement
+	 swallowed whole comes back empty, which is the caller's signal that what
+	 it was anchored to is gone."
+	^ (self shiftStart: anInterval first) to: (self shiftStop: anInterval last)!
+
+shiftStart: aPosition
+	"Where a range's opening anchor lands.  One the replacement covers moves to
+	 the front of the new text, so a range whose head was rewritten still holds
+	 whatever replaced it.
+
+	 Text inserted exactly at a range's start falls outside it: the position is
+	 past the empty interval's stop, so it shifts with the text after it.  A
+	 card gains what is typed at its first character only once its own edit
+	 says so, and that affinity belongs to the editor, not here."
+	aPosition < start ifTrue: [ ^ aPosition ].
+	aPosition > stop ifTrue: [ ^ aPosition + self delta ].
+	^ start!
+
+shiftStop: aPosition
+	"Where a range's closing anchor lands -- the mirror of #shiftStart:, so a
+	 replacement a range straddles ends up inside it either way.  With nothing
+	 inserted this lands one before the replacement, which is exactly the
+	 surviving prefix.
+
+	 Text inserted exactly after a range's last character falls outside it too:
+	 the position is before the empty interval's start and does not move."
+	aPosition < start ifTrue: [ ^ aPosition ].
+	aPosition > stop ifTrue: [ ^ aPosition + self delta ].
+	^ start + string size - 1! !
+
+!McFloatyReplacement methodsFor: 'printing'!
+printOn: aStream
+	aStream
+		nextPutAll: 'McFloatyReplacement(';
+		print: start; nextPutAll: '..'; print: stop;
+		nextPutAll: ' -> '; print: string;
 		nextPut: $)! !
 
 !McFloatyDocument class methodsFor: 'instance creation'!
@@ -485,42 +577,65 @@ tokens
 	^ tokens! !
 
 !McFloatyDocument methodsFor: 'rendering'!
-renderedSource
-	^ self renderRange: (1 to: source size)!
-
 renderRange: anInterval
-	^ (self renderingOf: anInterval) first!
+	"What a card shows: the source of its range, nothing replayed over it.  A
+	 drag now writes the directive line into the source itself, so a card that
+	 reads the range reads the drag with it."
+	anInterval isEmpty ifTrue: [ ^ '' ].
+	^ source copyFrom: (anInterval first max: 1) to: (anInterval last min: source size)!
 
 tokensIn: anInterval
 	"The directive lines inside anInterval, ranged into what #renderRange:
 	 answers rather than into the source.  These are the blocks a card draws
 	 in place of the syntax."
-	^ (self renderingOf: anInterval) second!
-
-renderingOf: anInterval
-	"anInterval of the source with every directive line inside it replaced by
-	 what that directive says now, together with where each of those lines
-	 landed in the result.  Assembled front to back so a token's rendered range
-	 is exact however much the rewritten line differs in length from the one in
-	 the file -- which is what lets a card address a directive it is showing."
-	| stream inside cursor local |
-	anInterval last < anInterval first ifTrue: [ ^ { ''. #() } ].
-	inside := (tokens select: [ :each |
+	| offset |
+	offset := anInterval first - 1.
+	^ ((tokens select: [ :each |
 		each range first >= anInterval first
 			and: [ each range last <= anInterval last ] ])
-		asSortedCollection: [ :a :b | a range first <= b range first ].
-	stream := WriteStream on: String new.
-	local := OrderedCollection new.
-	cursor := anInterval first.
-	inside do: [ :token |
-		| start |
-		stream nextPutAll: (source copyFrom: cursor to: token range first - 1).
-		start := stream position + 1.
-		stream nextPutAll: token text.
-		local add: (token withRange: (start to: stream position)).
-		cursor := token range last + 1 ].
-	stream nextPutAll: (source copyFrom: cursor to: anInterval last).
-	^ { stream contents. local asArray }! !
+		collect: [ :each |
+			each withRange:
+				(each range first - offset to: each range last - offset) ]) asArray! !
+
+!McFloatyDocument methodsFor: 'editing'!
+replaceFrom: aStart to: aStop with: aString
+	"The one way the source changes.  Everything that edits this document comes
+	 through here, so the text and every anchor into it move in the same step
+	 and there is one place to look when they disagree."
+	| replacement |
+	replacement := McFloatyReplacement from: aStart to: aStop with: aString.
+	source := replacement applyTo: source.
+	self transformAnchorsBy: replacement.
+	^ replacement!
+
+writeGeometryOf: aDirective as: aGeometry
+	"A drag rewrites the geometry on a directive line and cannot change what
+	 that line does -- it opens the same card over the same region either way --
+	 so it takes the trusted path: replace the line, move what follows it, and
+	 skip the reparse that a hand-edited directive will need."
+	| range |
+	aDirective geometry: aGeometry.
+	range := aDirective range.
+	^ self replaceFrom: range first to: range last with: aDirective directiveLine!
+
+transformAnchorsBy: aReplacement
+	"Move every anchor into the source the replacement just made.  Tokens then
+	 re-read their lines from that source rather than remembering the ones they
+	 were parsed from, which is what keeps a dragged directive's own token
+	 honest; a token the edit consumed is dropped.
+
+	 A directive whose line an edit consumes is a structural change, and the
+	 reparse that answers it is not here yet.  The geometry path cannot produce
+	 one -- it always writes a line back in place of the one it took."
+	self allDirectives do: [ :each |
+		each range: (aReplacement transform: each range).
+		each
+			regionStart: (aReplacement shiftStart: each regionStart)
+			stop: (aReplacement shiftStop: each regionStop) ].
+	tokens := ((tokens collect: [ :each |
+		each withRange: (aReplacement transform: each range) ])
+		select: [ :each | each range isEmpty not ]) asArray.
+	tokens do: [ :each | each sourceLine: (self lineAt: each range) ]! !
 
 !McFloatyDocument methodsFor: 'parsing'!
 parse
