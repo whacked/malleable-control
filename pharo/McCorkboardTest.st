@@ -295,6 +295,105 @@ testAnEndDirectiveIsItsOwnKindOfBlock
 	self assert: (((board cardBodyFor: host) text attributesAt: token range first)
 		anySatisfy: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ])! !
 
+!McCorkboardTest methodsFor: 'tests - directive editing'!
+type: aString intoRowOf: aDirective on: aBoard
+	"Retype a row the way a caret would, through the editor's own inserter and
+	 deleter, so the modification events a real edit raises are the ones the
+	 board answers."
+	| row |
+	row := aBoard cardRowFor: aDirective.
+	row editor deleter from: 0 to: row text size; delete.
+	aString isEmpty ifFalse: [
+		row editor inserter at: 0; string: aString; insert ].
+	^ row!
+
+testRetypingTheRowWritesTheLineIntoTheSource
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self type: '<!!-- f@50%x25%+30%+40% -->' intoRowOf: child on: board.
+	self assert: (board document source includesSubstring: 'f@50%x25%+30%+40%').
+	self deny: (board document source includesSubstring: '+10%+20%')!
+
+testRetypingTheRowMovesTheCardWithoutADrag
+	"The same live feedback a drag gives, arriving by the other route."
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self assert: (board cardViewFor: child) constraints position equals: 80 @ 120.
+	self type: '<!!-- f@50%x25%+30%+40% -->' intoRowOf: child on: board.
+	self assert: (board cardViewFor: child) constraints position equals: 240 @ 240!
+
+testRetypingTheRowReachesTheHostsChip
+	"The host's body shows that same line, so it must not still be showing the
+	 one the author has just replaced."
+	| board child host token |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	host := board document roots first.
+	self type: '<!!-- f@50%x25%+30%+40% -->' intoRowOf: child on: board.
+	token := (board document tokensIn: host contentRange)
+		detect: [ :each | each isCard ].
+	self assert: (board blockLabelFor: token) equals: 'f@50%x25%+30%+40%'!
+
+testALineThatStopsBeingADirectiveLeavesTheCardWhereItIs
+	"Half-typed text is still text and belongs in the source, but a card cannot
+	 follow a line that no longer says where to go.  It waits for Enter."
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self type: 'not a directive at all' intoRowOf: child on: board.
+	self assert: (board document source includesSubstring: 'not a directive at all').
+	self assert: (board cardViewFor: child) constraints position equals: 80 @ 120!
+
+testCommittingALineThatStoppedBeingADirectiveRemovesTheCard
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self type: 'not a directive at all' intoRowOf: child on: board.
+	board commitDirectiveRow: child.
+	self assert: (board document directiveLabelled: 'Child') isNil.
+	self assert: board document roots size equals: 1!
+
+testAnEmptiedRowCanBeTypedBackIn
+	"Selecting the line and retyping it empties the range first.  A range the
+	 general rule has emptied cannot grow back, so the line a card owns is
+	 anchored to whatever replaced it instead."
+	| board child |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self type: '' intoRowOf: child on: board.
+	self type: '<!!-- f@50%x25%+30%+40% -->' intoRowOf: child on: board.
+	self assert: (board document renderRange: child range)
+		equals: '<!!-- f@50%x25%+30%+40% -->'.
+	self assert: (board cardViewFor: child) constraints position equals: 240 @ 240!
+
+testRetypingTheRowKeepsTheRestOfTheDocumentIntact
+	"Every other anchor moves with the line, so a shorter directive does not
+	 slide the card below it off its own section."
+	| board child body |
+	board := self floatyBoard.
+	child := board document directiveLabelled: 'Child'.
+	self type: '<!!-- f@1x1 -->' intoRowOf: child on: board.
+	body := (board cardBodyFor: child) text asString.
+	self assert: (body beginsWith: 'child body').
+	self assert: (board document source includesSubstring: '## Plain')!
+
+testRetypingTheRowInAnotherCommentStyleIsFollowedNotRewritten
+	"The comment style is the author's.  A drag after the change has to write
+	 the line back the way it now reads, not the way it was parsed."
+	| board host |
+	board := McCorkboard new buildDocumentViewOn: (String lf join: #(
+		';;; f@900x700+0+0'
+		'(defun host ())')) markdown: false.
+	host := board document roots first.
+	self type: '    ## f@900x700+5+5' intoRowOf: host on: board.
+	board
+		document writeGeometryOf: host
+		as: (host geometry withPosition: 7 @ 9 in: 900 @ 700).
+	self assert: (board document source includesSubstring: '    ## f@900x700+7+9').
+	self deny: (board document source includesSubstring: ';;;')! !
+
 !McCorkboardTest methodsFor: 'tests - demo'!
 testTheDemoBoardLoadsItsCardsFromTheSampleFile
 	"The launcher card opens this file, so a rename that leaves it dangling

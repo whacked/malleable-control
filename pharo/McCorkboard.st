@@ -506,7 +506,10 @@ addCardViewFor: aDirective in: aParentElement parentExtent: anExtent
 	card addChild: row.
 	card addChild: body.
 	aParentElement addChild: card.
-	cardViews at: aDirective put: { card. body. row }.
+	"The box the card's percentages resolve against travels with the views: a
+	 card that follows a retyped directive has to place itself, and by then the
+	 drag that used to supply this is not the one asking."
+	cardViews at: aDirective put: { card. body. row. anExtent }.
 	"After the body, so every descendant paints over it."
 	aDirective children do: [ :each |
 		self addCardViewFor: each in: card parentExtent: extent ].
@@ -567,12 +570,22 @@ bodyTextFor: aDirective
 directiveRowFor: aDirective
 	"A card's own directive, in a row above its text instead of as the first
 	 line of it.  Floaty wants the directive in sight; a row cannot be scrolled
-	 out of view, and it holds still while the text below it moves."
+	 out of view, and it holds still while the text below it moves.
+
+	 It is an editor over exactly that line's range in the source, so a card can
+	 be retyped as readily as it can be dragged.  The two are the same edit
+	 arriving by different routes, and they end in the same place."
 	| row |
-	row := BrLabel new.
-	"A BrLabel without an aptitude measures 0x0 and paints nothing at all."
-	row aptitude: BrGlamorousLabelAptitude new.
+	row := BrEditor new.
+	row aptitude: BrGlamorousCodeEditorAptitude new.
 	row text: (self directiveTextFor: aDirective).
+	row editor when: BrTextEditorModifiedEvent do: [ :event |
+		self directiveRowEdited: aDirective ].
+	"Enter is the deliberate act, so it is what pays for a reparse."
+	row addEventFilter: (BlEventHandler on: BlKeyDownEvent do: [ :event |
+		event key isReturnOrEnter ifTrue: [
+			event consumed: true.
+			self commitDirectiveRow: aDirective ] ]).
 	row padding: (BlInsets top: 2 left: 6 bottom: 2 right: 6).
 	row background: (Color fromHexString: '#e8eef4').
 	row border: (BlBorder paint: (Color fromHexString: '#adbccc') width: 1).
@@ -582,12 +595,13 @@ directiveRowFor: aDirective
 	^ row!
 
 directiveTextFor: aDirective
-	"The line as the source has it, not as the directive would spell it: the
-	 source is what the row will shortly be editing.
+	"The line as the source has it, indentation and all: the row edits that
+	 range, so anything it hides is something a keystroke would silently
+	 destroy.
 
-	 The family is named rather than asked for by #monospace: the label
-	 aptitude installs a default family that wins over it."
-	^ (document renderRange: aDirective range) trimBoth asRopedText
+	 The family is named rather than asked for by #monospace: the code aptitude
+	 installs a default family that wins over it."
+	^ (document renderRange: aDirective range) asRopedText
 		fontName: self class codeFontName;
 		fontSize: 11;
 		foreground: (Color fromHexString: '#2f4a66')!
@@ -647,14 +661,68 @@ commitDraggedCard: aDirective view: aCardElement parentExtent: anExtent
 	self refreshCardViews.
 	^ aDirective!
 
+directiveRowEdited: aDirective
+	"A directive line retyped in its own row.  It goes into the source whatever
+	 it now says, and the card follows it as far as it can: a line that still
+	 reads as a directive moves the card on the keystroke that finishes it,
+	 which is the same live feedback a drag gives.
+
+	 A line that has stopped reading as one leaves the card where it is.  That
+	 is not a refusal -- the text is in the source either way -- it is the card
+	 waiting for the reparse that Enter asks for."
+	| typed |
+	typed := self singleLine: (self cardRowFor: aDirective) text asString.
+	typed = (document renderRange: aDirective range) ifTrue: [ ^ self ].
+	(document writeLineOf: aDirective as: typed)
+		ifTrue: [ self placeCardFor: aDirective ].
+	self refreshCardViewsExcept: aDirective.
+	^ self!
+
+commitDirectiveRow: aDirective
+	"What Enter means in a directive row: read the document again.  A retyped
+	 line may have stopped being a directive, started being one, or come to
+	 govern a different heading, and none of that is something the live path can
+	 answer -- it moves a card, it does not restructure the board.
+
+	 Every directive object is new afterwards, so the board is projected again
+	 rather than patched."
+	document reparse.
+	self projectDocument.
+	^ self!
+
+singleLine: aString
+	"A directive is one line by definition, so a newline typed into a row is
+	 not part of one: the row writes the line it would be without it rather
+	 than breaking the source in two."
+	^ (aString copyWithout: Character lf) copyWithout: Character cr!
+
+placeCardFor: aDirective
+	"The card follows its directive, whichever way the directive changed --
+	 dragged into a new position or retyped into one."
+	| views extent card |
+	views := cardViews at: aDirective ifAbsent: [ ^ self ].
+	extent := views fourth.
+	card := views first.
+	card size: (aDirective geometry extentIn: extent).
+	card relocate: (aDirective geometry positionIn: extent).
+	^ card!
+
 refreshCardViews
+	^ self refreshCardViewsExcept: nil!
+
+refreshCardViewsExcept: aDirectiveOrNil
 	"Re-read every card from the source the edit just made.  Each body is a
 	 view onto a range of the one document, so a directive line that changed
 	 must reappear in every card whose region covers it, the host included --
-	 and in the row of the card it belongs to."
+	 and in the row of the card it belongs to.
+
+	 The row that originated the edit is the one view left alone: it already
+	 holds what the author typed, and handing it back its own text would take
+	 the caret to the end of it."
 	cardViews keysAndValuesDo: [ :directive :views |
 		(views at: 2) text: (self bodyTextFor: directive).
-		(views at: 3) text: (self directiveTextFor: directive) ]!
+		directive == aDirectiveOrNil ifFalse: [
+			(views at: 3) text: (self directiveTextFor: directive) ] ]!
 
 cardViewFor: aDirective
 	^ (cardViews at: aDirective) first!
@@ -663,7 +731,12 @@ cardBodyFor: aDirective
 	^ (cardViews at: aDirective) second!
 
 cardRowFor: aDirective
-	^ (cardViews at: aDirective) third! !
+	^ (cardViews at: aDirective) third!
+
+cardParentExtentFor: aDirective
+	"The box this card's percentages resolve against -- its host's extent, or
+	 the viewport's when it is a root."
+	^ (cardViews at: aDirective) fourth! !
 
 !McCorkboard class methodsFor: 'grid'!
 codeFontName

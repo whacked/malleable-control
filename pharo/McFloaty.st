@@ -317,6 +317,13 @@ range
 range: anInterval
 	range := anInterval!
 
+indent: anIndent prefix: aPrefix suffix: aSuffix
+	"The comment style and indentation are the author's, so a line retyped in
+	 another style is followed rather than rewritten back."
+	indent := anIndent.
+	prefix := aPrefix.
+	suffix := aSuffix!
+
 regionStart
 	^ regionStart!
 
@@ -419,7 +426,14 @@ isEnd
 	^ kind = #end!
 
 isCard
-	^ kind = #card! !
+	^ kind = #card!
+
+isOrigin: aDirectiveOrNil
+	"Whether this token draws the line an edit is rewriting.  Such a token keeps
+	 its anchor even while the line is empty -- selecting a line and retyping it
+	 empties it for a keystroke, and a chip that had been dropped by then would
+	 not come back until the next reparse."
+	^ directive notNil and: [ directive == aDirectiveOrNil ]! !
 
 !McFloatyToken methodsFor: 'copying'!
 withRange: anInterval
@@ -469,7 +483,14 @@ removedSize
 
 delta
 	"How much longer the source gets.  Negative for a net deletion."
-	^ string size - self removedSize! !
+	^ string size - self removedSize!
+
+insertedRange
+	"Where the new text landed.  The range an edit was made for is anchored to
+	 this rather than transformed: a range the general rule has emptied cannot
+	 grow back, because text arriving at its start falls outside it, and the
+	 line a card owns has to survive being deleted and retyped."
+	^ start to: start + string size - 1! !
 
 !McFloatyReplacement methodsFor: 'applying'!
 applyTo: aString
@@ -587,25 +608,37 @@ renderRange: anInterval
 tokensIn: anInterval
 	"The directive lines inside anInterval, ranged into what #renderRange:
 	 answers rather than into the source.  These are the blocks a card draws
-	 in place of the syntax."
+	 in place of the syntax.
+
+	 A token whose line is momentarily empty keeps its anchor but has nothing to
+	 draw, so it is not one of them."
 	| offset |
 	offset := anInterval first - 1.
 	^ ((tokens select: [ :each |
-		each range first >= anInterval first
-			and: [ each range last <= anInterval last ] ])
+		each range isEmpty not
+			and: [ each range first >= anInterval first
+			and: [ each range last <= anInterval last ] ] ])
 		collect: [ :each |
 			each withRange:
 				(each range first - offset to: each range last - offset) ]) asArray! !
 
 !McFloatyDocument methodsFor: 'editing'!
 replaceFrom: aStart to: aStop with: aString
+	^ self replaceFrom: aStart to: aStop with: aString origin: nil!
+
+replaceFrom: aStart to: aStop with: aString origin: aDirectiveOrNil
 	"The one way the source changes.  Everything that edits this document comes
 	 through here, so the text and every anchor into it move in the same step
-	 and there is one place to look when they disagree."
+	 and there is one place to look when they disagree.
+
+	 The origin is the directive whose own line the edit rewrites, when there is
+	 one.  It is anchored to the new text rather than transformed, because the
+	 general rule cannot grow a range back once an edit has emptied it -- and
+	 selecting a line and retyping it empties it first."
 	| replacement |
 	replacement := McFloatyReplacement from: aStart to: aStop with: aString.
 	source := replacement applyTo: source.
-	self transformAnchorsBy: replacement.
+	self transformAnchorsBy: replacement origin: aDirectiveOrNil.
 	^ replacement!
 
 writeGeometryOf: aDirective as: aGeometry
@@ -616,25 +649,85 @@ writeGeometryOf: aDirective as: aGeometry
 	| range |
 	aDirective geometry: aGeometry.
 	range := aDirective range.
-	^ self replaceFrom: range first to: range last with: aDirective directiveLine!
+	^ self
+		replaceFrom: range first
+		to: range last
+		with: aDirective directiveLine
+		origin: aDirective!
 
-transformAnchorsBy: aReplacement
+reparse
+	"Read the document again from the source an edit left behind.  Every
+	 directive object is new afterwards, so whatever held the old ones has to
+	 project again rather than look them up.
+
+	 This is what a hand-edited directive line needs and a drag does not: the
+	 line may have stopped being a directive, started being one, or come to
+	 govern a different heading, and none of that is a move."
+	roots := OrderedCollection new.
+	^ self parse!
+
+readingOf: aString
+	"What aString says as a directive line -- its geometry, indentation, comment
+	 prefix and suffix -- or nil when it says nothing.  This is how a directive
+	 typed by hand reaches its card without the document being read again on
+	 every keystroke."
+	| parts geometry |
+	parts := self directiveOn: aString.
+	parts ifNil: [ ^ nil ].
+	geometry := McFloatyGeometry parse: (parts at: 2).
+	geometry ifNil: [ ^ nil ].
+	^ { geometry. self indentOf: aString. parts first. parts last }!
+
+writeLineOf: aDirective as: aString
+	"A directive line the author has retyped.  The line goes into the source
+	 whatever it now says -- the source is the document, and half-typed text is
+	 still text -- but the directive follows it only while it still reads as
+	 one.  A line that has stopped being a directive is a structural change and
+	 #reparse is what answers it.
+
+	 Answers whether the directive was able to follow."
+	| range reading |
+	range := aDirective range.
+	self
+		replaceFrom: range first
+		to: range last
+		with: aString
+		origin: aDirective.
+	reading := self readingOf: aString.
+	reading ifNil: [ ^ false ].
+	aDirective
+		geometry: (reading at: 1);
+		indent: (reading at: 2) prefix: (reading at: 3) suffix: (reading at: 4).
+	^ true!
+
+transformAnchorsBy: aReplacement origin: aDirectiveOrNil
 	"Move every anchor into the source the replacement just made.  Tokens then
 	 re-read their lines from that source rather than remembering the ones they
-	 were parsed from, which is what keeps a dragged directive's own token
-	 honest; a token the edit consumed is dropped.
+	 were parsed from, which is what keeps a rewritten line honest wherever it
+	 is drawn; a token the edit consumed is dropped.
 
-	 A directive whose line an edit consumes is a structural change, and the
-	 reparse that answers it is not here yet.  The geometry path cannot produce
-	 one -- it always writes a line back in place of the one it took."
+	 The origin's own anchors -- its range and the token that draws it -- are
+	 the exception, and are set to the new text rather than transformed.  A card
+	 whose line has just been retyped keeps both, so the chip a host draws for
+	 it follows along instead of disappearing until the next reparse.
+
+	 A directive some *other* edit consumes is a structural change, and the
+	 reparse that answers it is not here yet.  Neither of the paths into this
+	 method can produce one: both write a line back in place of the one they
+	 took."
 	self allDirectives do: [ :each |
-		each range: (aReplacement transform: each range).
+		each range: (each == aDirectiveOrNil
+			ifTrue: [ aReplacement insertedRange ]
+			ifFalse: [ aReplacement transform: each range ]).
 		each
 			regionStart: (aReplacement shiftStart: each regionStart)
 			stop: (aReplacement shiftStop: each regionStop) ].
 	tokens := ((tokens collect: [ :each |
-		each withRange: (aReplacement transform: each range) ])
-		select: [ :each | each range isEmpty not ]) asArray.
+		each withRange: ((each isOrigin: aDirectiveOrNil)
+			ifTrue: [ aReplacement insertedRange ]
+			ifFalse: [ aReplacement transform: each range ]) ])
+		select: [ :each |
+			each range isEmpty not or: [ each isOrigin: aDirectiveOrNil ] ]) asArray.
 	tokens do: [ :each | each sourceLine: (self lineAt: each range) ]! !
 
 !McFloatyDocument methodsFor: 'parsing'!
