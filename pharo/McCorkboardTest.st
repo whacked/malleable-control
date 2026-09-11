@@ -932,3 +932,141 @@ testGridDrawsOnlyAScreenfulHoweverFarItIsZoomedOut
 	board canvas childrenTranslationFactor: 0 @ 0.
 	board rebuildGrid.
 	self assert: board grid children size < 200! !
+
+!McCorkboardTest methodsFor: 'tests - planes and sheets'!
+richSource
+	"A host whose text is markdown and carries no directive of its own, so a
+	 styled attribute in it can only have come from the markdown styler."
+	^ String lf join: #(
+		'<!!-- f@400x300+0+0 -->'
+		'# Host'
+		''
+		'Some **bold** prose.')!
+
+plane
+	^ McCorkboard new buildPlane!
+
+sheetOn: aString in: aPlane
+	^ McCorkboard new
+		buildSheetOn: aString
+		markdown: true
+		in: aPlane addLayer
+		space: aPlane enqueueSpace!
+
+isAnythingStyledIn: anEditor
+	"Whether anything in the editor's text has been decorated.  The code
+	 aptitude puts a default font family on every character, so that one is
+	 not decoration -- it is what an undecorated card already looks like."
+	| text |
+	text := anEditor text.
+	^ (1 to: text size) anySatisfy: [ :index |
+		((text attributesAt: index)
+			reject: [ :each | each class = BlFontFamilyDefaultAttribute ]) notEmpty ]!
+
+testAPlaneCarriesAGridAndNoDocument
+	"The plane is the canvas alone: it pans, it zooms, it draws the grid, and
+	 what is on it comes from somewhere else."
+	| plane |
+	plane := self plane.
+	self assert: plane canvas notNil.
+	self assert: plane grid notNil.
+	self assert: plane document isNil.
+	self assert: plane canvas children asArray equals: { plane grid }!
+
+testASheetProjectsItsDocumentIntoTheLayerItIsGiven
+	| plane layer sheet |
+	plane := self plane.
+	layer := plane addLayer.
+	sheet := McCorkboard new
+		buildSheetOn: self floatySource markdown: true in: layer space: plane enqueueSpace.
+	self assert: sheet document roots size equals: 1.
+	self assert: layer children asArray
+		equals: { sheet cardViewFor: sheet document roots first }!
+
+testASheetDrawsNoGridOfItsOwn
+	"A layer has no plane of its own to say where zero is; the grid under it
+	 already does."
+	| plane sheet |
+	plane := self plane.
+	sheet := self sheetOn: self floatySource in: plane.
+	self assert: sheet grid isNil.
+	self assert: plane canvas children size equals: 2!
+
+testReprojectingOneSheetLeavesTheOthersWhereTheyAre
+	"Each document clears its own layer and nothing else, which is what lets a
+	 settle in one card stop at that document."
+	| plane first second card |
+	plane := self plane.
+	first := self sheetOn: self floatySource in: plane.
+	second := self sheetOn: self richSource in: plane.
+	card := second cardViewFor: second document roots first.
+	first projectDocument.
+	self assert: (second cardViewFor: second document roots first) == card.
+	self assert: plane canvas children size equals: 3!
+
+testASheetIsNotAWindowOfItsOwn
+	"McCorkboard open must not foreground the desk's plane and start
+	 refreshing a layer as though it were the corkboard's own window."
+	| plane sheet |
+	plane := self plane.
+	sheet := self sheetOn: self floatySource in: plane.
+	self assert: (McWindow spaceOf: plane) isNil.
+	self assert: (McWindow spaceOf: sheet) isNil!
+
+testSavingASheetRunsWhatItsOwnerLeftForIt
+	| plane sheet file saved |
+	file := FileLocator temp / ('mc-sheet-' , UUID new asString36 , '.md').
+	file writeStreamDo: [ :stream | stream nextPutAll: self floatySource ].
+	saved := OrderedCollection new.
+	plane := self plane.
+	sheet := McCorkboard new
+		buildSheetOnFile: file in: plane addLayer space: plane enqueueSpace.
+	sheet afterSaveDo: [ :each | saved add: each ].
+	sheet saveDocument.
+	self assert: saved asArray equals: { sheet }.
+	file ensureDelete! !
+
+!McCorkboardTest methodsFor: 'tests - rich cards'!
+testAPlainCardLeavesItsMarkdownAsSource
+	| board |
+	board := McCorkboard new buildDocumentViewOn: self richSource markdown: true.
+	self deny: (self isAnythingStyledIn: (board cardBodyFor: board document host))!
+
+testARichCardStylesItsMarkdown
+	"The whole point of the desk's editors: the same floaty card, with
+	 McRichEdit's styler over its text instead of nothing."
+	| board |
+	board := McCorkboard new beRich; buildDocumentViewOn: self richSource markdown: true.
+	self assert: (self isAnythingStyledIn: (board cardBodyFor: board document host))!
+
+testARichCardStillDrawsItsDirectivesAsBlocks
+	"Floaty styles after the markdown does, so a directive line is a band
+	 whatever Microdown decided the comment was."
+	| board host token |
+	board := McCorkboard new beRich; buildDocumentViewOn: self floatySource markdown: true.
+	host := board document roots first.
+	token := (board document tokensIn: host contentRange)
+		detect: [ :each | each isCard ].
+	self assert: (((board cardBodyFor: host) text attributesAt: token range first)
+		anySatisfy: [ :each | each isKindOf: BrTextAdornmentDynamicAttribute ])!
+
+testAPlainCardHasNoRichEditBehindIt
+	| board |
+	board := McCorkboard new buildDocumentViewOn: self richSource markdown: true.
+	self assert: (board richEditFor: board document host) isNil!
+
+testARichCardTellsItsStylerWhichFileTheTextCameFrom
+	"Relative image paths and the trust that gates evaluation both resolve
+	 against the document, so a card that did not say which one it was
+	 showing would resolve them against the demo file."
+	| plane sheet file |
+	file := FileLocator temp / ('mc-rich-' , UUID new asString36 , '.md').
+	file writeStreamDo: [ :stream | stream nextPutAll: self richSource ].
+	plane := self plane.
+	sheet := McCorkboard new
+		beRich;
+		buildSheetOnFile: file in: plane addLayer space: plane enqueueSpace.
+	self
+		assert: (sheet richEditFor: sheet document host) documentFile fullName
+		equals: file fullName.
+	file ensureDelete! !

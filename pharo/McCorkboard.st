@@ -7,7 +7,7 @@ resolution and future pan/zoom independent from the component tree.
 "!
 
 Object subclass: #McCorkboard
-	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid gridKey panOrigin panStart settleGeneration caretPosition frontmatter frontmatterEntries frontmatterViews frontmatterPanel frontmatterContent frontmatterRawRow frontmatterRawRange frontmatterCollapsed'
+	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid gridKey panOrigin panStart settleGeneration caretPosition frontmatter frontmatterEntries frontmatterViews frontmatterPanel frontmatterContent frontmatterRawRow frontmatterRawRange frontmatterCollapsed sheet rich richEdits guestSpace afterSave'
 	classVariableNames: 'SettleMilliseconds'
 	package: 'MalleableControl'!
 
@@ -62,6 +62,9 @@ refreshView
 	 flight are dropped, which is what Escape already does."
 	canvas ifNil: [ ^ self ].
 	document ifNotNil: [ ^ self projectDocument ].
+	"A plane has neither a document nor an example model: what is on it belongs
+	 to the sheets laid on it, and each of those refreshes itself."
+	model ifNil: [ ^ self ].
 	self discardAllDrafts.
 	self clearCanvas.
 	panelViews := Dictionary new.
@@ -85,6 +88,14 @@ buildCanvasTitled: aString
 	space := BlSpace new.
 	space title: aString.
 	space extent: 1000 @ 700.
+	self buildCanvas.
+	space root addChild: canvas.
+	^ canvas!
+
+buildCanvas
+	"The plane itself, with no window around it.  Split out of
+	 #buildCanvasTitled: so a board can be given a window instead of building
+	 one -- see #buildPlane."
 	canvas := BlCanvassableElement new.
 	"Without this, the first layout zooms to fit the cards and document
 	 coordinates cease to mean the values shown in the fields."
@@ -93,12 +104,17 @@ buildCanvasTitled: aString
 	canvas background: (Color fromHexString: '#20232a').
 	self installCanvasInteractions.
 	self clearCanvas.
-	space root addChild: canvas.
 	^ canvas!
 
 clearCanvas
-	"Every re-projection starts from an empty plane carrying only its grid."
+	"Every re-projection starts from an empty plane carrying only its grid.
+
+	 A sheet has no grid of its own.  Its canvas is a layer on somebody else's
+	 plane, and the grid already drawn under it is what says where zero is; so
+	 clearing a sheet takes away that one document's cards and leaves every
+	 other document on the plane exactly as it was."
 	canvas removeChildren.
+	self isSheet ifTrue: [ ^ self ].
 	grid := self gridElement.
 	canvas addChild: grid.
 	gridKey := nil.
@@ -455,29 +471,146 @@ loadDocument: aFileReference
 document
 	^ document!
 
+documentFile
+	"The file this board is showing, or nil when it was built from a string."
+	^ documentFile!
+
 grid
 	^ grid!
 
 viewportExtent
 	"The parent box a root card's percentages resolve against.  Space extent
 	 rather than canvas extent: the canvas matches its parent, but only once a
-	 layout has run, and a board built headless has not had one."
-	^ space ifNil: [ 1000 @ 700 ] ifNotNil: [ :each | each extent ]!
+	 layout has run, and a board built headless has not had one.
+
+	 A sheet asks the plane it was laid on first, because the plane is a pane
+	 of the desk's window rather than the whole of it, and a percentage that
+	 resolved against the window would reach out under the sidebar."
+	| extent |
+	extent := [ self isSheet
+		ifTrue: [ canvas parent extent ]
+		ifFalse: [ canvas extent ] ]
+		on: Error do: [ :e | 0 @ 0 ].
+	(extent x > 0 and: [ extent y > 0 ]) ifTrue: [ ^ extent ].
+	^ self enqueueSpace ifNil: [ 1000 @ 700 ] ifNotNil: [ :each | each extent ]!
 
 projectDocument
 	self clearCanvas.
 	cardViews := IdentityDictionary new.
+	richEdits := IdentityDictionary new.
 	self readFrontmatter.
 	document roots do: [ :each |
 		self addCardViewFor: each in: canvas parentExtent: self viewportExtent ].
 	^ self!
 
 saveDocument
+	"Write the document as it stands, then tell whoever laid this board out
+	 that it happened.  Save is the deliberate act, so it is the moment a desk
+	 is entitled to reconsider whether the document still belongs on it."
 	documentFile ifNil: [ ^ self ].
 	documentFile ensureDelete.
 	documentFile writeStreamDo: [ :stream |
 		stream nextPutAll: document source ].
-	^ self! !
+	afterSave ifNotNil: [ :each | each value: self ].
+	^ self!
+
+afterSaveDo: aBlock
+	"What to run after a successful save, with this board as its argument."
+	afterSave := aBlock! !
+
+!McCorkboard methodsFor: 'planes and sheets'!
+buildPlane
+	"A canvas with no document: it pans, it zooms, it draws the grid, and what
+	 is on it comes from the sheets laid on it.
+
+	 It builds no space.  The plane lives in a pane of somebody else's window,
+	 and a board that put that window in its `space' variable would be found by
+	 McWindow as the corkboard's own live window -- so clicking the Corkboard
+	 launcher would foreground the desk and then refresh a layer."
+	self buildCanvas.
+	^ self!
+
+buildPlaneIn: aSpace
+	guestSpace := aSpace.
+	^ self buildPlane!
+
+addLayer
+	"A plane of its own for one document's cards, so a sheet can clear and
+	 re-project without touching anything else on the board.
+
+	 No size and no clipping: every card on it is placed in document
+	 coordinates the way a root card is placed on the canvas itself, and a
+	 layer with an extent would both swallow the plane's background events and
+	 cut off the cards that fell outside it."
+	| layer |
+	layer := BlElement new.
+	layer constraintsDo: [ :c | c ignoreByLayout ].
+	layer clipChildren: false.
+	layer size: 0 @ 0.
+	canvas addChild: layer.
+	^ layer!
+
+buildSheetOn: aString markdown: aBoolean in: anElement space: aSpace
+	"One document projected onto somebody else's plane.  Everything else about
+	 the board is unchanged -- the same parse, the same directive rows, the
+	 same write-through bodies, the same settle -- which is the whole reason a
+	 sheet is a mode rather than a class of its own."
+	sheet := true.
+	canvas := anElement.
+	guestSpace := aSpace.
+	document := McFloatyDocument on: aString markdown: aBoolean.
+	self projectDocument.
+	^ self!
+
+buildSheetOnFile: aFileReference in: anElement space: aSpace
+	documentFile := aFileReference asFileReference asAbsolute.
+	^ self
+		buildSheetOn: documentFile contents
+		markdown: (#('md' 'markdown' 'mdown') includes: documentFile extension asLowercase)
+		in: anElement
+		space: aSpace!
+
+isSheet
+	^ sheet = true!
+
+enqueueSpace
+	"The window this board's work runs in: its own, or the one it was given
+	 when it is a sheet.  Kept apart from the `space' variable on purpose --
+	 see #buildPlane."
+	^ space ifNil: [ guestSpace ]!
+
+guestSpace: aSpace
+	guestSpace := aSpace! !
+
+!McCorkboard methodsFor: 'rich text'!
+beRich
+	"Style the card bodies with McRichEdit instead of leaving them as source.
+	 Off by default, so the corkboard on its own is the board it was."
+	rich := true.
+	^ self!
+
+isRich
+	^ rich = true!
+
+richEditFor: aDirective
+	"The McRichEdit driving this card's text, or nil on a board that is not in
+	 rich mode."
+	richEdits ifNil: [ ^ nil ].
+	^ richEdits at: aDirective ifAbsent: [ nil ]!
+
+richEditOn: anEditorElement
+	"McCardRichEdit reached by name rather than named outright.
+
+	 The corkboard's own launcher does not load it: rich mode belongs to the
+	 desk, and McRichEdit is a long chain to file in for a board that will not
+	 use it.  Naming the class here would leave this method compiled against
+	 an undeclared variable in every image that opened the plain board, which
+	 is the silent breakage McLauncherManifest exists to stop.  A board asked
+	 for rich text in an image that has not got it falls back to source."
+	| richClass |
+	richClass := Smalltalk at: #McCardRichEdit ifAbsent: [ nil ].
+	richClass ifNil: [ ^ nil ].
+	^ richClass on: anEditorElement file: documentFile! !
 
 !McCorkboard methodsFor: 'floaty projection'!
 addCardViewFor: aDirective in: aParentElement parentExtent: anExtent
@@ -553,6 +686,10 @@ bodyFor: aDirective
 	body editor useSyncStylerStrategy.
 	body editor styler: (BlPluggableStyler new block: [ :aText |
 		self styleBody: aText for: aDirective in: body ]).
+	"Before the first text is set, because setting it styles it."
+	self isRich ifTrue: [
+		(self richEditOn: body) ifNotNil: [ :each |
+			richEdits at: aDirective put: each ] ].
 	body text: (self bodyTextFor: aDirective).
 	"A card's text is a window onto a range of the one source, and typing into
 	 it writes through to that range.  Nothing here owns a copy, so nothing has
@@ -591,6 +728,7 @@ styleBody: aText for: aDirective in: anEditor
 	 skipped and anything unexpected degrades to plain source rather than
 	 taking the card down."
 	| cursor |
+	self styleMarkdownIn: aText for: aDirective.
 	[ cursor := self cursorIn: anEditor.
 	  (document tokensIn: aDirective contentRange) do: [ :token |
 		((token range first >= 1 and: [ token range last <= aText size ])
@@ -603,6 +741,20 @@ styleBody: aText for: aDirective in: anEditor
 				from: token range first
 				to: token range last ] ] ]
 		on: Error do: [ :e | "leave the source showing" ].
+	^ aText!
+
+styleMarkdownIn: aText for: aDirective
+	"McRichEdit's own styler over the card's text, when the board is in rich
+	 mode.  It runs first and the floaty blocks go over it, so a directive line
+	 is drawn as the band it is whatever Microdown decided the comment was.
+
+	 A styler that raises leaves the source showing rather than taking the card
+	 down, the same rule the floaty pass below follows and for the same reason:
+	 this runs on every keystroke."
+	| richEdit |
+	richEdit := self richEditFor: aDirective.
+	richEdit ifNil: [ ^ aText ].
+	[ richEdit styleText: aText ] on: Error do: [ :e | "leave the source showing" ].
 	^ aText!
 
 cursorIn: anEditor
@@ -1097,8 +1249,8 @@ scheduleSettle
 	| generation |
 	settleGeneration := (settleGeneration ifNil: [ 0 ]) + 1.
 	generation := settleGeneration.
-	space ifNil: [ ^ self ].
-	space enqueueTask: (BlDelayedTaskAction new
+	self enqueueSpace ifNil: [ ^ self ].
+	self enqueueSpace enqueueTask: (BlDelayedTaskAction new
 		delay: self class settleMilliseconds milliSeconds;
 		action: [ generation = settleGeneration ifTrue: [ self commitStructure ] ];
 		yourself).
@@ -1109,7 +1261,7 @@ enqueue: aBlock
 	 Re-projecting destroys the element the event is on, which is not something
 	 to do while that element is still handling it.  With no space -- headless,
 	 in a test -- there is no pulse to wait for and nothing dispatching."
-	space
+	self enqueueSpace
 		ifNil: [ aBlock value ]
 		ifNotNil: [ :each | each enqueueTask: (BlTaskAction new action: aBlock) ].
 	^ self!
@@ -1161,7 +1313,21 @@ cardRowFor: aDirective
 cardParentExtentFor: aDirective
 	"The box this card's percentages resolve against -- its host's extent, or
 	 the viewport's when it is a root."
-	^ (cardViews at: aDirective) fourth! !
+	^ (cardViews at: aDirective) fourth!
+
+rootRectangles
+	"Where this board's top-level cards are, in document coordinates.
+
+	 Read from the directives rather than from the elements: a Bloc element
+	 has no extent until a layout has run, and a desk deciding where to put a
+	 new document asks the moment it is clicked."
+	document ifNil: [ ^ #() ].
+	^ (document roots collect: [ :each |
+		| extent |
+		extent := self cardParentExtentFor: each.
+		Rectangle
+			origin: (each geometry positionIn: extent)
+			extent: (each geometry extentIn: extent) ]) asArray! !
 
 !McCorkboard class methodsFor: 'settling'!
 settleMilliseconds

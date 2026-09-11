@@ -309,6 +309,7 @@ if -- the class implements it:
 | tool | on a second click |
 |---|---|
 | Corkboard | front, then re-project the cards from the model, or from the floaty document when one is loaded |
+| Floaty Desk | front, then re-read the directory -- the board itself is left alone, because a sheet on it may hold unsaved text |
 | Weather | front, then re-fetch |
 | KDI Explorer | front, then fire the inspector's update wish |
 | Rich Edit | front only -- it may hold unsaved text |
@@ -326,6 +327,56 @@ from answers already cached -- no subprocess call.
 
 Because the reuse lives in each tool's `open` rather than in the panel, the
 Emacs commands get it too: `mc-corkboard-open` twice also yields one window.
+
+## The floaty desk
+
+`Floaty Desk` is the corkboard with a file browser beside it. The board stops
+being one file's board: every document that says where it goes is drawn on the
+same plane, and the rest are one click away.
+
+```
+MC_FLOATY_ROOT=~/notes MC_FLOATY_GLOB='*.md' bin/gt-start
+```
+
+Both variables are optional. The browser starts at `samples/` and lists `*.md`
+when they are unset, and the path and the filter are both fields in the sidebar
+-- type and press Return, or press **Open**. **Up** goes to the parent
+directory. The glob is Pharo's own (`*` for any run, `#` for one character) and
+it is case-insensitive, so `*.md` finds `README.MD`. Directories are listed
+whatever the filter says: the filter picks documents, not the places to look
+for them.
+
+**A row's colour says who decides where the document goes.** A document whose
+own text places it -- a directive comment on its first non-blank line, or a
+`floaty:` key in Obsidian frontmatter -- is drawn in the foreground colour and
+is on the board as soon as the desk opens. A document that says nothing is
+grey. Clicking a grey row puts it in the middle of the board as it is panned
+now, stepped clear of the documents already drawn. That position is the
+session's: nothing is written to the file, because inventing a directive for a
+document would be the board editing a file nobody asked it to edit.
+
+Only the root directory is opened automatically. A desk pointed at a home
+directory would otherwise try to put every markdown file under it on one board;
+what is deeper is a click away in the tree.
+
+**Breaking a host directive does not take its card away, and saving does.** The
+card holds still while you type, the way it does on the corkboard -- a
+half-written directive is not a decision. Clicking **Save** is: the file is
+written as it stands, and if it no longer says where the document goes, the
+card comes off the board and the row goes grey. Clicking that row puts it back,
+placed by the desk this time.
+
+The cards are edited with `McRichEdit`'s styler rather than shown as source, so
+a heading in a card is a heading. The floaty directive lines are still drawn as
+bands over the top -- floaty styles after markdown does -- and the directive row
+above each card's text is the same editable line it is on the corkboard.
+
+Under it, `McCorkboard` has grown two modes. A **plane** is the canvas alone:
+grid, pan and zoom, no document. A **sheet** is one document projected onto a
+layer of somebody else's plane, sharing that window. Everything else about a
+board is unchanged, which is why the desk's cards behave exactly like the
+corkboard's. A plane and a sheet keep no `space` of their own, so `McWindow`
+does not mistake the desk's window for the corkboard's.
 
 ## Inspecting and changing the live image
 

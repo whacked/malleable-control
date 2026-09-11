@@ -1,7 +1,7 @@
 ---
 title: Floaty with frontmatter
 tags: corkboard, floaty, frontmatter
-floaty: f@820x560+40-60
+floaty: f@760x520+900+40
 ---
 
 # Frontmatter host

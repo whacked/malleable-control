@@ -1,0 +1,37 @@
+{
+  "title": "Floaty Desk",
+  "blurb": "A file browser beside the corkboard: every document that places itself, on one plane",
+  "files": [
+    "pharo/McCache.st",
+    "pharo/McRelation.st",
+    "pharo/McMarkdownLink.st",
+    "pharo/McMarkdownCode.st",
+    "pharo/McCodeEval.st",
+    "pharo/McMarkdownInline.st",
+    "pharo/McMarkdownTable.st",
+    "pharo/McSqlite.st",
+    "pharo/McMarkdown.st",
+    "pharo/McMarkdownSnapshot.st",
+    "pharo/McMarkdownReconciler.st",
+    "pharo/McKeymap.st",
+    "pharo/McSearch.st",
+    "pharo/McRichEdit.st",
+    "pharo/McRichEditLinks.st",
+    "pharo/McFrontmatter.st",
+    "pharo/McFloaty.st",
+    "pharo/McCorkboardPanelModel.st",
+    "pharo/McCorkboardDocument.st",
+    "pharo/McCardRichEdit.st",
+    "pharo/McCorkboard.st",
+    "pharo/McFloatyLibrary.st",
+    "pharo/McFloatyDesk.st"
+  ],
+  "open": "McFloatyDesk open",
+  "tests": [
+    "McFloatyDeskTest",
+    "McFloatyLibraryTest"
+  ],
+  "priority": 35,
+  "icon": "browse",
+  "note": "The corkboard's plane with a library beside it. The browser starts at MC_FLOATY_ROOT, or samples/ when that is unset, and lists MC_FLOATY_GLOB, or *.md. Documents whose own text places them -- a directive comment on the first non-blank line, or a floaty: key in frontmatter -- are drawn as soon as the desk opens; the rest are grey in the sidebar and land in the middle of the view when clicked. Cards are edited with McRichEdit rather than as source, which is why this manifest loads both the markdown chain rich-edit needs and the floaty chain corkboard needs, in that order: McCardRichEdit subclasses McRichEdit, so McRichEdit has to be in before McCorkboard's bodies can ask for one."
+}
