@@ -371,6 +371,19 @@ a heading in a card is a heading. The floaty directive lines are still drawn as
 bands over the top -- floaty styles after markdown does -- and the directive row
 above each card's text is the same editable line it is on the corkboard.
 
+**A tool must finish writing into its editors before its view joins the
+window.** The launcher builds every tool on a forked process, and Bloc refuses
+a write into an editor that is already in a space's scene graph unless that
+write is on the UI process -- `BrTextEditorModel>>assertUIProcess`. The desk
+filled its sidebar fields after attaching its frame, and the
+`BrEditorWrongThreadError` that followed was raised inside the forked process
+where nothing was watching: the window was built and then simply never shown,
+so clicking the card did nothing at all. `McFloatyDesk>>buildViewOn:` now
+attaches last, and everything after that point is driven by a click, which is
+already on the UI process. Headless there is no windowing host to raise the
+error, so it cannot be reproduced in the test image -- the test asserts the
+build order instead.
+
 Under it, `McCorkboard` has grown two modes. A **plane** is the canvas alone:
 grid, pan and zoom, no document. A **sheet** is one document projected onto a
 layer of somebody else's plane, sharing that window. Everything else about a

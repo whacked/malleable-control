@@ -98,17 +98,41 @@ openViewOn: aFileReference
 
 buildViewOn: aFileReference
 	"Build without showing.  Tests drive the desk and its real Bloc children
-	 through this seam, the way McCorkboard's own buildView does."
+	 through this seam, the way McCorkboard's own buildView does.
+
+	 The frame joins the window last, and that is not tidiness.  Bloc refuses
+	 a write into an editor that is already in a space's scene graph unless
+	 the write is made on the UI process -- BrTextEditorModel>>assertUIProcess
+	 -- and the launcher builds every tool on a forked one.  A sidebar field
+	 filled in after the frame had been attached raised
+	 BrEditorWrongThreadError inside that forked process, which nobody is
+	 watching, so the window was built and then silently never shown: clicking
+	 the card did nothing at all.
+
+	 Everything the desk writes into an editor is therefore written while the
+	 frame is still detached.  After this, every writer is a click -- Open,
+	 Up, a row, a Save -- and a click is already on the UI process.
+
+	 Headless there is no windowing host to raise it, which is why this is a
+	 rule about order rather than a caught error; see the test."
+	| frame |
 	library := McFloatyLibrary on: aFileReference.
 	sheets := OrderedCollection new.
 	space := BlSpace new.
 	space title: 'Floaty Desk'.
 	space extent: 1200 @ 800.
 	plane := McCorkboard new buildPlaneIn: space.
-	space root addChild: self frameElement.
+	frame := self frameElement.
 	self refreshSidebar.
 	self openPlacedDocuments.
+	self attach: frame to: space.
 	^ self!
+
+attach: anElement to: aSpace
+	"The one moment the desk's view joins the window, and the last thing
+	 #buildViewOn: does."
+	aSpace root addChild: anElement.
+	^ anElement!
 
 refreshView
 	"What McWindow refreshes on the way to the front.  The directory is

@@ -256,3 +256,44 @@ testADocumentTakenOffTheBoardCanBeOpenedAgainByClickingIt
 	sheet saveDocument.
 	desk openEntry: (desk sidebarEntryFor: root / 'placed.md').
 	self assert: ((self sheetNamesOf: desk) includes: 'placed.md')! !
+
+"
+McFloatyDeskAttachProbe -- a desk that records what had been built by the time
+its view joined the window.  Test-only: the ordering it watches cannot be seen
+any other way headless, because the error it guards against needs a windowing
+host to be raised at all.
+"!
+
+McFloatyDesk subclass: #McFloatyDeskAttachProbe
+	instanceVariableNames: 'sheetsWhenAttached entriesWhenAttached'
+	classVariableNames: ''
+	package: 'MalleableControl'!
+
+!McFloatyDeskAttachProbe methodsFor: 'probing'!
+attach: anElement to: aSpace
+	sheetsWhenAttached := self sheets size.
+	entriesWhenAttached := (self sidebarEntries ifNil: [ #() ]) size.
+	^ super attach: anElement to: aSpace!
+
+sheetsWhenAttached
+	^ sheetsWhenAttached!
+
+entriesWhenAttached
+	^ entriesWhenAttached! !
+
+!McFloatyDeskTest methodsFor: 'tests - building in the right order'!
+testTheViewIsBuiltBeforeItJoinsTheWindow
+	"Bloc refuses a write into an editor that is already in a space's scene
+	 graph unless the write is made on the UI process, and the launcher builds
+	 every tool on a forked one.  So the sidebar has to be filled in and the
+	 documents opened while the frame is still detached -- otherwise the desk
+	 dies with BrEditorWrongThreadError somewhere nobody is looking and the
+	 window simply never appears.
+
+	 Headless there is no windowing host to raise it, so what can be checked
+	 is the order: by the time the frame joins the window there is nothing
+	 left to write."
+	| desk |
+	desk := McFloatyDeskAttachProbe new buildViewOn: root.
+	self assert: desk entriesWhenAttached equals: 4.
+	self assert: desk sheetsWhenAttached equals: 2! !
