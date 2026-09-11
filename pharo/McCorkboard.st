@@ -7,7 +7,7 @@ resolution and future pan/zoom independent from the component tree.
 "!
 
 Object subclass: #McCorkboard
-	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid gridKey panOrigin panStart settleGeneration caretPosition'
+	instanceVariableNames: 'model space canvas panelViews document documentFile cardViews grid gridKey panOrigin panStart settleGeneration caretPosition frontmatter frontmatterEntries frontmatterViews frontmatterPanel frontmatterContent frontmatterRawRow frontmatterRawRange frontmatterCollapsed'
 	classVariableNames: 'SettleMilliseconds'
 	package: 'MalleableControl'!
 
@@ -467,6 +467,7 @@ viewportExtent
 projectDocument
 	self clearCanvas.
 	cardViews := IdentityDictionary new.
+	self readFrontmatter.
 	document roots do: [ :each |
 		self addCardViewFor: each in: canvas parentExtent: self viewportExtent ].
 	^ self!
@@ -501,9 +502,13 @@ addCardViewFor: aDirective in: aParentElement parentExtent: anExtent
 	card when: BlPullEvent do: [ :event |
 		self commitDraggedCard: aDirective view: card parentExtent: anExtent ].
 	body := self bodyFor: aDirective.
-	row := self directiveRowFor: aDirective.
+	row := (self showsDirectiveRowFor: aDirective)
+		ifTrue: [ self directiveRowFor: aDirective ]
+		ifFalse: [ nil ].
 	card addChild: (self headerFor: aDirective card: card).
-	card addChild: row.
+	row ifNotNil: [ card addChild: row ].
+	(frontmatter notNil and: [ aDirective == document host ]) ifTrue: [
+		card addChild: (self frontmatterPanelFor: aDirective) ].
 	card addChild: body.
 	aParentElement addChild: card.
 	"The box the card's percentages resolve against travels with the views: a
@@ -724,6 +729,207 @@ saveButton
 	button action: [ self saveDocument ].
 	^ button! !
 
+!McCorkboard methodsFor: 'frontmatter'!
+readFrontmatter
+	"The block as it stands, read once per projection.  Its entries carry ranges
+	 into the source, and between projections those ranges are kept current the
+	 way every other anchor is -- by the replacement that moved the text.  The
+	 block cannot be read again on a keystroke: a half-typed value does not
+	 parse, and an entry has to survive being typed."
+	frontmatter := document isMarkdown
+		ifTrue: [ McFrontmatter on: document source ]
+		ifFalse: [ nil ].
+	frontmatterEntries := frontmatter
+		ifNil: [ #() ]
+		ifNotNil: [
+			frontmatter entries reject: [ :each |
+				each key = McFloatyDocument frontmatterKey ] ].
+	frontmatterViews := Dictionary new.
+	frontmatterPanel := nil.
+	frontmatterContent := nil.
+	frontmatterRawRow := nil.
+	frontmatterRawRange := frontmatter ifNotNil: [ frontmatter interiorRange ].
+	^ self!
+
+showsDirectiveRowFor: aDirective
+	"Whether the card draws a row over its own directive line.  It does, unless
+	 there is no line -- a host with no directive -- or the line is inside a
+	 block the panel is showing as raw text, where a row would be a second
+	 editor over characters one editor already covers."
+	aDirective isAnchored ifFalse: [ ^ false ].
+	aDirective isFrontmatterKey ifFalse: [ ^ true ].
+	^ frontmatter notNil and: [ frontmatter isParsed ]!
+
+frontmatterPanelFor: aDirective
+	"The document's metadata, at the top of the host's text and out of its way:
+	 against the right edge, and folded away by its own toggle.  It is not what
+	 the author came to read, but it is theirs to edit."
+	frontmatterPanel := BlElement new layout: BlLinearLayout vertical.
+	frontmatterPanel constraintsDo: [ :c |
+		c horizontal fitContent.
+		c vertical fitContent.
+		c linear horizontal alignRight ].
+	frontmatterPanel background: (Color fromHexString: '#eef1f4').
+	frontmatterPanel border: (BlBorder paint: (Color fromHexString: '#adbccc') width: 1).
+	frontmatterPanel geometry: (BlRoundedRectangleGeometry cornerRadius: 3).
+	frontmatterPanel padding: (BlInsets all: 4).
+	frontmatterPanel margin: (BlInsets bottom: 4).
+	frontmatterPanel addChild: self frontmatterToggle.
+	frontmatterContent := self frontmatterContentElement.
+	frontmatterPanel addChild: frontmatterContent.
+	self applyFrontmatterCollapse.
+	^ frontmatterPanel!
+
+frontmatterToggle
+	| button |
+	button := BrButton new.
+	button label: 'frontmatter'.
+	button aptitude: BrGlamorousButtonWithLabelAptitude new.
+	button action: [ self toggleFrontmatter ].
+	button constraintsDo: [ :c | c linear horizontal alignRight ].
+	^ button!
+
+frontmatterContentElement
+	| content |
+	content := BlElement new layout: BlLinearLayout vertical.
+	content constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	frontmatter isParsed
+		ifTrue: [
+			frontmatterEntries do: [ :each |
+				content addChild: (self frontmatterLineFor: each) ] ]
+		ifFalse: [ content addChild: self frontmatterRawRowElement ].
+	^ content!
+
+frontmatterLineFor: anEntry
+	| line label row |
+	line := BlElement new layout: BlLinearLayout horizontal.
+	line constraintsDo: [ :c | c horizontal fitContent. c vertical fitContent ].
+	label := BrLabel new.
+	label aptitude: BrGlamorousLabelAptitude new.
+	label text: (anEntry key asRopedText fontSize: 11; bold).
+	label constraintsDo: [ :c | c horizontal fitContent ].
+	label padding: (BlInsets top: 2 left: 2 bottom: 2 right: 6).
+	row := self frontmatterEditorOn: (self frontmatterTextFor: anEntry).
+	row editor when: BrTextEditorModifiedEvent do: [ :event |
+		self frontmatterValueEdited: anEntry ].
+	row constraintsDo: [ :c | c horizontal exact: 180. c vertical fitContent ].
+	line addChild: label.
+	line addChild: row.
+	frontmatterViews at: anEntry key put: row.
+	^ line!
+
+frontmatterRawRowElement
+	"A block that does not parse has no keys to show.  It has text, and the
+	 author has to be able to reach it -- it is where the mistake is."
+	frontmatterRawRow := self frontmatterEditorOn:
+		(self frontmatterTextOfRange: frontmatterRawRange).
+	frontmatterRawRow editor when: BrTextEditorModifiedEvent do: [ :event |
+		self frontmatterRawEdited ].
+	frontmatterRawRow constraintsDo: [ :c |
+		c horizontal exact: 260.
+		c vertical fitContent ].
+	^ frontmatterRawRow!
+
+frontmatterEditorOn: aRopedText
+	| row |
+	row := BrEditor new.
+	row aptitude: BrGlamorousCodeEditorAptitude new.
+	row text: aRopedText.
+	"Enter is the deliberate act, so it is what pays for a reparse -- the same
+	 bargain a directive row makes."
+	row addEventFilter: (BlEventHandler on: BlKeyDownEvent do: [ :event |
+		event key isReturnOrEnter ifTrue: [
+			event consumed: true.
+			self enqueue: [ self commitStructure ] ] ]).
+	row padding: (BlInsets top: 1 left: 4 bottom: 1 right: 4).
+	row background: Color white.
+	row border: (BlBorder paint: (Color fromHexString: '#cdd6e0') width: 1).
+	row margin: (BlInsets bottom: 2).
+	^ row!
+
+frontmatterTextFor: anEntry
+	^ self frontmatterTextOfRange: anEntry valueRange!
+
+frontmatterTextOfRange: anInterval
+	^ (document renderRange: anInterval) asRopedText
+		fontName: self class codeFontName;
+		fontSize: 11;
+		foreground: (Color fromHexString: '#2f4a66')!
+
+frontmatterValueEdited: anEntry
+	"One value, typed into.  It is a window onto the span that value occupies in
+	 the file, so what was typed goes back into that span -- and every entry
+	 after it has just moved, which is the whole reason the ranges are carried
+	 rather than re-read."
+	| typed current edit replacement |
+	typed := self singleLine: (frontmatterViews at: anEntry key) text asString.
+	current := document renderRange: anEntry valueRange.
+	typed = current ifTrue: [ ^ self ].
+	edit := self replacementFrom: current to: typed at: anEntry valueRange first.
+	replacement := document
+		replaceFrom: (edit at: 1)
+		to: (edit at: 2)
+		with: (edit at: 3).
+	self moveFrontmatterAnchorsBy: replacement origin: anEntry.
+	self refreshCardViews.
+	self scheduleSettle.
+	^ self!
+
+frontmatterRawEdited
+	| typed current edit replacement |
+	typed := frontmatterRawRow text asString.
+	current := document renderRange: frontmatterRawRange.
+	typed = current ifTrue: [ ^ self ].
+	edit := self replacementFrom: current to: typed at: frontmatterRawRange first.
+	replacement := document
+		replaceFrom: (edit at: 1)
+		to: (edit at: 2)
+		with: (edit at: 3).
+	frontmatterRawRange := replacement insertedRange.
+	self refreshCardViews.
+	self scheduleSettle.
+	^ self!
+
+moveFrontmatterAnchorsBy: aReplacement origin: anEntry
+	"The entry the edit came from is anchored to the new text rather than
+	 transformed -- the general rule cannot grow a range back once an edit has
+	 emptied it, and clearing a value empties it first."
+	frontmatterEntries do: [ :each |
+		each valueRange: (each == anEntry
+			ifTrue: [ aReplacement insertedRange ]
+			ifFalse: [ aReplacement transform: each valueRange ]) ].
+	frontmatterRawRange ifNotNil: [
+		frontmatterRawRange := aReplacement transform: frontmatterRawRange ]!
+
+toggleFrontmatter
+	frontmatterCollapsed := self isFrontmatterCollapsed not.
+	self applyFrontmatterCollapse.
+	^ self!
+
+isFrontmatterCollapsed
+	"Whether the panel is folded away.  A board-level choice rather than a
+	 card-level one, so a reparse does not unfold it under the author."
+	^ frontmatterCollapsed ifNil: [ false ]!
+
+applyFrontmatterCollapse
+	frontmatterContent ifNil: [ ^ self ].
+	frontmatterContent visibility: (self isFrontmatterCollapsed
+		ifTrue: [ BlVisibility gone ]
+		ifFalse: [ BlVisibility visible ]).
+	^ self!
+
+frontmatterPanel
+	^ frontmatterPanel!
+
+frontmatterContent
+	^ frontmatterContent!
+
+frontmatterRawRow
+	^ frontmatterRawRow!
+
+frontmatterRowFor: aKey
+	^ frontmatterViews ifNil: [ nil ] ifNotNil: [ frontmatterViews at: aKey ifAbsent: [ nil ] ]! !
+
 !McCorkboard methodsFor: 'floaty interaction'!
 commitDraggedCard: aDirective view: aCardElement parentExtent: anExtent
 	"A dropped card keeps constraints position in its parent's coordinates,
@@ -940,7 +1146,8 @@ refreshCardViewsExcept: aDirectiveOrNil
 	cardViews keysAndValuesDo: [ :directive :views |
 		directive == aDirectiveOrNil ifFalse: [
 			(views at: 2) text: (self bodyTextFor: directive).
-			(views at: 3) text: (self directiveTextFor: directive) ] ]!
+			(views at: 3) ifNotNil: [ :row |
+				row text: (self directiveTextFor: directive) ] ] ]!
 
 cardViewFor: aDirective
 	^ (cardViews at: aDirective) first!

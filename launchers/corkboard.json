@@ -11,6 +11,7 @@
     "pharo/McMarkdownTable.st",
     "pharo/McSqlite.st",
     "pharo/McMarkdown.st",
+    "pharo/McFrontmatter.st",
     "pharo/McFloaty.st",
     "pharo/McCorkboardPanelModel.st",
     "pharo/McCorkboardDocument.st",
@@ -19,8 +20,9 @@
   "open": "McCorkboard open",
   "tests": [
     "McCorkboardTest",
-    "McFloatyTest"
+    "McFloatyTest",
+    "McFrontmatterTest"
   ],
   "priority": 30,
-  "note": "McCorkboard open projects samples/floaty.md: the demo's cards come from floaty directives in that file, not from anything hard coded, so editing the file changes the demo. McCorkboard openExample is the older free-coordinate board. McFloaty reads headings with McMarkdownParser, which is why the markdown chain is loaded here in the same order rich-edit needs it."
+  "note": "McCorkboard open projects samples/floaty.md: the demo's cards come from floaty directives in that file, not from anything hard coded, so editing the file changes the demo. McCorkboard openExample is the older free-coordinate board; samples/floaty-frontmatter.md is the same demo for a document whose host directive is a floaty key in Obsidian-style frontmatter. McFloaty reads headings with McMarkdownParser, which is why the markdown chain is loaded here in the same order rich-edit needs it."
 }

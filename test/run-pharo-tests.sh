@@ -60,6 +60,7 @@ out="$("$GT_CLI" "$GT_IMAGE" eval "
   '$MC_HOME/pharo/McSearchTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McCorkboardTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McFloatyTest.st' asFileReference fileIn.
+  '$MC_HOME/pharo/McFrontmatterTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McSrtEditorTest.st' asFileReference fileIn.
   '$MC_HOME/pharo/McKdiGraphTest.st' asFileReference fileIn.
   (Smalltalk at: #McGtPatches) apply.

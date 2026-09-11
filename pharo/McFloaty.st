@@ -21,14 +21,42 @@ it resolves against the parent card's box -- width and x against its width,
 height and y against its height.  A root card's parent box is the canvas
 viewport, so the rule needs no special case at the top.
 
-Hierarchy comes from the document, not from the directives.  A directive on
-the first non-blank line of the file is the host, and governs the whole
-document -- being the top comment is what makes it the host, so a directive
-further down is always a child however early it appears.  Every other
-directive governs a heading section: the one it introduces, when a heading is
-the next non-blank line after it, and otherwise the one it sits inside.
-Heading levels alone then decide what nests inside what, and a section with no
-directive is simply not a card.
+Hierarchy comes from the document, not from the directives.  One directive is
+the host and governs the whole document; every other one governs a heading
+section: the one it introduces, when a heading is the next non-blank line after
+it, and otherwise the one it sits inside.  Heading levels alone then decide
+what nests inside what, and a section with no directive is simply not a card.
+
+Which directive is the host is asked of the document in one order.  A markdown
+file may open with an Obsidian-style frontmatter block, and a floaty key in that
+block says outright what the whole document is:
+
+    ---
+    title: A doc
+    floaty: f@820x560+40-60
+    ---
+
+Failing that it is the directive on the first non-blank line of the markdown
+proper -- which in a file with no frontmatter is the top comment it has always
+been, and in one with frontmatter is the first line after the block.  Being
+first is still the whole of what makes it the host, so a directive further down
+is a child however early it appears.
+
+The block itself is not markdown and is kept out of the markdown parser's sight
+(see #maskedSourceFrom:): left in, its keys are paragraphs, its fences are
+thematic breaks, and a # opening a YAML comment is a heading that would own the
+sections after it.  It is not the host's text either -- the host's card starts
+at the markdown proper, and the block has an editor of its own.  What the block
+says is read by McFrontmatter; where the floaty key is, and what it says, is
+read here from the line, so that the host survives some other value in the
+block being half-typed.
+
+A document always has a host, whether or not a line in it says so.  A card can
+be taken away -- break its directive and it goes -- but the document cannot,
+because there is always a document.  A host with no directive (see
+#unanchoredHost) governs the whole text like any other and differs in one
+thing: it has no line to write a geometry into, so dragging it moves it for the
+session and the file is left alone.
 
 A card's text always begins at its own directive line.  That is what settles
 whether a heading belongs to the card or to its host: a directive placed above
@@ -64,7 +92,7 @@ Object subclass: #McFloatyGeometry
 	package: 'MalleableControl'!
 
 Object subclass: #McFloatyDirective
-	instanceVariableNames: 'geometry range indent prefix suffix label level regionStart regionStop parent children'
+	instanceVariableNames: 'geometry range indent prefix suffix label level regionStart regionStop parent children contentStart'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -79,7 +107,7 @@ Object subclass: #McFloatyReplacement
 	package: 'MalleableControl'!
 
 Object subclass: #McFloatyDocument
-	instanceVariableNames: 'source markdown roots tokens parsedSource'
+	instanceVariableNames: 'source markdown roots tokens parsedSource frontmatter host hostGeometry'
 	classVariableNames: ''
 	package: 'MalleableControl'!
 
@@ -342,8 +370,15 @@ contentRange
 	"The region without the directive line that opens it.  A card draws its own
 	 directive as a block of its own, above the text, so the text starts on the
 	 next line -- which is also how the directive stays in sight instead of
-	 scrolling away with the first line."
-	^ (range last + 2) to: regionStop!
+	 scrolling away with the first line.
+
+	 A host whose directive is a frontmatter key starts further down still: the
+	 block is the document's metadata and has an editor of its own, so the
+	 card's text is the markdown proper.  #contentStart: is how that is said."
+	^ (contentStart ifNil: [ range last + 2 ]) to: regionStop!
+
+contentStart: aPosition
+	contentStart := aPosition!
 
 label
 	^ label!
@@ -378,6 +413,19 @@ setParent: aDirective
 withAllChildrenDo: aBlock
 	aBlock value: self.
 	children do: [ :each | each withAllChildrenDo: aBlock ]! !
+
+!McFloatyDirective methodsFor: 'testing'!
+isAnchored
+	"Whether this directive has a line in the source.  The host of a document
+	 that has no directive is the one that does not, and every path that
+	 rewrites a line has to ask before it tries."
+	^ range notNil!
+
+isFrontmatterKey
+	"Whether this directive is written as a frontmatter key rather than as a
+	 comment.  Every comment prefix this file knows opens a comment; only a key
+	 ends in a colon."
+	^ prefix notNil and: [ prefix endsWith: ':' ]! !
 
 !McFloatyDirective methodsFor: 'printing'!
 directiveLine
@@ -552,6 +600,12 @@ onFile: aFileReference
 		on: ref contents
 		markdown: (#('md' 'markdown' 'mdown') includes: ref extension asLowercase)! !
 
+!McFloatyDocument class methodsFor: 'defaults'!
+defaultHostGeometry
+	"Where a host with no directive of its own starts.  The program decides,
+	 because the document does not say."
+	^ McFloatyGeometry parse: '800x600+0+0'! !
+
 !McFloatyDocument class methodsFor: 'prefixes'!
 markdownPrefixes
 	"Only the HTML comment.  In a markdown document ## opens a heading, and a
@@ -561,6 +615,12 @@ markdownPrefixes
 
 flatPrefixes
 	^ #(';;;' '##' '<!!--')!
+
+frontmatterKey
+	"The frontmatter key that carries a directive.  Its value is the directive
+	 body as it would be written anywhere else, f@ included, so one parser reads
+	 both forms."
+	^ 'floaty'!
 
 suffixes
 	^ #('-->' '*/')! !
@@ -579,6 +639,11 @@ source
 
 isMarkdown
 	^ markdown!
+
+host
+	"What the whole document belongs to.  Always a directive, whether or not
+	 the file holds a line that says so -- see #unanchoredHost."
+	^ host!
 
 roots
 	^ roots asArray!
@@ -646,9 +711,17 @@ writeGeometryOf: aDirective as: aGeometry
 	"A drag rewrites the geometry on a directive line and cannot change what
 	 that line does -- it opens the same card over the same region either way --
 	 so it takes the trusted path: replace the line, move what follows it, and
-	 skip the reparse that a hand-edited directive will need."
+	 skip the reparse that a hand-edited directive will need.
+
+	 A host with no directive has no line to rewrite.  Its geometry is the
+	 session's and is remembered here, so a reparse hands the next host the
+	 place the author last dragged this one to; inventing a line for it would be
+	 the board editing a document nobody asked it to edit."
 	| range replacement |
 	aDirective geometry: aGeometry.
+	aDirective isAnchored ifFalse: [
+		hostGeometry := aGeometry.
+		^ nil ].
 	range := aDirective range.
 	replacement := self
 		replaceFrom: range first
@@ -672,23 +745,36 @@ trustCurrentParse
 	parsedSource := source!
 
 reparse
-	"Read the document again from the source an edit left behind.  Every
+	"Read the document again from the source an edit left behind.
+
+	 The host's geometry is carried across first.  A host whose directive the
+	 author has just broken has nothing left in the file to say where it is, and
+	 a card that jumped to a default the moment a character went wrong would be
+	 the board losing the author's place for them.  Every
 	 directive object is new afterwards, so whatever held the old ones has to
 	 project again rather than look them up.
 
 	 This is what a hand-edited directive line needs and a drag does not: the
 	 line may have stopped being a directive, started being one, or come to
 	 govern a different heading, and none of that is a move."
+	host ifNotNil: [ hostGeometry := host geometry ].
 	roots := OrderedCollection new.
 	^ self parse!
 
-readingOf: aString
+readingOf: aString for: aDirective
 	"What aString says as a directive line -- its geometry, indentation, comment
 	 prefix and suffix -- or nil when it says nothing.  This is how a directive
 	 typed by hand reaches its card without the document being read again on
-	 every keystroke."
+	 every keystroke.
+
+	 The line is read in the form the directive is already written in.  A
+	 frontmatter key stays a frontmatter key and a comment stays a comment: a
+	 line that changed form has changed what the document is made of, and a
+	 reparse is what answers that, not a live follow."
 	| parts geometry |
-	parts := self directiveOn: aString.
+	parts := aDirective isFrontmatterKey
+		ifTrue: [ self keyDirectiveOn: aString ]
+		ifFalse: [ self directiveOn: aString ].
 	parts ifNil: [ ^ nil ].
 	geometry := McFloatyGeometry parse: (parts at: 2).
 	geometry ifNil: [ ^ nil ].
@@ -703,13 +789,14 @@ writeLineOf: aDirective as: aString
 
 	 Answers whether the directive was able to follow."
 	| range reading |
+	aDirective isAnchored ifFalse: [ ^ false ].
 	range := aDirective range.
 	self
 		replaceFrom: range first
 		to: range last
 		with: aString
 		origin: aDirective.
-	reading := self readingOf: aString.
+	reading := self readingOf: aString for: aDirective.
 	reading ifNil: [ ^ false ].
 	aDirective
 		geometry: (reading at: 1);
@@ -732,9 +819,10 @@ transformAnchorsBy: aReplacement origin: aDirectiveOrNil
 	 method can produce one: both write a line back in place of the one they
 	 took."
 	self allDirectives do: [ :each |
-		each range: (each == aDirectiveOrNil
-			ifTrue: [ aReplacement insertedRange ]
-			ifFalse: [ aReplacement transform: each range ]).
+		each isAnchored ifTrue: [
+			each range: (each == aDirectiveOrNil
+				ifTrue: [ aReplacement insertedRange ]
+				ifFalse: [ aReplacement transform: each range ]) ].
 		each
 			regionStart: (aReplacement shiftStart: each regionStart)
 			stop: (aReplacement shiftStop: each regionStop) ].
@@ -749,6 +837,7 @@ transformAnchorsBy: aReplacement origin: aDirectiveOrNil
 !McFloatyDocument methodsFor: 'parsing'!
 parse
 	| records |
+	frontmatter := markdown ifTrue: [ McFrontmatter rangeIn: source ] ifFalse: [ nil ].
 	records := self scanDirectives.
 	tokens := (records collect: [ :each |
 		McFloatyToken
@@ -772,7 +861,8 @@ linkTokens
 	 drawn as the inert text it turned out to be."
 	| byStart |
 	byStart := Dictionary new.
-	self allDirectives do: [ :each | byStart at: each range first put: each ].
+	self allDirectives do: [ :each |
+		each isAnchored ifTrue: [ byStart at: each range first put: each ] ].
 	tokens do: [ :each |
 		each directive: (byStart at: each range first ifAbsent: [ nil ]) ]! !
 
@@ -822,6 +912,38 @@ directiveOn: aLine
 	(rest beginsWith: 'f@') ifFalse: [ ^ nil ].
 	^ { prefix. (rest allButFirst: 2) trimBoth. suffix }!
 
+keyDirectiveOn: aLine
+	"A directive written as a frontmatter key -- floaty: f@330x230+420-120 --
+	 answered in the same three parts as #directiveOn:.  A trailing YAML comment
+	 becomes the suffix, so rewriting the geometry cannot eat what the author
+	 wrote beside it.
+
+	 This reads the line rather than the parsed YAML, because the directive has
+	 to keep working while some other value in the block is half-typed and the
+	 block as a whole does not parse."
+	| trimmed prefix rest suffix hash |
+	trimmed := aLine trimBoth.
+	prefix := self class frontmatterKey , ':'.
+	(trimmed beginsWith: prefix) ifFalse: [ ^ nil ].
+	rest := (trimmed allButFirst: prefix size) trimBoth.
+	suffix := ''.
+	hash := rest indexOf: $#.
+	hash > 0 ifTrue: [
+		suffix := (rest copyFrom: hash to: rest size) trimBoth.
+		rest := (rest copyFrom: 1 to: hash - 1) trimBoth ].
+	(rest beginsWith: 'f@') ifFalse: [ ^ nil ].
+	^ { prefix. (rest allButFirst: 2) trimBoth. suffix }!
+
+bodyStart
+	"The first character of the markdown proper: after the frontmatter block
+	 when there is one, and the start of the file when there is not."
+	^ frontmatter ifNil: [ 1 ] ifNotNil: [ frontmatter last + 2 ]!
+
+isInFrontmatter: anInterval
+	^ frontmatter notNil
+		and: [ anInterval first >= frontmatter first
+			and: [ anInterval last <= frontmatter last ] ]!
+
 indentOf: aLine
 	| index |
 	index := 1.
@@ -833,25 +955,44 @@ scanDirectives
 	"Every directive line in document order, each as an Array of its source
 	 interval, the parsed prefix/body/suffix, and the line's indentation.
 	 An f@end carries a nil geometry and only ever closes a region."
-	| found |
+	| found keyFound |
 	found := OrderedCollection new.
+	keyFound := false.
 	self lineIntervals do: [ :interval |
 		| line parsed |
 		line := self lineAt: interval.
-		parsed := self directiveOn: line.
-		parsed ifNotNil: [
-			| body geometry |
-			body := parsed second.
-			geometry := body asLowercase = 'end'
-				ifTrue: [ nil ]
-				ifFalse: [ McFloatyGeometry parse: body ].
-			(geometry notNil or: [ body asLowercase = 'end' ]) ifTrue: [
-				found add: {
-					interval.
-					geometry.
-					(self indentOf: line).
-					parsed first.
-					parsed third } ] ] ].
+		(self isInFrontmatter: interval)
+			ifTrue: [
+				"Inside the block a directive is a key, and only the first one
+				 is it: a second says the same thing about the same document."
+				keyFound ifFalse: [
+					parsed := self keyDirectiveOn: line.
+					parsed ifNotNil: [
+						| geometry |
+						geometry := McFloatyGeometry parse: parsed second.
+						geometry ifNotNil: [
+							keyFound := true.
+							found add: {
+								interval.
+								geometry.
+								(self indentOf: line).
+								parsed first.
+								parsed third } ] ] ] ]
+			ifFalse: [
+				parsed := self directiveOn: line.
+				parsed ifNotNil: [
+					| body geometry |
+					body := parsed second.
+					geometry := body asLowercase = 'end'
+						ifTrue: [ nil ]
+						ifFalse: [ McFloatyGeometry parse: body ].
+					(geometry notNil or: [ body asLowercase = 'end' ]) ifTrue: [
+						found add: {
+							interval.
+							geometry.
+							(self indentOf: line).
+							parsed first.
+							parsed third } ] ] ] ].
 	^ found!
 
 directiveFrom: aRecord
@@ -889,6 +1030,13 @@ maskedSourceFrom: aCollection
 	 parser stamps still addresses the real source."
 	| text |
 	text := source copy.
+	frontmatter ifNotNil: [
+		"The block is YAML.  Left in, its keys are paragraphs, its fences are
+		 thematic breaks, and a # opening a YAML comment is a heading that owns
+		 the sections after it."
+		frontmatter do: [ :index |
+			(text at: index) = Character lf ifFalse: [
+				text at: index put: Character space ] ] ].
 	aCollection do: [ :record |
 		(record at: 1) do: [ :index | text at: index put: Character space ] ].
 	^ text!
@@ -923,21 +1071,27 @@ placeAsMarkdown: aCollection headings: aHeadingCollection
 	"The top comment is the host and owns the whole file.  Every other
 	 directive governs the section it introduces, or failing that the one it
 	 sits inside, and always starts its card at its own line."
-	| all placed governed host |
+	| all placed governed hostRecord |
 	all := aHeadingCollection.
 	placed := OrderedCollection new.
 	governed := OrderedCollection new.
-	host := self hostRecordIn: aCollection.
+	hostRecord := self hostRecordIn: aCollection.
+	host := nil.
+	hostRecord ifNil: [
+		host := self unanchoredHost.
+		placed add: host ].
 	aCollection do: [ :record |
 		(record at: 2) ifNotNil: [
 			| directive owner key |
 			directive := self directiveFrom: record.
-			record == host
+			record == hostRecord
 				ifTrue: [
+					host := directive.
 					key := -1.
 					directive
 						level: 0;
 						label: 'document';
+						contentStart: ((record at: 1) last + 2 max: self bodyStart);
 						regionStart: 1 stop: source size ]
 				ifFalse: [
 					"A heading on the next non-blank line is the one being
@@ -963,12 +1117,44 @@ placeAsMarkdown: aCollection headings: aHeadingCollection
 				placed add: directive ] ] ].
 	self buildTreeFrom: placed!
 
+unanchoredHost
+	"The host of a document that has no directive saying what it is -- because
+	 none was ever written, or because the one that was has just been broken.
+
+	 It governs the whole text like any other host and differs in one thing: it
+	 has no line in the file, so nothing writes its geometry down.  The position
+	 is the session's, and a document read again from disk starts where the
+	 program puts it."
+	| directive |
+	directive := McFloatyDirective
+		geometry: (hostGeometry ifNil: [ self class defaultHostGeometry ])
+		range: nil
+		indent: ''
+		prefix: ''
+		suffix: ''.
+	directive
+		level: 0;
+		label: 'document';
+		contentStart: self bodyStart;
+		regionStart: 1 stop: source size.
+	^ directive!
+
 hostRecordIn: aCollection
-	"The record on the first non-blank line of the file, or nil.  Being the top
-	 comment is the whole of what makes a directive the host."
+	"What governs the whole document, or nil.  A floaty key in the frontmatter
+	 says so outright; failing that it is the directive on the first non-blank
+	 line of the markdown proper, which in a file with no frontmatter is the top
+	 comment it has always been."
 	| first |
+	frontmatter ifNotNil: [
+		| key |
+		key := aCollection
+			detect: [ :each | self isInFrontmatter: (each at: 1) ]
+			ifNone: [ nil ].
+		key ifNotNil: [ ^ key ] ].
 	first := self lineIntervals
-		detect: [ :each | (self lineAt: each) trimBoth notEmpty ]
+		detect: [ :each |
+			each first >= self bodyStart
+				and: [ (self lineAt: each) trimBoth notEmpty ] ]
 		ifNone: [ nil ].
 	first ifNil: [ ^ nil ].
 	^ aCollection
@@ -1022,15 +1208,19 @@ placeAsFlat: aCollection
 	 A region runs to the next directive, an f@end, or the end of the file."
 	| opens hosted placed |
 	opens := aCollection select: [ :each | (each at: 2) notNil ].
-	opens isEmpty ifTrue: [ ^ self ].
 	hosted := self firstNonBlankLineIsDirective: opens.
 	placed := OrderedCollection new.
+	host := nil.
+	hosted ifFalse: [
+		host := self unanchoredHost.
+		placed add: host ].
 	opens withIndexDo: [ :record :index |
 		| directive isHost |
 		isHost := hosted and: [ index = 1 ].
 		directive := self directiveFrom: record.
+		isHost ifTrue: [ host := directive ].
 		directive
-			level: (isHost ifTrue: [ 0 ] ifFalse: [ hosted ifTrue: [ 1 ] ifFalse: [ 0 ] ]);
+			level: (isHost ifTrue: [ 0 ] ifFalse: [ 1 ]);
 			label: (isHost
 				ifTrue: [ 'document' ]
 				ifFalse: [ self flatLabelFor: record in: aCollection ]);

@@ -37,6 +37,21 @@ flatSample
 		';;; f@30%x20%+5%+30%'
 		'(defun child-two ())')!
 
+frontmatterSample
+	"The host directive is a key inside the frontmatter, so the markdown that
+	 follows the block is all child level."
+	^ String lf join: #(
+		'---'
+		'title: A doc'
+		'floaty: f@820x560+40-60'
+		'---'
+		'# Title'
+		'intro body'
+		''
+		'<!!-- f@50%x25%+5%+2% -->'
+		'## Section A'
+		'body A')!
+
 markdown: aString
 	^ McFloatyDocument on: aString markdown: true!
 
@@ -231,9 +246,9 @@ testOnlyTheTopCommentIsTheHost
 		'# Title'
 		'<!!-- f@800x600+0+0 -->'
 		'body')).
-	self assert: lower roots first label equals: 'Title'.
-	self assert: lower roots first level equals: 1.
-	self deny: lower roots first regionStart equals: 1!
+	self assert: (lower directiveLabelled: 'Title') level equals: 1.
+	self deny: (lower directiveLabelled: 'Title') regionStart equals: 1.
+	self deny: (lower directiveLabelled: 'document') isAnchored!
 
 testDirectiveAboveAHeadingTakesTheHeadingIntoTheCard
 	| document card |
@@ -310,8 +325,9 @@ testHeadingInsideACodeFenceDoesNotOpenASection
 		'<!!-- f@50%x25%+0+0 -->'
 		'body')).
 	self assert: document roots size equals: 1.
-	self assert: document allDirectives size equals: 1.
-	self assert: document roots first label equals: 'Title'!
+	self deny: document host isAnchored.
+	self assert: document host children size equals: 1.
+	self assert: document host children first label equals: 'Title'!
 
 testHashCommentIsNotADirectiveInMarkdown
 	"## opens a heading in markdown, so it cannot also be the comment that
@@ -321,7 +337,8 @@ testHashCommentIsNotADirectiveInMarkdown
 		'# Title'
 		'## f@40x10+0+0'
 		'body')).
-	self assert: document allDirectives isEmpty! !
+	self assert: document allDirectives size equals: 1.
+	self deny: document host isAnchored! !
 
 !McFloatyTest methodsFor: 'tests - markdown hierarchy'!
 testMarkdownEndDirectiveClosesASection
@@ -368,6 +385,115 @@ testMarkdownEndDirectiveCannotExtendASection
 	self assert: (region includesSubstring: 'inside A').
 	self deny: (region includesSubstring: 'body B')! !
 
+!McFloatyTest methodsFor: 'tests - frontmatter'!
+testFrontmatterFloatyKeyIsTheHost
+	| host |
+	host := (self markdown: self frontmatterSample) roots first.
+	self assert: host label equals: 'document'.
+	self assert: host geometry asDirectiveString equals: 'f@820x560+40-60'!
+
+testCommentInsideTheFrontmatterIsNotADirective
+	"The block is YAML, not markdown.  A comment line in it is a value, or a
+	 key the author is in the middle of writing, and either way it opens no
+	 card."
+	| doc |
+	doc := self markdown: (String lf join: #(
+		'---'
+		'<!!-- f@300x200+0+0 -->'
+		'title: A doc'
+		'---'
+		'# Title'
+		'body')).
+	self assert: doc allDirectives size equals: 1.
+	self deny: doc host isAnchored!
+
+testHostTextStartsAfterTheFrontmatter
+	"The block is the document's metadata, not its prose.  The host shows the
+	 markdown proper; the frontmatter has an editor of its own."
+	| doc host |
+	doc := self markdown: self frontmatterSample.
+	host := doc roots first.
+	self assert: ((doc renderRange: host contentRange) beginsWith: '# Title')!
+
+testYamlCommentInTheFrontmatterIsNotAHeading
+	"# opens a comment in YAML and a heading in markdown.  Read as a heading it
+	 would name and own sections of a document it is not even part of."
+	| doc |
+	doc := self markdown: (String lf join: #(
+		'---'
+		'# Overview'
+		'floaty: f@800x600+0+0'
+		'---'
+		'<!!-- f@50%x50%+0+0 -->'
+		'some prose')).
+	self
+		deny: ((doc allDirectives collect: [ :each | each label ]) includes: 'Overview')!
+
+testDirectiveOnTheFirstLineAfterTheFrontmatterIsTheHost
+	"With no floaty key in the block, the top comment rule still holds -- it is
+	 just that the top of the markdown is where the block ends."
+	| host |
+	host := (self markdown: (String lf join: #(
+		'---'
+		'title: A doc'
+		'---'
+		'<!!-- f@800x600+10-20 -->'
+		'# Title'
+		'body'))) roots first.
+	self assert: host label equals: 'document'.
+	self assert: host geometry asDirectiveString equals: 'f@800x600+10-20'!
+
+testFrontmatterKeyOutranksADirectiveAfterTheBlock
+	"Both say what the whole document is.  The block is the document's own
+	 metadata, so it is the one that says it, and the comment is left to govern
+	 the section it introduces."
+	| doc |
+	doc := self markdown: (String lf join: #(
+		'---'
+		'floaty: f@820x560+40-60'
+		'---'
+		'<!!-- f@300x200+0+0 -->'
+		'# Title'
+		'body')).
+	self assert: doc roots size equals: 1.
+	self assert: doc roots first geometry asDirectiveString equals: 'f@820x560+40-60'.
+	self assert: doc roots first regionStart equals: 1.
+	self
+		assert: ((doc renderRange: doc roots first contentRange)
+			beginsWith: '<!!-- f@300x200+0+0 -->').
+	self assert: doc roots first children first label equals: 'Title'!
+
+testDraggingAFrontmatterHostRewritesItsKeyLine
+	| doc host |
+	doc := self markdown: self frontmatterSample.
+	host := doc roots first.
+	doc writeGeometryOf: host as: (McFloatyGeometry parse: '900x700+10+20').
+	self assert: (doc source lines at: 3) equals: 'floaty: f@900x700+10+20'!
+
+testDraggingAFrontmatterHostKeepsTheCommentBesideIt
+	"# opens a comment in YAML, and a drag has no business deleting one."
+	| doc host |
+	doc := self markdown: (String lf join: #(
+		'---'
+		'floaty: f@820x560+40-60 # the board'
+		'---'
+		'# Title'
+		'body')).
+	host := doc roots first.
+	doc writeGeometryOf: host as: (McFloatyGeometry parse: '900x700+10+20').
+	self
+		assert: (doc source lines at: 2)
+		equals: 'floaty: f@900x700+10+20 # the board'!
+
+testRetypingAFrontmatterKeyLineMovesItsCard
+	"The same live feedback a retyped comment directive gives: the card follows
+	 the keystroke that finishes the line, without waiting for a reparse."
+	| doc host |
+	doc := self markdown: self frontmatterSample.
+	host := doc roots first.
+	self assert: (doc writeLineOf: host as: 'floaty: f@900x700+10+20').
+	self assert: host geometry asDirectiveString equals: 'f@900x700+10+20'! !
+
 !McFloatyTest methodsFor: 'tests - flat hierarchy'!
 testFlatFileHostsTheWholeDocumentFromItsFirstLine
 	| document host |
@@ -403,7 +529,10 @@ testFlatEndDirectiveClosesARegion
 	self assert: (region includesSubstring: 'child-one').
 	self deny: (region includesSubstring: 'after-the-end')!
 
-testFlatFileWithoutALeadingDirectiveHasNoHost
+testFlatFileWithoutALeadingDirectiveIsStillHosted
+	"No directive on the first line means no directive says what the whole file
+	 is -- but the file is still a document, and the regions in it are still
+	 parts of it."
 	| document |
 	document := self flat: (String lf join: #(
 		'(defun preamble ())'
@@ -411,8 +540,9 @@ testFlatFileWithoutALeadingDirectiveHasNoHost
 		'(defun one ())'
 		';;; f@40x10+0+20'
 		'(defun two ())')).
-	self assert: document roots size equals: 2.
-	self assert: document roots first children isEmpty!
+	self assert: document roots size equals: 1.
+	self deny: document host isAnchored.
+	self assert: document host children size equals: 2!
 
 testHashCommentIsADirectiveOutsideMarkdown
 	| document |
@@ -487,6 +617,61 @@ testContentRangeLeavesOutTheDirectiveThatOpensTheCard
 	content := document renderRange: child contentRange.
 	self deny: (content includesSubstring: 'f@').
 	self assert: (content beginsWith: '### Sub')! !
+
+!McFloatyTest methodsFor: 'tests - host without a directive'!
+testDocumentWithNoDirectiveStillHasAHost
+	"A card can be taken away; the document cannot.  There is always something
+	 the whole text belongs to, so there is always a host -- it just has no line
+	 in the file to remember its geometry, and starts where the program puts it."
+	| doc |
+	doc := self markdown: (String lf join: #('# Title' 'body')).
+	self assert: doc roots size equals: 1.
+	self assert: doc host label equals: 'document'.
+	self deny: doc host isAnchored.
+	self assert: doc host geometry equals: McFloatyDocument defaultHostGeometry!
+
+testChildrenNestUnderAHostThatHasNoDirective
+	| doc |
+	doc := self markdown: (String lf join: #(
+		'# Title'
+		''
+		'<!!-- f@50%x50%+0+0 -->'
+		'## Section'
+		'body')).
+	self assert: doc roots size equals: 1.
+	self assert: doc host children first label equals: 'Section'!
+
+testHostKeepsItsGeometryWhenItsDirectiveBreaks
+	"Breaking a child's directive takes its card away.  The host has nowhere to
+	 go, so it stays where it was and keeps the position for the session."
+	| doc range |
+	doc := self markdown: self markdownSample.
+	doc writeGeometryOf: doc host as: (McFloatyGeometry parse: '900x700+10+20').
+	range := doc host range.
+	doc replaceFrom: range first to: range last with: 'not a directive'.
+	doc reparse.
+	self deny: doc host isAnchored.
+	self assert: doc host geometry asDirectiveString equals: 'f@900x700+10+20'!
+
+testDraggingAHostWithNoDirectiveLeavesTheSourceAlone
+	"There is no line to write the geometry into, and inventing one would be
+	 the board editing a document the author did not ask it to edit."
+	| doc before |
+	doc := self markdown: (String lf join: #('# Title' 'body')).
+	before := doc source.
+	doc writeGeometryOf: doc host as: (McFloatyGeometry parse: '900x700+10+20').
+	self assert: doc source equals: before.
+	self assert: doc host geometry asDirectiveString equals: 'f@900x700+10+20'!
+
+testHostWithNoDirectiveShowsTheMarkdownAfterTheFrontmatter
+	| doc |
+	doc := self markdown: (String lf join: #(
+		'---'
+		'title: A doc'
+		'---'
+		'# Title'
+		'body')).
+	self assert: ((doc renderRange: doc host contentRange) beginsWith: '# Title')! !
 
 !McFloatyTest methodsFor: 'tests - writeback'!
 move: aDirective to: aPoint in: anExtent document: aDocument

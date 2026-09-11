@@ -127,10 +127,31 @@ testRefreshViewKeepsCommittedCoordinatesAndDropsDrafts
 	self deny: (board model panelAt: #noteOne) isDirty! !
 
 !McCorkboardTest methodsFor: 'tests - floaty document'!
+hostlessSource
+	"A document with no directive saying what the whole of it is."
+	^ String lf join: #(
+		'# Title'
+		'body'
+		''
+		'<!!-- f@50%x25%+10%+20% -->'
+		'## Child'
+		'child body')!
+
+testBoardWhoseDocumentHasNoDirectiveStillShowsTheDocument
+	"The document is always on the board, because there is always a document.
+	 It simply has no line to edit, so it is drawn without a directive row."
+	| board |
+	board := McCorkboard new buildDocumentViewOn: self hostlessSource markdown: true.
+	self assert: (board cardViewFor: board document host) notNil.
+	self assert: (board cardRowFor: board document host) isNil.
+	self
+		assert: (board cardViewFor: (board document directiveLabelled: 'Child')) parent
+		== (board cardViewFor: board document host)!
+
 floatySource
 	^ String lf join: #(
-		'# Host'
 		'<!!-- f@800x600+40-60 -->'
+		'# Host'
 		'host body'
 		''
 		'## Child'
@@ -507,6 +528,127 @@ testCommittingNothingLeavesTheCardsAlone
 	card := board cardViewFor: child.
 	board commitStructure.
 	self assert: (board cardViewFor: child) == card! !
+
+!McCorkboardTest methodsFor: 'tests - frontmatter panel'!
+frontmatterSource
+	"The host directive is a key in the block, so the card's own row edits that
+	 key's line and the panel holds what is left."
+	^ String lf join: #(
+		'---'
+		'title: A doc'
+		'floaty: f@800x600+40-60'
+		'tags: two'
+		'---'
+		'# Host'
+		'host body'
+		''
+		'## Child'
+		'<!!-- f@50%x25%+10%+20% -->'
+		'child body')!
+
+frontmatterBoard
+	^ McCorkboard new buildDocumentViewOn: self frontmatterSource markdown: true!
+
+type: aString at: anIndex intoFrontmatterValue: aKey on: aBoard
+	| row |
+	row := aBoard frontmatterRowFor: aKey.
+	row editor inserter at: anIndex; string: aString; insert.
+	^ row!
+
+testTheHostCardShowsTheFrontmatterValues
+	| board |
+	board := self frontmatterBoard.
+	self assert: (board frontmatterRowFor: 'title') text asString equals: 'A doc'.
+	self assert: (board frontmatterRowFor: 'tags') text asString equals: 'two'!
+
+testTheFloatyKeyIsTheCardsDirectiveRowRatherThanOneMoreValue
+	"The key is the host's directive.  It is shown by the row that already
+	 edits a directive line, so there is one editor over that line and not two."
+	| board |
+	board := self frontmatterBoard.
+	self assert: (board frontmatterRowFor: 'floaty') isNil.
+	self
+		assert: (board cardRowFor: board document host) text asString
+		equals: 'floaty: f@800x600+40-60'!
+
+testADocumentWithNoFrontmatterHasNoPanel
+	self assert: self floatyBoard frontmatterPanel isNil!
+
+testTypingAFrontmatterValueWritesThroughToTheSource
+	| board |
+	board := self frontmatterBoard.
+	self type: 'XY' at: 0 intoFrontmatterValue: 'title' on: board.
+	self assert: (board document source includesSubstring: 'title: XYA doc')!
+
+testTypingAFrontmatterValueLeavesTheLaterKeysAddressable
+	"Every entry after the one that changed has moved.  An entry still pointing
+	 at where its value used to be would write the next keystroke into the
+	 middle of something else."
+	| board |
+	board := self frontmatterBoard.
+	self type: 'XY' at: 0 intoFrontmatterValue: 'title' on: board.
+	self type: 'Z' at: 0 intoFrontmatterValue: 'tags' on: board.
+	self assert: (board document source includesSubstring: 'title: XYA doc').
+	self assert: (board document source includesSubstring: 'tags: Ztwo')!
+
+testTypingAFrontmatterValueLeavesTheDirectiveRowAddressable
+	"The panel's entries and the document's directives are two sets of anchors
+	 into one source, and an edit through either has to move both."
+	| board |
+	board := self frontmatterBoard.
+	self type: 'XY' at: 0 intoFrontmatterValue: 'title' on: board.
+	self
+		assert: (board document renderRange: board document host range)
+		equals: 'floaty: f@800x600+40-60'!
+
+testTheFrontmatterPanelCollapses
+	"The block is the document's metadata and is not what the author came to
+	 read, so it folds away and leaves the markdown where it was."
+	| board |
+	board := self frontmatterBoard.
+	self deny: board isFrontmatterCollapsed.
+	self assert: board frontmatterContent visibility isVisible.
+	board toggleFrontmatter.
+	self assert: board isFrontmatterCollapsed.
+	self deny: board frontmatterContent visibility isVisible!
+
+testFrontmatterThatDoesNotParseIsShownAsItsOwnText
+	"Nothing can be said about the keys of a block that does not parse, so the
+	 panel stops claiming to know them and shows the text.  The directive row
+	 goes with them: the floaty line is in that text, and two editors over one
+	 span is one more than the source can answer to."
+	| board |
+	board := McCorkboard new
+		buildDocumentViewOn: (String lf join: #(
+			'---'
+			'tags: [a,'
+			'floaty: f@800x600+40-60'
+			'---'
+			'# Host'
+			'host body'))
+		markdown: true.
+	self assert: (board frontmatterRowFor: 'tags') isNil.
+	self assert: (board cardRowFor: board document host) isNil.
+	self
+		assert: board frontmatterRawRow text asString
+		equals: (String lf join: #('tags: [a,' 'floaty: f@800x600+40-60'))!
+
+testBreakingTheFrontmatterDirectiveLeavesTheCardWhereItIs
+	"Breaking a child's directive takes its card away.  The document's card has
+	 nowhere to go -- there is still a document -- so it stays exactly where it
+	 was, and keeps that place for the session.  What it loses is the row: there
+	 is no longer a line saying where it is."
+	| board position |
+	board := self frontmatterBoard.
+	position := (board cardViewFor: board document host) constraints position.
+	(board cardRowFor: board document host) editor inserter
+		at: 0; string: 'x'; insert.
+	board commitStructure.
+	self deny: board document host isAnchored.
+	self assert: (board cardRowFor: board document host) isNil.
+	self
+		assert: (board cardViewFor: board document host) constraints position
+		equals: position! !
 
 !McCorkboardTest methodsFor: 'tests - directive reveal'!
 hostTokenOn: aBoard
